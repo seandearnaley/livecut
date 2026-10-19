@@ -62,6 +62,16 @@ void Bounce::chooseBlock (Random& random,
         cuts.push_back (cut);
     };
 
+    // Leave the last bar to the ratchet or ordinary moves, even if its ratchet roll fails.
+    if (std::abs (intoBar) <= epsilon
+        && context.phraseUnits - context.unitsDone > unitsPerBar + epsilon
+        && random.chance (params.halftimeChance))
+    {
+        addCut (unitsPerBar);
+        cuts.back().cents = -1200.0f;
+        return;
+    }
+
     const auto beatsIntoBar = intoBar / beat;
 
     if (std::abs (beatsIntoBar - std::round (beatsIntoBar)) > epsilon)

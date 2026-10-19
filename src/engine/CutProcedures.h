@@ -9,7 +9,7 @@
 namespace livecut::engine
 {
 
-// Bounce: straight grooves and triplet bounces, new to this port.
+// Straight hits and triplet bounces, a ratchet roll that climbs to close each phrase, and the odd halftime bar.
 class Bounce final : public CutProcedure
 {
 public:

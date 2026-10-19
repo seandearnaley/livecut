@@ -203,6 +203,7 @@ TEST_CASE ("Bounce groove and triplet cuts use Duty and independent amplitudes",
         Random expected (seed);
         std::vector<Cut> cuts;
         procedure.chooseBlock (random, params, context, cuts);
+        expected.chance (params.halftimeChance); // eligible bar starts roll halftime first
         expected.chance (bounceChance);
         expected.chance (0.5); // both moves choose a shape before drawing amplitudes
 
@@ -227,6 +228,7 @@ TEST_CASE ("Bounce is deterministic", "[bounce]")
     Bounce procedure;
     auto params = ordinaryMoves (0.4);
     params.ratchetChance = ratchetChance;
+    params.halftimeChance = GENERATE (0.0, 0.15, 1.0);
     params.minAmp = 0.2f;
     params.maxAmp = 0.8f;
 
@@ -455,4 +457,121 @@ TEST_CASE ("Ratchet is eligible only within epsilon of the zone start", "[bounce
     Random expected (31);
     expected.uniform (params.minAmp, params.maxAmp);
     CHECK_THAT (random.unit(), WithinAbs (expected.unit(), tolerance));
+}
+
+TEST_CASE ("At full Halftime every bar but the last drops to half speed", "[bounce][halftime]")
+{
+    const auto unitsPerBar = GENERATE (6, 8, 16, 32);
+    const auto beatsPerBar = GENERATE (4.0, 3.0, 3.5, 1.5, 0.5);
+    Bounce procedure;
+    auto params = ordinaryMoves (0.4);
+    params.halftimeChance = 1.0;
+
+    for (std::uint32_t seed = 1; seed <= 50; ++seed)
+    {
+        CAPTURE (unitsPerBar, beatsPerBar, seed);
+        params.minPhraseBars = params.maxPhraseBars = 2 + static_cast<int> (seed % 3);
+        Random random (seed);
+        const auto blocks = playPhrase (procedure, random, params, unitsPerBar, beatsPerBar);
+        const auto lastBarStart = static_cast<double> ((params.minPhraseBars - 1) * unitsPerBar);
+        int halftimeBars = 0;
+
+        for (const auto& block : blocks)
+        {
+            if (block.startUnits >= lastBarStart - tolerance)
+            {
+                for (const auto& cut : block.cuts)
+                    CHECK_THAT (cut.cents, WithinAbs (0.0, 1.0e-6));
+
+                continue;
+            }
+
+            REQUIRE_THAT (block.startUnits, WithinAbs (halftimeBars * unitsPerBar, tolerance));
+            REQUIRE (block.cuts.size() == 1);
+            CHECK_THAT (block.cuts.front().units, WithinAbs (unitsPerBar, tolerance));
+            CHECK_THAT (block.cuts.front().cents, WithinAbs (-1200.0, 1.0e-6));
+            ++halftimeBars;
+        }
+
+        CHECK (halftimeBars == params.minPhraseBars - 1);
+    }
+}
+
+TEST_CASE ("One-bar phrases never drop to halftime", "[bounce][halftime]")
+{
+    const auto unitsPerBar = GENERATE (6, 8, 16, 32);
+    const auto beatsPerBar = GENERATE (4.0, 3.0, 3.5, 1.5, 0.5);
+    Bounce procedure;
+    auto params = ordinaryMoves (0.4);
+    params.maxPhraseBars = 1;
+    params.halftimeChance = 1.0;
+
+    for (std::uint32_t seed = 1; seed <= 50; ++seed)
+    {
+        Random random (seed);
+        const auto blocks = playPhrase (procedure, random, params, unitsPerBar, beatsPerBar);
+
+        for (const auto& block : blocks)
+            for (const auto& cut : block.cuts)
+                CHECK_THAT (cut.cents, WithinAbs (0.0, 1.0e-6));
+    }
+}
+
+TEST_CASE ("Halftime rolls only at eligible bar starts and uses Duty and the Amp range", "[bounce][halftime]")
+{
+    const auto offset = GENERATE (-4.0e-9, -0.5e-9, 0.0, 0.5e-9, 4.0e-9, 1.0, 2.0);
+    const auto lastBar = GENERATE (false, true);
+    Bounce procedure;
+    auto params = ordinaryMoves (0.0);
+    params.halftimeChance = 0.5;
+    params.dutyCycle = 0.63;
+    params.fillDutyCycle = 0.12;
+    params.minAmp = 0.2f;
+    params.maxAmp = 0.8f;
+    params.minPan = params.maxPan = 0.7f;
+    params.minCents = params.maxCents = 700.0f;
+    BlockContext context;
+    context.unitsDone = 8.0 + offset;
+    context.phraseUnits = lastBar ? 16.0 : 24.0;
+    bool sawHalftime = false;
+    bool sawOrdinary = false;
+
+    for (std::uint32_t seed = 1; seed <= 50; ++seed)
+    {
+        CAPTURE (offset, lastBar, seed);
+        Random random (seed);
+        Random expected (seed);
+        std::vector<Cut> cuts;
+        procedure.chooseBlock (random, params, context, cuts);
+        const auto eligible = std::abs (offset) <= tolerance && ! lastBar;
+        const auto halftime = eligible && expected.chance (params.halftimeChance);
+        sawHalftime = sawHalftime || halftime;
+        sawOrdinary = sawOrdinary || ! halftime;
+
+        if (! halftime)
+        {
+            // At these positions only an on-beat groove rolls Bounce and its length.
+            const auto intoBar = unitsIntoBar (context.unitsDone, context.unitsPerBar);
+            if (isWhole (intoBar / 2.0))
+            {
+                expected.chance (params.bounceChance);
+                expected.chance (0.5);
+            }
+        }
+
+        REQUIRE (cuts.size() == 1);
+        const auto& cut = cuts.front();
+        CHECK_THAT (cut.cents, WithinAbs (halftime ? -1200.0 : 0.0, 1.0e-6));
+        CHECK_THAT (cut.gate, WithinAbs (params.dutyCycle, tolerance));
+        CHECK_THAT (cut.pan, WithinAbs (0.0, tolerance));
+        const auto amp = static_cast<float> (expected.uniform (params.minAmp, params.maxAmp));
+        CHECK_THAT (cut.amp, WithinAbs (amp, tolerance));
+        CHECK_THAT (random.unit(), WithinAbs (expected.unit(), tolerance));
+
+        if (halftime)
+            CHECK_THAT (cut.units, WithinAbs (context.unitsPerBar, tolerance));
+    }
+
+    CHECK (sawOrdinary);
+    CHECK (sawHalftime == (std::abs (offset) <= tolerance && ! lastBar));
 }

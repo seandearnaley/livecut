@@ -17,7 +17,8 @@ enum class Procedure
 {
     cutProc11,
     warpCut,
-    sqPusher
+    sqPusher,
+    bounce
 };
 
 struct Timing
@@ -97,6 +98,7 @@ private:
     CutProc11 cutProc11;
     WarpCut warpCut;
     SQPusher sqPusher;
+    Bounce bounce;
     Random random;
     LivePlayer livePlayer;
     BitCrusher bitCrusher;
