@@ -16,6 +16,16 @@ option(LIVECUT_COPY_PLUGIN_AFTER_BUILD "Install the plugins into the user's plug
 
 add_subdirectory(libs/JUCE)
 
+# The cutting engine is plain C++ with no JUCE dependency, so it can be tested in isolation.
+add_library(LivecutEngine STATIC
+    src/engine/Random.cpp)
+target_include_directories(LivecutEngine PUBLIC src)
+target_compile_features(LivecutEngine PUBLIC cxx_std_20)
+target_link_libraries(LivecutEngine
+    PRIVATE
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)
+
 juce_add_plugin(Livecut
     PRODUCT_NAME "Livecut"
     DESCRIPTION "BBCut-style live beat slicer"
@@ -81,4 +91,15 @@ if(LIVECUT_BUILD_TESTS)
             juce::juce_recommended_warning_flags)
 
     catch_discover_tests(LivecutTests DISCOVERY_MODE PRE_TEST)
+
+    add_executable(LivecutEngineTests
+        tests/engine/RandomTests.cpp)
+    target_link_libraries(LivecutEngineTests
+        PRIVATE
+            LivecutEngine
+            Catch2::Catch2WithMain
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags)
+
+    catch_discover_tests(LivecutEngineTests DISCOVERY_MODE PRE_TEST)
 endif()
