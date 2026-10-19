@@ -266,6 +266,17 @@ TEST_CASE ("Cutting never allocates memory", "[cutter]")
     params.minCents = -1200.0f;
     params.maxCents = 2400.0f;
     cutter.setParameters (params);
+    CrusherParameters crusher;
+    crusher.enabled = true;
+    crusher.minBits = 2.0f;
+    crusher.minHz = 2000.0;
+    cutter.setCrusher (crusher);
+    CombParameters comb;
+    comb.enabled = true;
+    comb.type = CombParameters::Type::feedBack;
+    comb.minDelayMs = 1.0f;
+    comb.maxDelayMs = 50.0f;
+    cutter.setComb (comb);
     Host host;
     Buffer buffer (256);
 
@@ -404,4 +415,108 @@ TEST_CASE ("A tempo drop part way through a block doesn't leave it silent", "[cu
 
     // With the gate fully open, the only silent samples are the single first sample of each cut's fade-in.
     CHECK (longestSilence <= 1);
+}
+
+// Livecut started a block's first cut before telling the effects about the
+// block, so that cut used the previous block's random settings.
+TEST_CASE ("Effects receive a block's settings before its first cut", "[cutter][effects]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    CrusherParameters crusher;
+    crusher.enabled = true;
+    crusher.minBits = 4.0f;
+    crusher.maxBits = 4.0f;
+    cutter.setCrusher (crusher);
+    Host host;
+
+    runSamples (cutter, host, 1);
+
+    REQUIRE (cutter.isCutting());
+    CHECK_THAT (cutter.crusher().bits(), WithinAbs (4.0, 1.0e-12));
+}
+
+TEST_CASE ("Effect settings step evenly from cut to cut through a block", "[cutter][effects]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    cutter.setProcedure (Procedure::warpCut);
+    CutParameters params;
+    params.straightChance = 0.0; // every block is a roll of at least 4 cuts
+    cutter.setParameters (params);
+    CombParameters comb;
+    comb.minDelayMs = 5.0f;
+    comb.maxDelayMs = 45.0f;
+    cutter.setComb (comb);
+    Host host;
+
+    runSamples (cutter, host, 1);
+    REQUIRE (cutter.player().cuts().size() >= 4);
+
+    std::vector<double> delays;
+    std::size_t lastCut = cutter.player().currentCut();
+    delays.push_back (cutter.comb().delaySamples());
+
+    while (delays.size() < 4)
+    {
+        runSamples (cutter, host, 1, 1);
+
+        if (cutter.player().currentCut() != lastCut)
+        {
+            lastCut = cutter.player().currentCut();
+            delays.push_back (cutter.comb().delaySamples());
+        }
+    }
+
+    REQUIRE (std::abs (delays[1] - delays[0]) > 1.0e-6);
+    CHECK_THAT (delays[2] - delays[1], WithinAbs (delays[1] - delays[0], 1.0e-6));
+    CHECK_THAT (delays[3] - delays[2], WithinAbs (delays[1] - delays[0], 1.0e-6));
+}
+
+TEST_CASE ("Switching an effect on or off leaves the cuts unchanged", "[cutter][effects]")
+{
+    auto cutSequence = [] (bool effectsOn)
+    {
+        Cutter cutter;
+        cutter.prepare (sampleRate);
+        CrusherParameters crusher;
+        crusher.enabled = effectsOn;
+        crusher.minBits = 3.0f;
+        cutter.setCrusher (crusher);
+        CombParameters comb;
+        comb.enabled = effectsOn;
+        cutter.setComb (comb);
+        Host host;
+        std::vector<double> starts;
+
+        for (int i = 0; i < 8 * 96000 / 64; ++i)
+        {
+            runSamples (cutter, host, 64);
+            starts.push_back (cutter.blockStartUnits() + 1000.0 * static_cast<double> (cutter.phraseStartBar()));
+        }
+
+        return starts;
+    };
+
+    CHECK (cutSequence (false) == cutSequence (true));
+}
+
+TEST_CASE ("An enabled crusher quantises the cut audio", "[cutter][effects]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    CrusherParameters crusher;
+    crusher.enabled = true;
+    crusher.minBits = 2.0f;
+    crusher.maxBits = 2.0f;
+    cutter.setCrusher (crusher);
+    Host host;
+
+    Buffer buffer (4800);
+    run (cutter, host, buffer);
+
+    REQUIRE (cutter.isCutting());
+
+    for (const auto sample : buffer.left)
+        REQUIRE_THAT (std::fmod (std::abs (sample) + 1.0e-6, 0.5), WithinAbs (0.0, 1.0e-4));
 }
