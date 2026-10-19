@@ -3,6 +3,7 @@
 #include "PluginProcessor.h"
 
 #include "HostSync.h"
+#include "PluginEditor.h"
 
 LivecutAudioProcessor::LivecutAudioProcessor()
     : AudioProcessor (BusesProperties()
@@ -74,7 +75,7 @@ void LivecutAudioProcessor::publishDisplay()
 
 juce::AudioProcessorEditor* LivecutAudioProcessor::createEditor()
 {
-    return new juce::GenericAudioProcessorEditor (*this);
+    return new LivecutAudioProcessorEditor (*this);
 }
 
 bool LivecutAudioProcessor::hasEditor() const { return true; }
