@@ -13,7 +13,11 @@ std::optional<HostSync> hostSync (const juce::AudioPlayHead::PositionInfo& info)
     const auto bpm = info.getBpm();
     const auto meter = info.getTimeSignature();
 
-    if (! info.getIsPlaying() || ! ppq || ! bpm || ! meter || meter->denominator <= 0)
+    if (! info.getIsPlaying() || ! ppq || ! bpm || ! meter)
+        return std::nullopt;
+
+    // A tempo or time signature that gives a bar no length can't be followed either.
+    if (! std::isfinite (*ppq) || ! (*bpm > 0.0) || meter->numerator <= 0 || meter->denominator <= 0)
         return std::nullopt;
 
     HostSync sync;

@@ -44,6 +44,14 @@ TEST_CASE ("There is nothing to follow without tempo, position or time signature
     CHECK_FALSE (hostSync (noMeter).has_value());
 }
 
+// Found in review: a numerator of zero gave bars no length at all.
+TEST_CASE ("There is nothing to follow with a meaningless time signature", "[hostsync]")
+{
+    CHECK_FALSE (hostSync (playing (0.0, 120.0, 0, 4)).has_value());
+    CHECK_FALSE (hostSync (playing (0.0, 120.0, 4, 0)).has_value());
+    CHECK_FALSE (hostSync (playing (0.0, 0.0, 4, 4)).has_value());
+}
+
 TEST_CASE ("Bars and beats come from the host's bar start and count", "[hostsync]")
 {
     auto info = playing (13.5, 128.0);
