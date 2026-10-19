@@ -167,6 +167,23 @@ TEST_CASE ("A pitched cut reads the block faster", "[player]")
         REQUIRE_THAT (output.left[static_cast<std::size_t> (100 + t)], WithinAbs (inputLeft (2 * t) * fadeEnvelope (t, 1, 100), 1.0e-5));
 }
 
+TEST_CASE ("A later cut pitched down interpolates the block's recording", "[player]")
+{
+    LivePlayer player;
+    player.prepare (1000);
+    player.setFadeSamples (1);
+    const std::vector cuts { makeCut (1.0), makeCut (1.0, 1.0, 0.0f, 1.0f, -1200.0f) };
+    player.startBlock (cuts, 100.0);
+
+    const auto output = play (player, 200);
+
+    for (int t = 0; t < 100; ++t)
+    {
+        const auto expected = 0.001f * (0.5f * static_cast<float> (t) + 1.0f) * fadeEnvelope (t, 1, 100);
+        REQUIRE_THAT (output.left[static_cast<std::size_t> (100 + t)], WithinAbs (expected, 1.0e-6));
+    }
+}
+
 // Livecut resampled a pitched cut from a buffer that was still mostly unrecorded,
 // so pitched-up repeats went silent part way through.
 TEST_CASE ("A pitched cut ends, faded, before it reads unrecorded audio", "[player]")
