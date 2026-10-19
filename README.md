@@ -6,6 +6,11 @@ depend on the cutting procedure, the way a jungle or drum & bass producer would
 re-edit a break. It is based on Nick Collins'
 [BBCut](https://composerprogrammer.com/bbcut2.html) library for SuperCollider.
 
+CutProc11, WarpCut and SQPusher come from BBCut. Bounce is new to this port.
+It cuts the way 2020s club music does: triplet bounces against a straight beat,
+a ratchet that climbs in semitones to close each phrase, and the odd halftime
+bar.
+
 This repository is a ground-up port of the original plugin to
 [JUCE 9](https://juce.com) as a native 64-bit **VST3**, **AU** and
 **Standalone** app, for current DAWs (Ableton Live 12, Logic, Reaper, Bitwig…)
@@ -30,6 +35,8 @@ Work in progress, landing as a stack of small pull requests:
 5. **Plugin**: parameters, saved state and host-synced processing.
 6. **Editor**: the user interface.
 7. **Release**: signed and notarised installers.
+8. **0.2.0 / Bounce**: a fourth cut procedure, with triplet bounces, climbing
+   ratchets and halftime bars.
 
 ## Building
 

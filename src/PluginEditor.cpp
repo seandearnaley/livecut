@@ -32,6 +32,7 @@ constexpr std::array procedures {
     ProcedureInfo { "CutProc11", "Odd-length cuts, repeated, with a stutter to close each phrase" },
     ProcedureInfo { "WarpCut", "Straight slices and rolls that speed up or slow down" },
     ProcedureInfo { "SQPusher", "Quaver and semiquaver cuts, with a Squarepusher fill on each phrase's last bar" },
+    ProcedureInfo { "Bounce", "Straight hits and triplet bounces, a ratchet roll that climbs to close each phrase, and the odd halftime bar" },
 };
 
 // Stacks rows down a column, top to bottom.
@@ -69,6 +70,10 @@ public:
           ritard (parameter (state, ids::ritardChance), "Ritard"),
           accel (parameter (state, ids::accel), "Accel"),
           activity (parameter (state, ids::activity), "Activity"),
+          bounce (parameter (state, ids::bounceChance), "Bounce"),
+          ratchet (parameter (state, ids::ratchetChance), "Ratchet"),
+          climb (parameter (state, ids::climb), "Climb"),
+          halftime (parameter (state, ids::halftimeChance), "Halftime"),
           crusher (parameter (state, ids::crusher), "Crusher"),
           bits (parameter (state, ids::minBits), parameter (state, ids::maxBits), "Bits"),
           rate (parameter (state, ids::minRate), parameter (state, ids::maxRate), "Rate"),
@@ -90,7 +95,10 @@ public:
 
         sqPusherControls.addAndMakeVisible (activity);
 
-        for (auto* controls : { &cutProc11Controls, &warpCutControls, &sqPusherControls })
+        for (auto* component : std::initializer_list<juce::Component*> { &bounce, &ratchet, &climb, &halftime })
+            bounceControls.addAndMakeVisible (component);
+
+        for (auto* controls : { &cutProc11Controls, &warpCutControls, &sqPusherControls, &bounceControls })
             addChildComponent (controls);
 
         procedureSwitch.onChange = [this] (int index) { showProcedure (index); };
@@ -115,6 +123,8 @@ public:
         cutProc11Controls.setVisible (activeProcedure == 0);
         warpCutControls.setVisible (activeProcedure == 1);
         sqPusherControls.setVisible (activeProcedure == 2);
+        bounceControls.setVisible (activeProcedure == 3);
+        pitch.setAlpha (activeProcedure == static_cast<int> (livecut::engine::Procedure::bounce) ? 0.5f : 1.0f);
         repaint();
     }
 
@@ -150,14 +160,14 @@ public:
                           juce::Justification::topLeft, 2);
 
         g.setFont (ui::uiFont (12.0f));
-        g.drawText ("Ported from Livecut by Remy Muller. Cut procedures from Nick Collins' BBCut.",
+        g.drawText ("Ported from Livecut by Remy Muller. CutProc11, WarpCut and SQPusher from Nick Collins' BBCut.",
                     juce::Rectangle<int> (margin, baseHeight - 26, baseWidth - 2 * margin, 16),
                     juce::Justification::centredLeft);
     }
 
     void resized() override
     {
-        procedureSwitch.setBounds (baseWidth - margin - 372, 20, 372, 30);
+        procedureSwitch.setBounds (baseWidth - margin - 456, 20, 456, 30);
         ruler.setBounds (margin, 62, baseWidth - 2 * margin, 88);
 
         const auto middleTop = 166;
@@ -179,7 +189,7 @@ public:
 
         const auto procedureArea = procedureSection.reduced (sectionPadding).withTrimmedTop (64);
 
-        for (auto* controls : { &cutProc11Controls, &warpCutControls, &sqPusherControls })
+        for (auto* controls : { &cutProc11Controls, &warpCutControls, &sqPusherControls, &bounceControls })
         {
             controls->setBounds (procedureArea);
             Column column { controls->getLocalBounds() };
@@ -236,6 +246,7 @@ private:
     ui::SliderRow seed, fade, duty, fillDuty;
     ui::RangeSlider amp, pan, pitch, repeats;
     ui::SliderRow stutter, stutterArea, straight, regular, ritard, accel, activity;
+    ui::SliderRow bounce, ratchet, climb, halftime;
     ui::PowerSwitch crusher;
     ui::RangeSlider bits, rate;
     ui::PowerSwitch comb;
@@ -243,7 +254,7 @@ private:
     ui::SliderRow combFeedback;
     ui::RangeSlider delay;
 
-    juce::Component cutProc11Controls, warpCutControls, sqPusherControls;
+    juce::Component cutProc11Controls, warpCutControls, sqPusherControls, bounceControls;
     juce::Rectangle<int> phraseSection, cutsSection, procedureSection, crusherSection, combSection;
     int activeProcedure = 0;
 };

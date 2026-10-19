@@ -207,6 +207,40 @@ TEST_CASE ("Processor state restores every parameter", "[processor][state]")
 
 }
 
+TEST_CASE ("A set saved by 0.1.0 reloads with its procedure and Bounce's defaults", "[processor][state]")
+{
+    LivecutAudioProcessor original;
+    auto* procedure = original.getParameterState().getParameter (livecut::ids::procedure);
+    REQUIRE (procedure != nullptr);
+    const auto sqPusher = static_cast<float> (livecut::engine::Procedure::sqPusher);
+    procedure->setValueNotifyingHost (procedure->convertTo0to1 (sqPusher));
+
+    juce::MemoryBlock state;
+    original.getStateInformation (state);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), static_cast<int> (state.getSize()));
+    REQUIRE (xml != nullptr);
+
+    // A 0.1.0 set has no Bounce parameters.
+    for (const auto* id : { livecut::ids::bounceChance, livecut::ids::ratchetChance,
+                           livecut::ids::climb, livecut::ids::halftimeChance })
+    {
+        auto* child = xml->getChildByAttribute ("id", id);
+        REQUIRE (child != nullptr);
+        REQUIRE (child->hasTagName ("PARAM"));
+        xml->removeChildElement (child, true);
+    }
+    juce::AudioProcessor::copyXmlToBinary (*xml, state);
+
+    LivecutAudioProcessor restored;
+    restored.setStateInformation (state.getData(), static_cast<int> (state.getSize()));
+    const auto& restoredState = restored.getParameterState();
+    CHECK_THAT (restoredState.getRawParameterValue (livecut::ids::procedure)->load(), Catch::Matchers::WithinAbs (sqPusher, 1.0e-6));
+    CHECK_THAT (restoredState.getRawParameterValue (livecut::ids::bounceChance)->load(), Catch::Matchers::WithinAbs (0.4, 1.0e-6));
+    CHECK_THAT (restoredState.getRawParameterValue (livecut::ids::ratchetChance)->load(), Catch::Matchers::WithinAbs (0.7, 1.0e-6));
+    CHECK_THAT (restoredState.getRawParameterValue (livecut::ids::climb)->load(), Catch::Matchers::WithinAbs (7.0, 1.0e-6));
+    CHECK_THAT (restoredState.getRawParameterValue (livecut::ids::halftimeChance)->load(), Catch::Matchers::WithinAbs (0.15, 1.0e-6));
+}
+
 TEST_CASE ("The display says the host isn't playing", "[processor][display]")
 {
     LivecutAudioProcessor processor;
