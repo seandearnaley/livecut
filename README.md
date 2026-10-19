@@ -58,7 +58,8 @@ at strictness level 10 (including Steinberg's VST3 validator) and with `auval`.
 ## Releases
 
 Pushing a tag such as `v0.1.0` builds a signed, notarised macOS installer and
-the Windows plug-ins, and publishes them as a GitHub release. The signing
+the Windows plug-ins, and puts them in a draft GitHub release to check and
+publish. Tags with a suffix, such as `v0.1.0-rc.1`, become pre-releases. The signing
 secrets it needs are listed at the top of
 [.github/workflows/release.yml](.github/workflows/release.yml). To check the
 installer's layout locally without signing it:

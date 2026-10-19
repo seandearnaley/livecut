@@ -1,8 +1,8 @@
 name: Release
 
 # Pushing a tag such as v0.1.0 builds, signs and notarises the macOS
-# installer, builds the Windows plug-ins, and publishes both as a GitHub
-# release. Signing needs these repository secrets:
+# installer, builds the Windows plug-ins, and puts both in a draft GitHub
+# release for you to check and publish. Signing needs these repository secrets:
 #
 #   MACOS_APPLICATION_P12       base64 of your "Developer ID Application" certificate, exported as .p12
 #   MACOS_INSTALLER_P12         base64 of your "Developer ID Installer" certificate, exported as .p12
@@ -177,5 +177,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
-            --title "Livecut ${GITHUB_REF_NAME#v}" --generate-notes
+          # Releases start as drafts, so a person checks them before anyone can
+          # download them. Versions with a suffix, such as v0.1.0-rc.1, are pre-releases.
+          options=(--draft --title "Livecut ${GITHUB_REF_NAME#v}" --generate-notes)
+
+          if [[ $GITHUB_REF_NAME == *-* ]]; then
+            options+=(--prerelease)
+          fi
+
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" "${options[@]}"
