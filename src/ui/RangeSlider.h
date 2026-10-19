@@ -8,7 +8,8 @@ namespace livecut::ui
 {
 
 // A minimum and a maximum parameter edited as one slider with two thumbs.
-// Dragging a thumb is one gesture on its parameter, so hosts record it as
+// A drag is one gesture on each parameter it moves, including the other
+// thumb when the dragged one pushes it along, so hosts record it as
 // automation; keyboard and programmatic changes are a complete gesture each.
 class RangeSlider final : public juce::Component
 {
@@ -20,8 +21,16 @@ public:
     void resized() override;
 
 private:
-    juce::ParameterAttachment& attachmentFor (int thumb);
-    void sliderChanged();
+    struct Side
+    {
+        juce::RangedAudioParameter& parameter;
+        juce::ParameterAttachment& attachment;
+        bool inGesture = false;
+    };
+
+    void pushValues();
+    void push (Side& side, float value);
+    void endGestures();
     void showValues();
 
     juce::RangedAudioParameter& minimum;
@@ -29,7 +38,9 @@ private:
     juce::Label caption, readout;
     juce::Slider slider { juce::Slider::TwoValueHorizontal, juce::Slider::NoTextBox };
     juce::ParameterAttachment minimumAttachment, maximumAttachment;
-    int draggedThumb = -1;
+    Side minimumSide { minimum, minimumAttachment };
+    Side maximumSide { maximum, maximumAttachment };
+    bool dragging = false;
 };
 
 } // namespace livecut::ui

@@ -51,15 +51,21 @@ RangeSlider::RangeSlider (juce::RangedAudioParameter& minimumParameter,
     slider.setTitle (captionText);
     slider.onDragStart = [this]
     {
-        draggedThumb = slider.getThumbBeingDragged();
-        attachmentFor (draggedThumb).beginGesture();
+        // The touched thumb's gesture starts with the touch, before anything moves.
+        dragging = true;
+        auto& touched = slider.getThumbBeingDragged() == 2 ? maximumSide : minimumSide;
+        touched.attachment.beginGesture();
+        touched.inGesture = true;
     };
     slider.onDragEnd = [this]
     {
-        attachmentFor (draggedThumb).endGesture();
-        draggedThumb = -1;
+        // Two-value sliders report drags asynchronously, so take the final
+        // values now, while the gestures are still open.
+        pushValues();
+        endGestures();
+        dragging = false;
     };
-    slider.onValueChange = [this] { sliderChanged(); };
+    slider.onValueChange = [this] { pushValues(); };
 
     addAndMakeVisible (caption);
     addAndMakeVisible (slider);
@@ -69,34 +75,42 @@ RangeSlider::RangeSlider (juce::RangedAudioParameter& minimumParameter,
     maximumAttachment.sendInitialUpdate();
 }
 
-juce::ParameterAttachment& RangeSlider::attachmentFor (int thumb)
+void RangeSlider::pushValues()
 {
-    return thumb == 2 ? maximumAttachment : minimumAttachment;
+    push (minimumSide, static_cast<float> (slider.getMinValue()));
+    push (maximumSide, static_cast<float> (slider.getMaxValue()));
+    showValues();
 }
 
-void RangeSlider::sliderChanged()
+void RangeSlider::push (Side& side, float value)
 {
-    const auto newMinimum = static_cast<float> (slider.getMinValue());
-    const auto newMaximum = static_cast<float> (slider.getMaxValue());
+    if (! differs (side.parameter, value))
+        return;
 
-    if (draggedThumb == 1)
+    // During a drag every move is part of a gesture; a thumb pushed along by
+    // the other one opens its own gesture the first time it moves.
+    if (dragging && ! side.inGesture)
     {
-        minimumAttachment.setValueAsPartOfGesture (newMinimum);
+        side.attachment.beginGesture();
+        side.inGesture = true;
     }
-    else if (draggedThumb == 2)
-    {
-        maximumAttachment.setValueAsPartOfGesture (newMaximum);
-    }
+
+    if (side.inGesture)
+        side.attachment.setValueAsPartOfGesture (value);
     else
+        side.attachment.setValueAsCompleteGesture (value);
+}
+
+void RangeSlider::endGestures()
+{
+    for (auto* side : { &minimumSide, &maximumSide })
     {
-        if (differs (minimum, newMinimum))
-            minimumAttachment.setValueAsCompleteGesture (newMinimum);
-
-        if (differs (maximum, newMaximum))
-            maximumAttachment.setValueAsCompleteGesture (newMaximum);
+        if (side->inGesture)
+        {
+            side->attachment.endGesture();
+            side->inGesture = false;
+        }
     }
-
-    showValues();
 }
 
 void RangeSlider::showValues()

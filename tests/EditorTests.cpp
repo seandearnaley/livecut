@@ -115,6 +115,52 @@ TEST_CASE ("A range control moves its parameters inside gestures", "[editor]")
     processor.removeListener (&gestures);
 }
 
+namespace
+{
+juce::MouseEvent mouseAt (juce::Component& component, juce::Point<float> position, juce::Point<float> downAt, bool dragged)
+{
+    const auto now = juce::Time::getCurrentTime();
+    return { juce::Desktop::getInstance().getMainMouseSource(), position, {},
+             juce::MouseInputSource::defaultPressure, juce::MouseInputSource::defaultOrientation,
+             juce::MouseInputSource::defaultRotation, juce::MouseInputSource::defaultTiltX,
+             juce::MouseInputSource::defaultTiltY, &component, &component, now, downAt, now, 1, dragged };
+}
+} // namespace
+
+// Found in review: dragging one thumb past the other nudged the second thumb
+// on screen without moving its parameter.
+TEST_CASE ("Dragging one range thumb past the other moves both parameters", "[editor]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    GestureCounter gestures;
+    processor.addListener (&gestures);
+    auto& state = processor.getParameterState();
+    auto& minimum = *state.getParameter (livecut::ids::minPan);
+    auto& maximum = *state.getParameter (livecut::ids::maxPan);
+
+    livecut::ui::RangeSlider range (minimum, maximum, "Pan");
+    range.setBounds (0, 0, 300, 40);
+    auto& slider = range.getSlider();
+    const auto y = static_cast<float> (slider.getHeight()) / 2.0f;
+    const juce::Point<float> start { slider.getPositionOfValue (slider.getMinValue()), y };
+    const juce::Point<float> end { slider.getPositionOfValue (0.6), y };
+
+    slider.mouseDown (mouseAt (slider, start, start, false));
+    slider.mouseDrag (mouseAt (slider, end, start, true));
+    slider.mouseUp (mouseAt (slider, end, start, true));
+
+    CHECK_THAT (state.getRawParameterValue (livecut::ids::minPan)->load(), WithinAbs (0.6, 0.02));
+    CHECK_THAT (state.getRawParameterValue (livecut::ids::maxPan)->load(), WithinAbs (slider.getMaxValue(), 1.0e-4));
+    CHECK (slider.getMaxValue() >= slider.getMinValue());
+    CHECK (gestures.begun.count (minimum.getParameterIndex()) == 1);
+    CHECK (gestures.ended.count (minimum.getParameterIndex()) == 1);
+    CHECK (gestures.begun.count (maximum.getParameterIndex()) == 1);
+    CHECK (gestures.ended.count (maximum.getParameterIndex()) == 1);
+
+    processor.removeListener (&gestures);
+}
+
 TEST_CASE ("Only the active procedure's controls are shown", "[editor]")
 {
     juce::ScopedJuceInitialiser_GUI gui;
