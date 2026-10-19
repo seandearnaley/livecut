@@ -62,7 +62,15 @@ if(LIVECUT_BUILD_TESTS)
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libs/Catch2/extras")
     include(Catch)
 
+    # Tests only run on the build machine, so skip the other slice of a universal build.
+    function(livecut_build_for_host_only target)
+        if(APPLE)
+            set_target_properties(${target} PROPERTIES OSX_ARCHITECTURES "${CMAKE_HOST_SYSTEM_PROCESSOR}")
+        endif()
+    endfunction()
+
     add_executable(LivecutTests tests/PluginProcessorTests.cpp)
+    livecut_build_for_host_only(LivecutTests)
     # The JucePlugin_* definitions only exist on the plugin target, so copy them.
     target_compile_definitions(LivecutTests PRIVATE $<TARGET_PROPERTY:Livecut,COMPILE_DEFINITIONS>)
     target_link_libraries(LivecutTests
