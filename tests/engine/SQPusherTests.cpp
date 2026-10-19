@@ -199,6 +199,41 @@ TEST_CASE ("SQPusher blocks never cross a bar line", "[sqpusher]")
     }
 }
 
+TEST_CASE ("Resetting SQPusher abandons a fill in progress", "[sqpusher]")
+{
+    const auto params = phraseOfBars (2);
+    SQPusher used;
+    SQPusher fresh;
+    std::vector<Cut> cuts;
+
+    BlockContext lastBar;
+    lastBar.phraseUnits = 32.0;
+    lastBar.unitsPerBar = 16;
+    lastBar.unitsDone = 16.0;
+
+    Random warmup (5);
+    used.choosePhraseBars (warmup, params);
+    used.chooseBlock (warmup, params, lastBar, cuts); // starts a fill
+    used.reset();
+
+    auto midBar = lastBar;
+    midBar.unitsDone = 20.0;
+    Random a (9);
+    Random b (9);
+    std::vector<Cut> fromUsed;
+    std::vector<Cut> fromFresh;
+    used.chooseBlock (a, params, midBar, fromUsed);
+    fresh.chooseBlock (b, params, midBar, fromFresh);
+
+    REQUIRE (fromUsed.size() == fromFresh.size());
+
+    for (std::size_t i = 0; i < fromUsed.size(); ++i)
+    {
+        CHECK_THAT (fromUsed[i].units, WithinAbs (fromFresh[i].units, 1.0e-12));
+        CHECK_THAT (fromUsed[i].pan, WithinAbs (fromFresh[i].pan, 0.0));
+    }
+}
+
 // Livecut only panned the semiquaver cuts; its quaver cuts stayed in the centre.
 TEST_CASE ("SQPusher pans every cut within the pan range", "[sqpusher]")
 {

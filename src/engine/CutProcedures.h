@@ -33,6 +33,7 @@ public:
 
     static const std::vector<Fill>& fills();
 
+    void reset() override;
     int choosePhraseBars (Random&, const CutParameters&) override;
     void chooseBlock (Random&, const CutParameters&, const BlockContext&, std::vector<Cut>&) override;
 

@@ -69,10 +69,15 @@ const std::vector<SQPusher::Fill>& SQPusher::fills()
     return fillTable;
 }
 
-int SQPusher::choosePhraseBars (Random& random, const CutParameters& params)
+void SQPusher::reset()
 {
     fill = -1;
     fillBlock = 0;
+}
+
+int SQPusher::choosePhraseBars (Random& random, const CutParameters& params)
+{
+    reset();
     return CutProcedure::choosePhraseBars (random, params);
 }
 
