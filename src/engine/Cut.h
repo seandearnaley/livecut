@@ -31,7 +31,7 @@ struct BlockContext
     double beatsPerBar = 4.0; // quarter notes per bar, e.g. 3 for 3/4 and for 6/8
 };
 
-// Every setting the cut procedures read. The defaults are the original plugin's.
+// Every setting the cut procedures read. The original procedures keep their defaults.
 struct CutParameters
 {
     int minPhraseBars = 1;
@@ -59,6 +59,12 @@ struct CutParameters
 
     // SQPusher
     double activity = 0.5;
+
+    // Bounce
+    double bounceChance = 0.4;
+    double ratchetChance = 0.7;
+    int climb = 7; // semitones
+    double halftimeChance = 0.15;
 };
 
 inline double totalUnits (std::span<const Cut> cuts)

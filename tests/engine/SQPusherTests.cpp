@@ -2,11 +2,13 @@
 
 #include "EngineTestHelpers.h"
 #include "engine/CutProcedures.h"
+#include "engine/CutShaping.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <numeric>
@@ -48,6 +50,33 @@ bool sameBeats (const std::vector<double>& a, const std::vector<double>& b)
     return true;
 }
 } // namespace
+
+TEST_CASE ("SQPusher keeps a block's first cut at its original pitch", "[sqpusher]")
+{
+    std::array<Cut, 4> cuts;
+    CutParameters params;
+    params.minCents = -1200.0f;
+    params.maxCents = -100.0f;
+    Random a (11);
+    scatter (cuts, a, params);
+
+    Random b (11);
+    std::array<double, 4> expected;
+
+    for (auto& cents : expected)
+    {
+        b.uniform (params.minPan, params.maxPan);
+        b.uniform (params.minAmp, params.maxAmp);
+        cents = b.uniform (params.minCents, params.maxCents);
+    }
+
+    CHECK_THAT (cuts[0].cents, WithinAbs (0.0, 0.0));
+
+    for (std::size_t i = 1; i < cuts.size(); ++i)
+        CHECK_THAT (cuts[i].cents, WithinAbs (expected[i], 1.0e-4));
+
+    CHECK_THAT (a.unit(), WithinAbs (b.unit(), 1.0e-12));
+}
 
 // Livecut's fill table had two typos: a 2.33-beat cut in the wrong block, and
 // three cuts of one block written into another, which left empty blocks.

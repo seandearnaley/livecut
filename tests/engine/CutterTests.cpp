@@ -116,7 +116,7 @@ TEST_CASE ("Starting between units plays the input live until the next unit", "[
 
 TEST_CASE ("Blocks run back to back and every phrase ends on a bar line", "[cutter]")
 {
-    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher);
+    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher, Procedure::bounce);
     const auto unitsPerBar = GENERATE (6, 8, 16, 32);
     Cutter cutter;
     cutter.prepare (sampleRate);
@@ -196,7 +196,7 @@ TEST_CASE ("A jump in the host position restarts phrasing in the new bar", "[cut
 
 TEST_CASE ("The same seed and position always cut the same way", "[cutter]")
 {
-    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher);
+    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher, Procedure::bounce);
     CutParameters params;
     params.minCents = -300.0f;
     params.maxCents = 300.0f;
@@ -254,12 +254,13 @@ TEST_CASE ("Procedure and subdivision changes land on the next bar line", "[cutt
 
 TEST_CASE ("Cutting never allocates memory", "[cutter]")
 {
-    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher);
+    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher, Procedure::bounce);
     Cutter cutter;
     cutter.prepare (sampleRate);
     cutter.setProcedure (procedure);
     cutter.setUnitsPerBar (32);
     CutParameters params;
+    params.ratchetChance = 1.0;
     params.stutterChance = 1.0;
     params.stutterArea = 1.0;
     params.maxPhraseBars = 8;
@@ -308,6 +309,7 @@ TEST_CASE ("Cutting never allocates memory", "[cutter]")
     // units per bar every WarpCut block is under a beat, so its rolls top out at 16.
     const auto expectedLargest = procedure == Procedure::cutProc11 ? 5u
                                : procedure == Procedure::warpCut  ? 16u
+                               : procedure == Procedure::bounce   ? 12u
                                                                   : 4u;
     CHECK (largestBlock >= expectedLargest);
 }
@@ -333,7 +335,7 @@ TEST_CASE ("Bars too long for the recording buffer pass through untouched", "[cu
 // block started at the wrong unit, or ran past the end of a one-bar phrase.
 TEST_CASE ("Changes made while stopped are in place before cutting resumes mid-bar", "[cutter]")
 {
-    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher);
+    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher, Procedure::bounce);
     Cutter cutter;
     cutter.prepare (sampleRate);
     cutter.setProcedure (procedure);
@@ -533,4 +535,47 @@ TEST_CASE ("The cutter reports where it is in the phrase", "[cutter]")
     CHECK (cutter.phraseBarCount() >= 1);
     CHECK_THAT (cutter.positionInPhrase(), WithinAbs (1.5, 1.0e-3));
     CHECK (cutter.blockEndUnits() > cutter.blockStartUnits());
+}
+
+TEST_CASE ("A halftime bar near the longest supported bar stays in the buffer and sounds", "[cutter]")
+{
+    CHECK (static_cast<int> (Procedure::bounce) == 3);
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    cutter.setProcedure (Procedure::bounce);
+    cutter.setFadeMilliseconds (0.0);
+    CutParameters params;
+    params.halftimeChance = 1.0;
+    params.ratchetChance = 0.0;
+    params.minPhraseBars = params.maxPhraseBars = 2;
+    cutter.setParameters (params);
+    Host host;
+    host.bpm = 31.0;
+    const auto barSamples = samplesPerBar (host);
+    REQUIRE (barSamples / sampleRate < Cutter::maxBarSeconds);
+
+    for (int done = 0; done < barSamples; done += 256)
+    {
+        Buffer buffer (std::min (256, barSamples - done));
+        std::fill (buffer.left.begin(), buffer.left.end(), 0.5f);
+        std::fill (buffer.right.begin(), buffer.right.end(), 0.5f);
+        run (cutter, host, buffer);
+
+        REQUIRE (cutter.isTimingSupported());
+        REQUIRE (cutter.isCutting());
+        REQUIRE (cutter.activeProcedure() == Procedure::bounce);
+        REQUIRE (cutter.currentCuts().size() == 1);
+        REQUIRE_THAT (cutter.blockStartUnits(), WithinAbs (0.0, 1.0e-9));
+        REQUIRE_THAT (cutter.currentCuts()[0].units, WithinAbs (8.0, 1.0e-9));
+        REQUIRE_THAT (cutter.currentCuts()[0].cents, WithinAbs (-1200.0, 1.0e-6));
+
+        for (std::size_t i = 0; i < buffer.left.size(); ++i)
+        {
+            if (done + static_cast<int> (i) < barSamples / 2)
+                continue;
+
+            REQUIRE (std::abs (buffer.left[i]) > 0.1f);
+            REQUIRE (std::abs (buffer.right[i]) > 0.1f);
+        }
+    }
 }

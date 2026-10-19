@@ -43,8 +43,8 @@ public:
     void setFadeSamples (int samples);
 
     // Starts a block. Sizes are rounded cumulatively, so they add up to the
-    // block's length in samples exactly. The first cut ignores its pitch
-    // because it plays the input live.
+    // block's length in samples exactly. The first cut plays the input live,
+    // so it honours only a pitch below the original.
     void startBlock (std::span<const Cut> cuts, double samplesPerUnit);
 
     // Records one input frame and replaces it with the output frame.

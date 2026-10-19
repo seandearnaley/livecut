@@ -9,6 +9,13 @@
 namespace livecut::engine
 {
 
+// Straight hits and triplet bounces, a ratchet roll that climbs to close each phrase, and the odd halftime bar.
+class Bounce final : public CutProcedure
+{
+public:
+    void chooseBlock (Random&, const CutParameters&, const BlockContext&, std::vector<Cut>&) override;
+};
+
 // Nick Collins' BBCutProc11: odd-length cuts, repeated, with a stutter roll near the end of each phrase.
 class CutProc11 final : public CutProcedure
 {
