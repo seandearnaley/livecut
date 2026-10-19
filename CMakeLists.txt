@@ -100,6 +100,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/RandomTests.cpp
         tests/engine/SQPusherTests.cpp
         tests/engine/WarpCutTests.cpp)
+    livecut_build_for_host_only(LivecutEngineTests)
     target_link_libraries(LivecutEngineTests
         PRIVATE
             LivecutEngine
