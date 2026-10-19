@@ -47,6 +47,8 @@ juce_add_plugin(Livecut
     NEEDS_MIDI_OUTPUT FALSE
     VST3_CATEGORIES Fx
     AU_MAIN_TYPE kAudioUnitType_Effect
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "Livecut cuts the audio coming into your Mac."
     COPY_PLUGIN_AFTER_BUILD ${LIVECUT_COPY_PLUGIN_AFTER_BUILD})
 
 target_compile_definitions(Livecut
