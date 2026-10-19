@@ -53,23 +53,27 @@ juce::StringArray subdivisionNames()
     return names;
 }
 
-const std::atomic<float>* raw (const juce::AudioProcessorValueTreeState& state, const char* id)
-{
-    const auto* value = state.getRawParameterValue (id);
-    jassert (value != nullptr);
-    return value;
-}
-
-float load (const std::atomic<float>* value)
-{
-    return value->load (std::memory_order_relaxed);
-}
-
-int loadIndex (const std::atomic<float>* value)
-{
-    return static_cast<int> (std::lround (load (value)));
-}
 } // namespace
+
+SettingsReader::Source::Source (const juce::AudioProcessorValueTreeState& state, const char* id)
+    : value (state.getRawParameterValue (id))
+{
+    const auto* parameter = state.getParameter (id);
+    jassert (value != nullptr && parameter != nullptr);
+    range = parameter->getNormalisableRange();
+    defaultValue = parameter->convertFrom0to1 (parameter->getDefaultValue());
+}
+
+float SettingsReader::Source::read() const
+{
+    const auto raw = value->load (std::memory_order_relaxed);
+    return std::isfinite (raw) ? range.snapToLegalValue (raw) : defaultValue;
+}
+
+int SettingsReader::Source::readIndex() const
+{
+    return static_cast<int> (std::lround (read()));
+}
 
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 {
@@ -114,85 +118,85 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 }
 
 SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
-    : procedure (raw (state, ids::procedure)),
-      subdivision (raw (state, ids::subdivision)),
-      seed (raw (state, ids::seed)),
-      minPhraseBars (raw (state, ids::minPhraseBars)),
-      maxPhraseBars (raw (state, ids::maxPhraseBars)),
-      fade (raw (state, ids::fade)),
-      minAmp (raw (state, ids::minAmp)),
-      maxAmp (raw (state, ids::maxAmp)),
-      minPan (raw (state, ids::minPan)),
-      maxPan (raw (state, ids::maxPan)),
-      minPitch (raw (state, ids::minPitch)),
-      maxPitch (raw (state, ids::maxPitch)),
-      duty (raw (state, ids::duty)),
-      fillDuty (raw (state, ids::fillDuty)),
-      minRepeats (raw (state, ids::minRepeats)),
-      maxRepeats (raw (state, ids::maxRepeats)),
-      stutterChance (raw (state, ids::stutterChance)),
-      stutterArea (raw (state, ids::stutterArea)),
-      straightChance (raw (state, ids::straightChance)),
-      regularChance (raw (state, ids::regularChance)),
-      ritardChance (raw (state, ids::ritardChance)),
-      accel (raw (state, ids::accel)),
-      activity (raw (state, ids::activity)),
-      crusher (raw (state, ids::crusher)),
-      minBits (raw (state, ids::minBits)),
-      maxBits (raw (state, ids::maxBits)),
-      minRate (raw (state, ids::minRate)),
-      maxRate (raw (state, ids::maxRate)),
-      comb (raw (state, ids::comb)),
-      combType (raw (state, ids::combType)),
-      combFeedback (raw (state, ids::combFeedback)),
-      minDelay (raw (state, ids::minDelay)),
-      maxDelay (raw (state, ids::maxDelay))
+    : procedure (state, ids::procedure),
+      subdivision (state, ids::subdivision),
+      seed (state, ids::seed),
+      minPhraseBars (state, ids::minPhraseBars),
+      maxPhraseBars (state, ids::maxPhraseBars),
+      fade (state, ids::fade),
+      minAmp (state, ids::minAmp),
+      maxAmp (state, ids::maxAmp),
+      minPan (state, ids::minPan),
+      maxPan (state, ids::maxPan),
+      minPitch (state, ids::minPitch),
+      maxPitch (state, ids::maxPitch),
+      duty (state, ids::duty),
+      fillDuty (state, ids::fillDuty),
+      minRepeats (state, ids::minRepeats),
+      maxRepeats (state, ids::maxRepeats),
+      stutterChance (state, ids::stutterChance),
+      stutterArea (state, ids::stutterArea),
+      straightChance (state, ids::straightChance),
+      regularChance (state, ids::regularChance),
+      ritardChance (state, ids::ritardChance),
+      accel (state, ids::accel),
+      activity (state, ids::activity),
+      crusher (state, ids::crusher),
+      minBits (state, ids::minBits),
+      maxBits (state, ids::maxBits),
+      minRate (state, ids::minRate),
+      maxRate (state, ids::maxRate),
+      comb (state, ids::comb),
+      combType (state, ids::combType),
+      combFeedback (state, ids::combFeedback),
+      minDelay (state, ids::minDelay),
+      maxDelay (state, ids::maxDelay)
 {
 }
 
 Settings SettingsReader::read() const
 {
     Settings settings;
-    settings.procedure = static_cast<engine::Procedure> (loadIndex (procedure));
-    settings.unitsPerBar = subdivisions[static_cast<std::size_t> (loadIndex (subdivision))];
-    settings.seed = static_cast<std::uint32_t> (loadIndex (seed));
-    settings.fadeMilliseconds = load (fade);
+    settings.procedure = static_cast<engine::Procedure> (procedure.readIndex());
+    settings.unitsPerBar = subdivisions[static_cast<std::size_t> (subdivision.readIndex())];
+    settings.seed = static_cast<std::uint32_t> (seed.readIndex());
+    settings.fadeMilliseconds = fade.read();
 
     auto& cut = settings.cut;
-    cut.minPhraseBars = loadIndex (minPhraseBars);
-    cut.maxPhraseBars = loadIndex (maxPhraseBars);
-    cut.minAmp = load (minAmp);
-    cut.maxAmp = load (maxAmp);
-    cut.minPan = load (minPan);
-    cut.maxPan = load (maxPan);
-    cut.minCents = load (minPitch);
-    cut.maxCents = load (maxPitch);
-    cut.dutyCycle = load (duty);
-    cut.fillDutyCycle = load (fillDuty);
-    cut.minRepeats = loadIndex (minRepeats);
-    cut.maxRepeats = loadIndex (maxRepeats);
-    cut.stutterChance = load (stutterChance);
-    cut.stutterArea = load (stutterArea);
-    cut.straightChance = load (straightChance);
-    cut.regularChance = load (regularChance);
-    cut.ritardChance = load (ritardChance);
-    cut.accel = load (accel);
-    cut.activity = load (activity);
+    cut.minPhraseBars = minPhraseBars.readIndex();
+    cut.maxPhraseBars = maxPhraseBars.readIndex();
+    cut.minAmp = minAmp.read();
+    cut.maxAmp = maxAmp.read();
+    cut.minPan = minPan.read();
+    cut.maxPan = maxPan.read();
+    cut.minCents = minPitch.read();
+    cut.maxCents = maxPitch.read();
+    cut.dutyCycle = duty.read();
+    cut.fillDutyCycle = fillDuty.read();
+    cut.minRepeats = minRepeats.readIndex();
+    cut.maxRepeats = maxRepeats.readIndex();
+    cut.stutterChance = stutterChance.read();
+    cut.stutterArea = stutterArea.read();
+    cut.straightChance = straightChance.read();
+    cut.regularChance = regularChance.read();
+    cut.ritardChance = ritardChance.read();
+    cut.accel = accel.read();
+    cut.activity = activity.read();
 
     auto& crusherSettings = settings.crusher;
-    crusherSettings.enabled = load (crusher) > 0.5f;
-    crusherSettings.minBits = load (minBits);
-    crusherSettings.maxBits = load (maxBits);
-    crusherSettings.minHz = load (minRate);
-    crusherSettings.maxHz = load (maxRate);
+    crusherSettings.enabled = crusher.read() > 0.5f;
+    crusherSettings.minBits = minBits.read();
+    crusherSettings.maxBits = maxBits.read();
+    crusherSettings.minHz = minRate.read();
+    crusherSettings.maxHz = maxRate.read();
 
     auto& combSettings = settings.comb;
-    combSettings.enabled = load (comb) > 0.5f;
-    combSettings.type = loadIndex (combType) == 0 ? engine::CombParameters::Type::feedForward
+    combSettings.enabled = comb.read() > 0.5f;
+    combSettings.type = combType.readIndex() == 0 ? engine::CombParameters::Type::feedForward
                                                   : engine::CombParameters::Type::feedBack;
-    combSettings.feedback = load (combFeedback);
-    combSettings.minDelayMs = load (minDelay);
-    combSettings.maxDelayMs = load (maxDelay);
+    combSettings.feedback = combFeedback.read();
+    combSettings.minDelayMs = minDelay.read();
+    combSettings.maxDelayMs = maxDelay.read();
     return settings;
 }
 

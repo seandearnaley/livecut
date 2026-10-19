@@ -7,6 +7,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <array>
+#include <limits>
 
 using namespace livecut;
 using Catch::Matchers::WithinAbs;
@@ -143,4 +144,26 @@ TEST_CASE ("Skewed ranges centre where the original plugin did", "[parameters]")
 
     CHECK_THAT (parameter (state, ids::fade).convertFrom0to1 (0.5f), WithinAbs (5.0, 1.0e-3));
     CHECK_THAT (parameter (state, ids::minRate).convertFrom0to1 (0.5f), WithinAbs (4410.0, 1.0));
+}
+
+// Saved projects and hosts are untrusted: a NaN or out-of-range value must not
+// reach the engine, where it could index past a table or a delay line.
+TEST_CASE ("Settings stay usable when a parameter holds an invalid value", "[parameters]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+
+    state.getRawParameterValue (ids::subdivision)->store (std::numeric_limits<float>::quiet_NaN());
+    state.getRawParameterValue (ids::procedure)->store (99.0f);
+    state.getRawParameterValue (ids::minDelay)->store (std::numeric_limits<float>::infinity());
+    state.getRawParameterValue (ids::maxDelay)->store (-5.0f);
+    state.getRawParameterValue (ids::maxRepeats)->store (std::numeric_limits<float>::quiet_NaN());
+
+    const auto settings = SettingsReader (state).read();
+
+    CHECK (settings.unitsPerBar == 8); // the default
+    CHECK (settings.procedure == engine::Procedure::sqPusher);
+    CHECK_THAT (settings.comb.minDelayMs, WithinAbs (10.0, 1.0e-6));
+    CHECK_THAT (settings.comb.maxDelayMs, WithinAbs (1.0, 1.0e-6));
+    CHECK (settings.cut.maxRepeats == 1);
 }

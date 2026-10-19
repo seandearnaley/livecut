@@ -68,7 +68,10 @@ struct Settings
 };
 
 // Reads every parameter's current value. It caches each parameter's atomic
-// value when constructed, so read() is lock- and allocation-free on the audio thread.
+// value and range when constructed, so read() is lock- and allocation-free on
+// the audio thread. Values come from saved projects and hosts, so each is
+// checked: a non-finite value reads as the parameter's default, and any other
+// value is clamped to the parameter's range.
 class SettingsReader
 {
 public:
@@ -77,39 +80,51 @@ public:
     Settings read() const;
 
 private:
-    const std::atomic<float>* procedure;
-    const std::atomic<float>* subdivision;
-    const std::atomic<float>* seed;
-    const std::atomic<float>* minPhraseBars;
-    const std::atomic<float>* maxPhraseBars;
-    const std::atomic<float>* fade;
-    const std::atomic<float>* minAmp;
-    const std::atomic<float>* maxAmp;
-    const std::atomic<float>* minPan;
-    const std::atomic<float>* maxPan;
-    const std::atomic<float>* minPitch;
-    const std::atomic<float>* maxPitch;
-    const std::atomic<float>* duty;
-    const std::atomic<float>* fillDuty;
-    const std::atomic<float>* minRepeats;
-    const std::atomic<float>* maxRepeats;
-    const std::atomic<float>* stutterChance;
-    const std::atomic<float>* stutterArea;
-    const std::atomic<float>* straightChance;
-    const std::atomic<float>* regularChance;
-    const std::atomic<float>* ritardChance;
-    const std::atomic<float>* accel;
-    const std::atomic<float>* activity;
-    const std::atomic<float>* crusher;
-    const std::atomic<float>* minBits;
-    const std::atomic<float>* maxBits;
-    const std::atomic<float>* minRate;
-    const std::atomic<float>* maxRate;
-    const std::atomic<float>* comb;
-    const std::atomic<float>* combType;
-    const std::atomic<float>* combFeedback;
-    const std::atomic<float>* minDelay;
-    const std::atomic<float>* maxDelay;
+    struct Source
+    {
+        Source (const juce::AudioProcessorValueTreeState& state, const char* id);
+
+        float read() const;
+        int readIndex() const;
+
+        const std::atomic<float>* value;
+        juce::NormalisableRange<float> range;
+        float defaultValue;
+    };
+
+    Source procedure;
+    Source subdivision;
+    Source seed;
+    Source minPhraseBars;
+    Source maxPhraseBars;
+    Source fade;
+    Source minAmp;
+    Source maxAmp;
+    Source minPan;
+    Source maxPan;
+    Source minPitch;
+    Source maxPitch;
+    Source duty;
+    Source fillDuty;
+    Source minRepeats;
+    Source maxRepeats;
+    Source stutterChance;
+    Source stutterArea;
+    Source straightChance;
+    Source regularChance;
+    Source ritardChance;
+    Source accel;
+    Source activity;
+    Source crusher;
+    Source minBits;
+    Source maxBits;
+    Source minRate;
+    Source maxRate;
+    Source comb;
+    Source combType;
+    Source combFeedback;
+    Source minDelay;
+    Source maxDelay;
 };
 
 void applySettings (engine::Cutter& cutter, const Settings& settings);
