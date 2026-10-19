@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include "Parameters.h"
+#include "engine/Cutter.h"
+
 #include <juce_audio_processors/juce_audio_processors.h>
 
 class LivecutAudioProcessor final : public juce::AudioProcessor
@@ -33,6 +36,13 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
+    juce::AudioProcessorValueTreeState& getParameterState() { return parameters; }
+    const livecut::engine::Cutter& getCutter() const { return cutter; }
+
 private:
+    juce::AudioProcessorValueTreeState parameters;
+    livecut::SettingsReader settingsReader;
+    livecut::engine::Cutter cutter;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivecutAudioProcessor)
 };

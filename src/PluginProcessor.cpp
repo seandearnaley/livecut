@@ -2,14 +2,21 @@
 
 #include "PluginProcessor.h"
 
+#include "HostSync.h"
+
 LivecutAudioProcessor::LivecutAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
+                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+      parameters (*this, nullptr, "Livecut", livecut::createParameterLayout()),
+      settingsReader (parameters)
 {
 }
 
-void LivecutAudioProcessor::prepareToPlay (double, int) {}
+void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
+{
+    cutter.prepare (sampleRate);
+}
 
 void LivecutAudioProcessor::releaseResources() {}
 
@@ -20,10 +27,23 @@ bool LivecutAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) 
         && layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
 }
 
-void LivecutAudioProcessor::processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&)
+void LivecutAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
-    // The buffer is processed in place and the layout is stereo-to-stereo,
-    // so leaving it untouched is a pass-through until the cutting engine lands.
+    juce::ScopedNoDenormals noDenormals;
+    livecut::applySettings (cutter, settingsReader.read());
+
+    const auto* playHead = getPlayHead();
+    const auto position = playHead != nullptr ? playHead->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo> {};
+    const auto sync = position ? livecut::hostSync (*position) : std::nullopt;
+
+    // Cutting follows the host's bars, so without a running transport the input passes through.
+    if (! sync)
+    {
+        cutter.reset();
+        return;
+    }
+
+    cutter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), sync->timing, sync->position);
 }
 
 juce::AudioProcessorEditor* LivecutAudioProcessor::createEditor()
@@ -36,7 +56,8 @@ bool LivecutAudioProcessor::hasEditor() const { return true; }
 const juce::String LivecutAudioProcessor::getName() const { return JucePlugin_Name; }
 bool LivecutAudioProcessor::acceptsMidi() const { return false; }
 bool LivecutAudioProcessor::producesMidi() const { return false; }
-double LivecutAudioProcessor::getTailLengthSeconds() const { return 0.0; }
+// Cuts can replay up to a bar of input after the input itself has gone quiet.
+double LivecutAudioProcessor::getTailLengthSeconds() const { return livecut::engine::Cutter::maxBarSeconds; }
 
 // Some hosts misbehave when a plugin reports zero programs, so expose exactly one.
 int LivecutAudioProcessor::getNumPrograms() { return 1; }
@@ -45,9 +66,20 @@ void LivecutAudioProcessor::setCurrentProgram (int) {}
 const juce::String LivecutAudioProcessor::getProgramName (int) { return "Default"; }
 void LivecutAudioProcessor::changeProgramName (int, const juce::String&) {}
 
-// There are no parameters yet; state arrives with the parameter layout.
-void LivecutAudioProcessor::getStateInformation (juce::MemoryBlock&) {}
-void LivecutAudioProcessor::setStateInformation (const void*, int) {}
+void LivecutAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+{
+    if (const auto xml = parameters.copyState().createXml())
+        copyXmlToBinary (*xml, destData);
+}
+
+void LivecutAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
+{
+    // State that isn't ours, or isn't readable, leaves the current settings as they are.
+    const auto xml = getXmlFromBinary (data, sizeInBytes);
+
+    if (xml != nullptr && xml->hasTagName (parameters.state.getType()))
+        parameters.replaceState (juce::ValueTree::fromXml (*xml));
+}
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {

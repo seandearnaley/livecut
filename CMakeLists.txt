@@ -60,10 +60,14 @@ target_compile_definitions(Livecut
 add_library(LivecutCode INTERFACE)
 target_sources(LivecutCode
     INTERFACE
+        src/HostSync.cpp
+        src/HostSync.h
+        src/Parameters.cpp
+        src/Parameters.h
         src/PluginProcessor.cpp
         src/PluginProcessor.h)
 target_include_directories(LivecutCode INTERFACE src)
-target_link_libraries(LivecutCode INTERFACE juce::juce_audio_utils)
+target_link_libraries(LivecutCode INTERFACE LivecutEngine juce::juce_audio_utils)
 
 target_link_libraries(Livecut
     PRIVATE
@@ -86,7 +90,10 @@ if(LIVECUT_BUILD_TESTS)
         endif()
     endfunction()
 
-    add_executable(LivecutTests tests/PluginProcessorTests.cpp)
+    add_executable(LivecutTests
+        tests/HostSyncTests.cpp
+        tests/ParametersTests.cpp
+        tests/PluginProcessorTests.cpp)
     livecut_build_for_host_only(LivecutTests)
     # The JucePlugin_* definitions only exist on the plugin target, so copy them.
     target_compile_definitions(LivecutTests PRIVATE $<TARGET_PROPERTY:Livecut,COMPILE_DEFINITIONS>)
