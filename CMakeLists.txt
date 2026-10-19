@@ -19,6 +19,7 @@ add_subdirectory(libs/JUCE)
 # The cutting engine is plain C++ with no JUCE dependency, so it can be tested in isolation.
 add_library(LivecutEngine STATIC
     src/engine/CutProc11.cpp
+    src/engine/LivePlayer.cpp
     src/engine/Random.cpp
     src/engine/SQPusher.cpp
     src/engine/WarpCut.cpp)
@@ -97,6 +98,7 @@ if(LIVECUT_BUILD_TESTS)
 
     add_executable(LivecutEngineTests
         tests/engine/CutProc11Tests.cpp
+        tests/engine/LivePlayerTests.cpp
         tests/engine/RandomTests.cpp
         tests/engine/SQPusherTests.cpp
         tests/engine/WarpCutTests.cpp)
