@@ -56,6 +56,9 @@ public:
 
     std::span<const PlayingCut> cuts() const { return playing; }
 
+    // Index of the cut playing next; cuts().size() once the block has run out.
+    std::size_t currentCut() const { return current; }
+
 private:
     int playableFor (const PlayingCut& cut, int soundingLength) const;
     void skipFinishedCuts();

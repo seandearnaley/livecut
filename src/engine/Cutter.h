@@ -3,6 +3,7 @@
 #pragma once
 
 #include "engine/CutProcedures.h"
+#include "engine/Effects.h"
 #include "engine/LivePlayer.h"
 
 #include <cstdint>
@@ -54,6 +55,10 @@ public:
     // Takes effect from the next block.
     void setParameters (const CutParameters& parameters);
 
+    // Take effect from the next block.
+    void setCrusher (const CrusherParameters& parameters);
+    void setComb (const CombParameters& parameters);
+
     // Takes effect from the next phrase.
     void setSeed (std::uint32_t seed);
 
@@ -74,12 +79,15 @@ public:
     double blockStartUnits() const { return blockStart; } // within the phrase
     std::span<const Cut> currentCuts() const { return cuts; }
     const LivePlayer& player() const { return livePlayer; }
+    const BitCrusher& crusher() const { return bitCrusher; }
+    const Comb& comb() const { return combFilter; }
 
 private:
     CutProcedure& procedureFor (Procedure p);
     double samplesPerUnit (const Timing& timing) const;
     void startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timing);
     void startBlock (const Timing& timing);
+    void startEffectsCut();
     void applyStructuralChanges();
 
     double sampleRate = 48000.0;
@@ -88,7 +96,12 @@ private:
     SQPusher sqPusher;
     Random random;
     LivePlayer livePlayer;
+    BitCrusher bitCrusher;
+    Comb combFilter;
     CutParameters params;
+    CrusherParameters crusherParams;
+    CombParameters combParams;
+    std::size_t effectsCut = 0; // the cut the effects were last set for
     std::vector<Cut> cuts;
 
     Procedure procedure = Procedure::cutProc11;

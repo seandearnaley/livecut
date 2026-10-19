@@ -20,6 +20,7 @@ add_subdirectory(libs/JUCE)
 add_library(LivecutEngine STATIC
     src/engine/CutProc11.cpp
     src/engine/Cutter.cpp
+    src/engine/Effects.cpp
     src/engine/LivePlayer.cpp
     src/engine/PhraseSeed.cpp
     src/engine/Random.cpp
@@ -102,6 +103,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/AllocationCounter.cpp
         tests/engine/CutProc11Tests.cpp
         tests/engine/CutterTests.cpp
+        tests/engine/EffectsTests.cpp
         tests/engine/LivePlayerTests.cpp
         tests/engine/PhraseSeedTests.cpp
         tests/engine/RandomTests.cpp

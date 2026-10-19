@@ -27,6 +27,8 @@ void Cutter::prepare (double newSampleRate)
 {
     sampleRate = newSampleRate;
     livePlayer.prepare (static_cast<int> (std::ceil (maxBarSeconds * sampleRate)));
+    bitCrusher.prepare (sampleRate);
+    combFilter.prepare (sampleRate);
     setFadeMilliseconds (fadeMilliseconds);
     reset();
 }
@@ -45,6 +47,16 @@ void Cutter::setUnitsPerBar (int newUnitsPerBar)
 void Cutter::setParameters (const CutParameters& newParameters)
 {
     params = newParameters;
+}
+
+void Cutter::setCrusher (const CrusherParameters& parameters)
+{
+    crusherParams = parameters;
+}
+
+void Cutter::setComb (const CombParameters& parameters)
+{
+    combParams = parameters;
 }
 
 void Cutter::setSeed (std::uint32_t newSeed)
@@ -91,7 +103,13 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
     }
 
     if (cutting)
+    {
         livePlayer.setSamplesPerUnit (samplesPerUnit (timing));
+
+        // Re-timing can finish a cut early; set the effects up for the one now playing.
+        if (livePlayer.currentCut() != effectsCut)
+            startEffectsCut();
+    }
 
     const auto beatsPerSample = timing.bpm / 60.0 / sampleRate;
     const auto halfSampleBeats = 0.5 * beatsPerSample;
@@ -145,7 +163,34 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
         }
 
         if (cutting)
+        {
             livePlayer.process (left[i], right[i]);
+
+            // The effects always run, so switching one on picks up a current
+            // delay line and hold rather than stale audio.
+            auto crushedLeft = left[i];
+            auto crushedRight = right[i];
+            bitCrusher.process (crushedLeft, crushedRight);
+
+            if (crusherParams.enabled)
+            {
+                left[i] = crushedLeft;
+                right[i] = crushedRight;
+            }
+
+            auto combedLeft = left[i];
+            auto combedRight = right[i];
+            combFilter.process (combedLeft, combedRight);
+
+            if (combParams.enabled)
+            {
+                left[i] = combedLeft;
+                right[i] = combedRight;
+            }
+
+            if (livePlayer.currentCut() != effectsCut)
+                startEffectsCut();
+        }
 
         beats += beatsPerSample;
     }
@@ -219,6 +264,31 @@ void Cutter::startBlock (const Timing& timing)
     blockEnd = blockStart + totalUnits (cuts);
 
     livePlayer.startBlock (cuts, samplesPerUnit (timing));
+
+    // The effects get their settings before the block's first cut starts. They
+    // are drawn whether or not an effect is on, so toggling one never changes the cuts.
+    const auto startBits = random.uniform (crusherParams.minBits, crusherParams.maxBits);
+    const auto endBits = random.uniform (crusherParams.minBits, crusherParams.maxBits);
+    const auto startHz = random.uniform (crusherParams.minHz, crusherParams.maxHz);
+    const auto endHz = random.uniform (crusherParams.minHz, crusherParams.maxHz);
+    const auto startMs = random.uniform (combParams.minDelayMs, combParams.maxDelayMs);
+    const auto endMs = random.uniform (combParams.minDelayMs, combParams.maxDelayMs);
+    bitCrusher.setBlock (startBits, endBits, startHz, endHz);
+    combFilter.setBlock (combParams, startMs, endMs);
+    startEffectsCut();
+}
+
+void Cutter::startEffectsCut()
+{
+    // Set up the effects for the cut that plays next, so their state always
+    // matches it. Once a block's cuts run out they keep the last cut's settings.
+    effectsCut = livePlayer.currentCut();
+
+    if (effectsCut < livePlayer.cuts().size())
+    {
+        bitCrusher.startCut (effectsCut, livePlayer.cuts().size());
+        combFilter.startCut (effectsCut, livePlayer.cuts().size());
+    }
 }
 
 } // namespace livecut::engine
