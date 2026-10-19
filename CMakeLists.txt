@@ -18,7 +18,10 @@ add_subdirectory(libs/JUCE)
 
 # The cutting engine is plain C++ with no JUCE dependency, so it can be tested in isolation.
 add_library(LivecutEngine STATIC
-    src/engine/Random.cpp)
+    src/engine/CutProc11.cpp
+    src/engine/Random.cpp
+    src/engine/SQPusher.cpp
+    src/engine/WarpCut.cpp)
 target_include_directories(LivecutEngine PUBLIC src)
 target_compile_features(LivecutEngine PUBLIC cxx_std_20)
 target_link_libraries(LivecutEngine
@@ -93,7 +96,10 @@ if(LIVECUT_BUILD_TESTS)
     catch_discover_tests(LivecutTests DISCOVERY_MODE PRE_TEST)
 
     add_executable(LivecutEngineTests
-        tests/engine/RandomTests.cpp)
+        tests/engine/CutProc11Tests.cpp
+        tests/engine/RandomTests.cpp
+        tests/engine/SQPusherTests.cpp
+        tests/engine/WarpCutTests.cpp)
     target_link_libraries(LivecutEngineTests
         PRIVATE
             LivecutEngine
