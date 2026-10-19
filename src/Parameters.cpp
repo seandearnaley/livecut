@@ -188,6 +188,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 number (ids::combFeedback, "Comb Feedback", FloatRange (0.0f, 0.9f), 0.5f, percent()),
                 number (ids::minDelay, "Min Delay", FloatRange (1.0f, 50.0f), 10.0f, decimals (1, "ms")),
                 number (ids::maxDelay, "Max Delay", FloatRange (1.0f, 50.0f), 10.0f, decimals (1, "ms")),
+                // Added in 0.2.0; parameters added in later releases need higher version hints so hosts (AU in particular) keep parameter order stable.
                 number (ids::bounceChance, "Bounce", FloatRange (0.0f, 1.0f), 0.4f, percent(), 2),
                 number (ids::ratchetChance, "Ratchet", FloatRange (0.0f, 1.0f), 0.7f, percent(), 2),
                 integer (ids::climb, "Climb", 0, 12, 7, "", 2, semitones()),

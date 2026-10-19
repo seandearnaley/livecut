@@ -124,6 +124,7 @@ public:
         warpCutControls.setVisible (activeProcedure == 1);
         sqPusherControls.setVisible (activeProcedure == 2);
         bounceControls.setVisible (activeProcedure == 3);
+        pitch.setAlpha (activeProcedure == static_cast<int> (livecut::engine::Procedure::bounce) ? 0.5f : 1.0f);
         repaint();
     }
 

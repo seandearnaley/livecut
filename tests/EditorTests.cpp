@@ -180,6 +180,10 @@ TEST_CASE ("Only the active procedure's controls are shown", "[editor]")
     CHECK_FALSE (shows (livecut::ids::activity));
     CHECK_FALSE (shows (livecut::ids::bounceChance));
 
+    auto* pitch = findById (editor, "minPitch,maxPitch");
+    REQUIRE (pitch != nullptr);
+    CHECK_THAT (pitch->getAlpha(), WithinAbs (1.0, 1.0 / 255.0));
+
     auto* procedure = state.getParameter (livecut::ids::procedure);
     procedure->setValueNotifyingHost (procedure->convertTo0to1 (1.0f)); // WarpCut
 
@@ -195,10 +199,12 @@ TEST_CASE ("Only the active procedure's controls are shown", "[editor]")
     for (const auto* id : { livecut::ids::bounceChance, livecut::ids::ratchetChance,
                            livecut::ids::climb, livecut::ids::halftimeChance })
         CHECK (shows (id));
+    CHECK_THAT (pitch->getAlpha(), WithinAbs (0.5, 1.0 / 255.0));
 
     procedure->setValueNotifyingHost (procedure->convertTo0to1 (0.0f)); // CutProc11
     CHECK (shows (livecut::ids::stutterChance));
     CHECK_FALSE (shows (livecut::ids::bounceChance));
+    CHECK_THAT (pitch->getAlpha(), WithinAbs (1.0, 1.0 / 255.0));
 }
 
 TEST_CASE ("The status line says how to start cutting", "[editor]")
