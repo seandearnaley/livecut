@@ -1,0 +1,8 @@
+[submodule "libs/JUCE"]
+	path = libs/JUCE
+	url = https://github.com/juce-framework/JUCE
+	shallow = true
+[submodule "libs/Catch2"]
+	path = libs/Catch2
+	url = https://github.com/catchorg/Catch2
+	shallow = true
