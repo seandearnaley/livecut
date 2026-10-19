@@ -16,6 +16,10 @@ class CutProcedure
 public:
     virtual ~CutProcedure() = default;
 
+    // Forgets any state carried between blocks, for when the cutter switches
+    // to this procedure part way through a phrase.
+    virtual void reset() {}
+
     // Called at the start of every phrase.
     virtual int choosePhraseBars (Random& random, const CutParameters& params)
     {
