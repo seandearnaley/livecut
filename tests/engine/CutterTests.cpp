@@ -520,3 +520,17 @@ TEST_CASE ("An enabled crusher quantises the cut audio", "[cutter][effects]")
     for (const auto sample : buffer.left)
         REQUIRE_THAT (std::fmod (std::abs (sample) + 1.0e-6, 0.5), WithinAbs (0.0, 1.0e-4));
 }
+
+TEST_CASE ("The cutter reports where it is in the phrase", "[cutter]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+
+    runSamples (cutter, host, 18000); // 1.5 units at 8 units per bar and 120 BPM
+
+    REQUIRE (cutter.isCutting());
+    CHECK (cutter.phraseBarCount() >= 1);
+    CHECK_THAT (cutter.positionInPhrase(), WithinAbs (1.5, 1.0e-3));
+    CHECK (cutter.blockEndUnits() > cutter.blockStartUnits());
+}

@@ -77,6 +77,9 @@ public:
     int activeUnitsPerBar() const { return unitsPerBar; }
     std::int64_t phraseStartBar() const { return phraseBar; }
     double blockStartUnits() const { return blockStart; } // within the phrase
+    double blockEndUnits() const { return blockEnd; }
+    int phraseBarCount() const { return phraseBars; }
+    double positionInPhrase() const { return phrasePosition; } // units, at the end of the last buffer
     std::span<const Cut> currentCuts() const { return cuts; }
     const LivePlayer& player() const { return livePlayer; }
     const BitCrusher& crusher() const { return bitCrusher; }
@@ -121,6 +124,7 @@ private:
     int phraseBars = 0;
     double blockStart = 0.0;
     double blockEnd = 0.0;
+    double phrasePosition = 0.0;
 };
 
 } // namespace livecut::engine

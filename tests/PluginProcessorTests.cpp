@@ -206,3 +206,51 @@ TEST_CASE ("Processor state restores every parameter", "[processor][state]")
     }
 
 }
+
+TEST_CASE ("The display says the host isn't playing", "[processor][display]")
+{
+    LivecutAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+    juce::AudioBuffer<float> buffer (2, 512);
+    juce::MidiBuffer midi;
+
+    processor.processBlock (buffer, midi);
+
+    CHECK (processor.getDisplayState().status.load() == livecut::DisplayState::Status::waitingForHost);
+}
+
+TEST_CASE ("The display follows the phrase while cutting", "[processor][display]")
+{
+    LivecutAudioProcessor processor;
+    TestPlayHead playHead;
+    playFromBarOne (playHead);
+    processor.setPlayHead (&playHead);
+    processor.prepareToPlay (48000.0, 512);
+    juce::AudioBuffer<float> buffer (2, 512);
+    juce::MidiBuffer midi;
+
+    processor.processBlock (buffer, midi);
+
+    const auto& display = processor.getDisplayState();
+    CHECK (display.status.load() == livecut::DisplayState::Status::cutting);
+    CHECK (display.phraseBars.load() >= 1);
+    CHECK (display.unitsPerBar.load() == 8);
+    CHECK (display.blockEnd.load() > display.blockStart.load());
+    CHECK (display.position.load() > 0.0);
+}
+
+TEST_CASE ("The display says when a bar is too long to cut", "[processor][display]")
+{
+    LivecutAudioProcessor processor;
+    TestPlayHead playHead;
+    playFromBarOne (playHead);
+    playHead.info.setBpm (20.0);
+    processor.setPlayHead (&playHead);
+    processor.prepareToPlay (48000.0, 512);
+    juce::AudioBuffer<float> buffer (2, 512);
+    juce::MidiBuffer midi;
+
+    processor.processBlock (buffer, midi);
+
+    CHECK (processor.getDisplayState().status.load() == livecut::DisplayState::Status::barTooLong);
+}

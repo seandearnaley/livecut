@@ -204,6 +204,9 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
     havePosition = true;
     expectedBar = bar;
     expectedBeatsIntoBar = beats;
+
+    if (cutting)
+        phrasePosition = static_cast<double> ((bar - phraseBar) * unitsPerBar) + beats * unitsPerBar / timing.beatsPerBar;
 }
 
 double Cutter::samplesPerUnit (const Timing& timing) const
