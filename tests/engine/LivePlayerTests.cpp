@@ -6,6 +6,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
+#include <limits>
 #include <vector>
 
 using namespace livecut::engine;
@@ -192,7 +193,27 @@ TEST_CASE ("A pitched cut ends, faded, before it reads unrecorded audio", "[play
     }
 }
 
-TEST_CASE ("The first cut of a block ignores its pitch", "[player]")
+TEST_CASE ("A first cut pitched down plays the input slower as it arrives", "[player]")
+{
+    LivePlayer player;
+    player.prepare (1000);
+    player.setFadeSamples (1);
+    const std::vector cuts { makeCut (1.0, 1.0, 0.0f, 1.0f, -1200.0f) };
+    player.startBlock (cuts, 100.0);
+
+    REQUIRE (player.cuts()[0].pitched);
+    REQUIRE_THAT (player.cuts()[0].rate, WithinAbs (0.5, 1.0e-12));
+    REQUIRE (player.cuts()[0].playable == 100);
+    const auto output = play (player, 100);
+
+    for (int t = 0; t < 100; ++t)
+    {
+        const auto expected = 0.001f * (0.5f * static_cast<float> (t) + 1.0f) * fadeEnvelope (t, 1, 100);
+        REQUIRE_THAT (output.left[static_cast<std::size_t> (t)], WithinAbs (expected, 1.0e-6));
+    }
+}
+
+TEST_CASE ("The first cut of a block ignores a pitch above the original", "[player]")
 {
     LivePlayer player;
     player.prepare (1000);
@@ -203,6 +224,61 @@ TEST_CASE ("The first cut of a block ignores its pitch", "[player]")
     CHECK_FALSE (player.cuts()[0].pitched);
     const auto output = play (player, 100);
     CHECK_THAT (output.left[60], WithinAbs (inputLeft (60) * fadeEnvelope (60, 1, 100), 1.0e-6));
+}
+
+TEST_CASE ("A tempo change keeps a pitched-down first cut sounding", "[player]")
+{
+    LivePlayer player;
+    player.prepare (1000);
+    player.setFadeSamples (1);
+    const std::vector cuts { makeCut (1.0, 1.0, 0.0f, 1.0f, -1200.0f) };
+    player.startBlock (cuts, 100.0);
+    play (player, 30);
+
+    player.setSamplesPerUnit (150.0);
+
+    REQUIRE (player.cuts()[0].pitched);
+    REQUIRE (player.cuts()[0].playable == 135);
+    REQUIRE (player.cuts()[0].size == 135);
+    const auto output = play (player, 135);
+    REQUIRE (std::abs (output.left[103]) > 1.0e-6);
+}
+
+TEST_CASE ("A pitched-down first cut reads only recorded audio at its first sample", "[player]")
+{
+    LivePlayer player;
+    player.prepare (1000);
+    player.setFadeSamples (1);
+
+    // Leave stale audio at index 1: even multiplying it by zero would spread a NaN.
+    for (int t = 0; t < 2; ++t)
+    {
+        auto left = std::numeric_limits<float>::quiet_NaN();
+        auto right = std::numeric_limits<float>::quiet_NaN();
+        player.process (left, right);
+    }
+
+    auto gate = 1.0;
+    auto playable = 100;
+
+    SECTION ("The whole cut sounds")
+    {
+        gate = 1.0;
+        playable = 100;
+    }
+    SECTION ("A one-sample gate still has a playable first sample")
+    {
+        gate = 0.01;
+        playable = 1;
+    }
+
+    const std::vector cuts { makeCut (1.0, gate, 0.0f, 1.0f, -1200.0f) };
+    player.startBlock (cuts, 100.0);
+
+    REQUIRE (player.cuts()[0].playable == playable);
+    const auto output = play (player, 1);
+    REQUIRE_THAT (output.left[0], WithinAbs (0.0, 1.0e-6));
+    REQUIRE_THAT (output.right[0], WithinAbs (0.0, 1.0e-6));
 }
 
 TEST_CASE ("A block is silent once its cuts run out", "[player]")

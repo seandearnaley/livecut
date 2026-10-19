@@ -69,6 +69,10 @@ void LivePlayer::setFadeSamples (int samples)
 
 int LivePlayer::playableFor (const PlayingCut& cut, int soundingLength) const
 {
+    // A live cut reading slower than the recording never catches up with it.
+    if (cut.pitched && cut.start == 0 && cut.rate < 1.0)
+        return soundingLength;
+
     return cut.pitched ? playableSamples (soundingLength, cut.rate, std::min (cut.start, capacity), capacity)
                        : soundingLength;
 }
@@ -100,7 +104,7 @@ void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit
             playingCut.size = size;
             playingCut.units = cut.units;
             playingCut.gate = cut.gate;
-            playingCut.pitched = i > 0 && std::abs (cut.cents) > 1.0e-3f;
+            playingCut.pitched = std::abs (cut.cents) > 1.0e-3f && (i > 0 || cut.cents < 0.0f);
             playingCut.rate = playingCut.pitched ? std::pow (2.0, cut.cents / 1200.0) : 1.0;
             playingCut.playable = playableFor (playingCut, std::min (static_cast<int> (std::lround (size * cut.gate)), size));
 
@@ -204,8 +208,15 @@ void LivePlayer::process (float& left, float& right)
             const auto read = static_cast<double> (position) * cut.rate;
             const auto index = static_cast<std::size_t> (read);
             const auto fraction = static_cast<float> (read - static_cast<double> (index));
-            inLeft = recordedLeft[index] + fraction * (recordedLeft[index + 1] - recordedLeft[index]);
-            inRight = recordedRight[index] + fraction * (recordedRight[index + 1] - recordedRight[index]);
+            inLeft = recordedLeft[index];
+            inRight = recordedRight[index];
+
+            // At the first live sample, only index has been recorded.
+            if (fraction > 0.0f)
+            {
+                inLeft += fraction * (recordedLeft[index + 1] - recordedLeft[index]);
+                inRight += fraction * (recordedRight[index + 1] - recordedRight[index]);
+            }
         }
         else
         {
