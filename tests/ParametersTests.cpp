@@ -167,3 +167,54 @@ TEST_CASE ("Settings stay usable when a parameter holds an invalid value", "[par
     CHECK_THAT (settings.comb.maxDelayMs, WithinAbs (1.0, 1.0e-6));
     CHECK (settings.cut.maxRepeats == 1);
 }
+
+// Livecut printed raw floats; JUCE's default text has seven decimal places.
+TEST_CASE ("Parameter values read naturally in hosts", "[parameters]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    auto text = [&] (const char* id, float value)
+    {
+        auto& p = parameter (state, id);
+        return p.getText (p.convertTo0to1 (value), 32);
+    };
+
+    CHECK (text (ids::stutterChance, 0.8f) == "80%");
+    CHECK (text (ids::maxAmp, 1.0f) == "100%");
+    CHECK (text (ids::combFeedback, 0.5f) == "50%");
+    CHECK (text (ids::minPan, -0.2f) == "20L");
+    CHECK (text (ids::minPan, 0.0f) == "C");
+    CHECK (text (ids::maxPan, 0.2f) == "20R");
+    CHECK (text (ids::minPitch, 300.0f) == "+300");
+    CHECK (text (ids::minPitch, -1200.0f) == "-1200");
+    CHECK (text (ids::minPitch, 0.0f) == "0");
+    CHECK (text (ids::fade, 5.0f) == "5.0");
+    CHECK (text (ids::maxDelay, 10.0f) == "10.0");
+    CHECK (text (ids::minRate, 4410.0f) == "4.41");
+    CHECK (text (ids::minRate, 44100.0f) == "44.1");
+    CHECK (text (ids::maxRate, 192000.0f) == "192");
+    CHECK (text (ids::maxBits, 32.0f) == "32.0");
+    CHECK (text (ids::accel, 0.9f) == "0.90");
+
+    CHECK (parameter (state, ids::minRate).getLabel() == "kHz");
+    CHECK (parameter (state, ids::minPitch).getLabel() == "cents");
+    CHECK (parameter (state, ids::stutterChance).getLabel().isEmpty());
+}
+
+TEST_CASE ("Typed values are read in the same format", "[parameters]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    auto valueOf = [&] (const char* id, const char* text)
+    {
+        auto& p = parameter (state, id);
+        return p.convertFrom0to1 (p.getValueForText (text));
+    };
+
+    CHECK_THAT (valueOf (ids::stutterChance, "80%"), WithinAbs (0.8, 1.0e-4));
+    CHECK_THAT (valueOf (ids::minPan, "20L"), WithinAbs (-0.2, 1.0e-4));
+    CHECK_THAT (valueOf (ids::minPan, "C"), WithinAbs (0.0, 1.0e-4));
+    CHECK_THAT (valueOf (ids::maxPan, "35R"), WithinAbs (0.35, 1.0e-4));
+    CHECK_THAT (valueOf (ids::minRate, "4.41"), WithinAbs (4410.0, 0.5));
+    CHECK_THAT (valueOf (ids::minPitch, "+300"), WithinAbs (300.0, 1.0e-2));
+}
