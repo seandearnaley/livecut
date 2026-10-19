@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLUGINVAL_VERSION: v1.0.4
+  VST3SDK_TAG: v3.8.1_build_84
+  ARTEFACTS: build/Livecut_artefacts/Release
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (universal)
+            os: macos-26
+            artifact: Livecut-macOS-universal
+            pluginval_zip: pluginval_macOS.zip
+            pluginval_bin: pluginval/pluginval.app/Contents/MacOS/pluginval
+            exe_suffix: ""
+          - name: Windows (x64)
+            os: windows-2025-vs2026
+            artifact: Livecut-Windows-x64
+            pluginval_zip: pluginval_Windows.zip
+            pluginval_bin: pluginval/pluginval.exe
+            exe_suffix: .exe
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Build Steinberg VST3 validator
+        run: |
+          git clone --depth 1 --branch "$VST3SDK_TAG" https://github.com/steinbergmedia/vst3sdk vst3sdk
+          git -C vst3sdk submodule update --init --depth 1 base cmake pluginterfaces public.sdk
+          cmake -S vst3sdk -B vst3sdk/build -DCMAKE_BUILD_TYPE=Release \
+            -DSMTG_ENABLE_VST3_PLUGIN_EXAMPLES=OFF \
+            -DSMTG_ENABLE_VST3_HOSTING_EXAMPLES=OFF \
+            -DSMTG_ENABLE_VSTGUI_SUPPORT=OFF
+          cmake --build vst3sdk/build --config Release --target validator --parallel
+
+      - name: Download pluginval
+        run: |
+          curl -sSfL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/${PLUGINVAL_VERSION}/${{ matrix.pluginval_zip }}"
+          unzip -q pluginval.zip -d pluginval
+
+      - name: Validate VST3
+        run: |
+          "${{ matrix.pluginval_bin }}" --strictness-level 10 \
+            --vst3validator "vst3sdk/build/bin/Release/validator${{ matrix.exe_suffix }}" \
+            --validate "$ARTEFACTS/VST3/Livecut.vst3"
+
+      - name: Validate AU
+        if: runner.os == 'macOS'
+        run: |
+          # macOS only finds an AU once it is installed and the registrar has rescanned.
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "$ARTEFACTS/AU/Livecut.component" ~/Library/Audio/Plug-Ins/Components/
+          pkill -9 AudioComponentRegistrar || [ $? -eq 1 ]  # exit 1 means it was not running
+          auval -strict -v aufx Lvct Sdrn
+          "${{ matrix.pluginval_bin }}" --strictness-level 10 \
+            --validate ~/Library/Audio/Plug-Ins/Components/Livecut.component
+
+      - name: Upload plugins
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ env.ARTEFACTS }}/VST3
+            ${{ env.ARTEFACTS }}/AU
+            ${{ env.ARTEFACTS }}/Standalone
+          if-no-files-found: error
