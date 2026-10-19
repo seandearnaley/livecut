@@ -223,8 +223,10 @@ TEST_CASE ("Bounce is deterministic", "[bounce]")
 {
     const auto unitsPerBar = GENERATE (6, 8, 16, 32);
     const auto beatsPerBar = GENERATE (4.0, 3.0, 3.5);
+    const auto ratchetChance = GENERATE (0.0, 0.7, 1.0);
     Bounce procedure;
     auto params = ordinaryMoves (0.4);
+    params.ratchetChance = ratchetChance;
     params.minAmp = 0.2f;
     params.maxAmp = 0.8f;
 
@@ -253,4 +255,204 @@ TEST_CASE ("Bounce is deterministic", "[bounce]")
             }
         }
     }
+}
+
+TEST_CASE ("At full Ratchet every phrase ends in a stepped ratchet", "[bounce][ratchet]")
+{
+    const auto unitsPerBar = GENERATE (6, 8, 16, 32);
+    const auto beatsPerBar = GENERATE (4.0, 3.0, 3.5, 1.5, 0.5);
+    const auto climb = GENERATE (7, 12);
+    Bounce procedure;
+    auto params = ordinaryMoves (0.4);
+    params.ratchetChance = 1.0;
+    params.climb = climb;
+    params.dutyCycle = 0.9;
+    params.fillDutyCycle = 0.37;
+    params.minCents = params.maxCents = -500.0f;
+
+    for (std::uint32_t seed = 1; seed <= 50; ++seed)
+    {
+        CAPTURE (unitsPerBar, beatsPerBar, climb, seed);
+        Random random (seed);
+        params.minPhraseBars = params.maxPhraseBars = 1 + static_cast<int> (seed % 4);
+        const auto phraseUnits = static_cast<double> (params.minPhraseBars * unitsPerBar);
+        const auto zoneStart = ratchetZoneStart (phraseUnits, unitsPerBar, beatsPerBar);
+        const auto zone = phraseUnits - zoneStart;
+        const auto blocks = playPhrase (procedure, random, params, unitsPerBar, beatsPerBar);
+        const auto& last = blocks.back();
+
+        REQUIRE_THAT (last.startUnits, WithinAbs (zoneStart, tolerance));
+        REQUIRE (last.cuts.size() == 12);
+        CHECK_THAT (totalUnits (last.cuts), WithinAbs (zone, tolerance));
+
+        for (const auto& block : blocks)
+        {
+            const auto end = block.startUnits + totalUnits (block.cuts);
+            CHECK_THAT (std::floor ((block.startUnits + tolerance) / unitsPerBar),
+                        WithinAbs (std::floor ((end - tolerance) / unitsPerBar), tolerance));
+            CHECK_FALSE ((block.startUnits < zoneStart - tolerance && end > zoneStart + tolerance));
+
+            if (block.startUnits < zoneStart - tolerance)
+                CHECK (block.cuts.size() <= 3);
+        }
+
+        for (std::size_t i = 0; i < last.cuts.size(); ++i)
+        {
+            CAPTURE (i);
+            const auto expectedUnits = zone / (i < 3 ? 6.0 : i < 6 ? 12.0 : 24.0);
+            const auto expectedCents = i < 3 ? 0.0 : i < 6 ? (climb == 7 ? 400.0 : 600.0)
+                                                                       : 100.0 * climb;
+            CHECK_THAT (last.cuts[i].units, WithinAbs (expectedUnits, tolerance));
+            CHECK_THAT (last.cuts[i].cents, WithinAbs (expectedCents, 1.0e-6));
+            CHECK_THAT (last.cuts[i].gate, WithinAbs (params.fillDutyCycle, tolerance));
+        }
+    }
+}
+
+TEST_CASE ("With Ratchet off no phrase ends in a ratchet", "[bounce][ratchet]")
+{
+    const auto unitsPerBar = GENERATE (6, 8, 16, 32);
+    const auto beatsPerBar = GENERATE (4.0, 3.0, 3.5, 1.5, 0.5);
+    Bounce procedure;
+    const auto params = ordinaryMoves (0.4);
+
+    for (std::uint32_t seed = 1; seed <= 50; ++seed)
+    {
+        Random random (seed);
+        const auto blocks = playPhrase (procedure, random, params, unitsPerBar, beatsPerBar);
+
+        for (const auto& block : blocks)
+            CHECK (block.cuts.size() <= 3);
+    }
+}
+
+TEST_CASE ("A ratchet with no climb keeps every cut at the original pitch", "[bounce][ratchet]")
+{
+    Bounce procedure;
+    auto params = ordinaryMoves (0.4);
+    params.ratchetChance = 1.0;
+    params.climb = 0;
+    params.minCents = params.maxCents = 1200.0f;
+
+    for (std::uint32_t seed = 1; seed <= 50; ++seed)
+    {
+        Random random (seed);
+        const auto blocks = playPhrase (procedure, random, params, 8);
+        REQUIRE (blocks.back().cuts.size() == 12);
+
+        for (const auto& cut : blocks.back().cuts)
+            CHECK_THAT (cut.cents, WithinAbs (0.0, 1.0e-6));
+    }
+}
+
+TEST_CASE ("A phrase that starts inside the ratchet zone never ratchets", "[bounce][ratchet]")
+{
+    const auto unitsPerBar = GENERATE (6, 8, 16, 32);
+    const auto beatsPerBar = GENERATE (4.0, 3.0, 3.5, 1.5, 0.5);
+    Bounce procedure;
+    auto params = ordinaryMoves (0.4);
+    params.ratchetChance = 1.0;
+
+    for (std::uint32_t seed = 1; seed <= 50; ++seed)
+    {
+        Random random (seed);
+        BlockContext context;
+        context.unitsPerBar = unitsPerBar;
+        context.beatsPerBar = beatsPerBar;
+        context.phraseUnits = 2.0 * unitsPerBar;
+        context.unitsDone = ratchetZoneStart (context.phraseUnits, unitsPerBar, beatsPerBar) + 0.5;
+        std::vector<Cut> cuts;
+
+        while (context.unitsDone < context.phraseUnits - tolerance)
+        {
+            procedure.chooseBlock (random, params, context, cuts);
+            REQUIRE (! cuts.empty());
+            CHECK (cuts.size() <= 3);
+            const auto units = totalUnits (cuts);
+            REQUIRE (units > tolerance);
+            context.unitsDone += units;
+            REQUIRE (context.unitsDone <= context.phraseUnits + tolerance);
+        }
+
+        CHECK_THAT (context.unitsDone, WithinAbs (context.phraseUnits, tolerance));
+    }
+}
+
+TEST_CASE ("Ratchet uses the shared pan and amplitude sweep and preserves its draws", "[bounce][ratchet]")
+{
+    Bounce procedure;
+    auto params = ordinaryMoves (0.4);
+    params.ratchetChance = 0.7;
+    params.minPan = -0.8f;
+    params.maxPan = 0.6f;
+    params.minAmp = 0.2f;
+    params.maxAmp = 0.9f;
+    params.minCents = -1200.0f;
+    params.maxCents = 1200.0f;
+    BlockContext context;
+    context.phraseUnits = 16.0;
+    context.unitsDone = 12.0;
+    bool sawRatchet = false;
+    bool sawOrdinary = false;
+
+    for (std::uint32_t seed = 1; seed <= 50; ++seed)
+    {
+        Random random (seed);
+        Random expected (seed);
+        std::vector<Cut> cuts;
+        procedure.chooseBlock (random, params, context, cuts);
+
+        if (! expected.chance (params.ratchetChance))
+        {
+            sawOrdinary = true;
+            CHECK (cuts.size() <= 3);
+            continue;
+        }
+
+        sawRatchet = true;
+        REQUIRE (cuts.size() == 12);
+        const auto startPan = expected.uniform (params.minPan, params.maxPan);
+        const auto endPan = expected.uniform (params.minPan, params.maxPan);
+        const auto startAmp = expected.uniform (params.minAmp, params.maxAmp);
+        const auto endAmp = expected.uniform (params.minAmp, params.maxAmp);
+        expected.uniform (params.minCents, params.maxCents);
+
+        for (std::size_t i = 0; i < cuts.size(); ++i)
+        {
+            const auto phase = static_cast<double> (i) / 12.0;
+            CHECK_THAT (cuts[i].pan, WithinAbs (startPan + (endPan - startPan) * phase, 1.0e-6));
+            CHECK_THAT (cuts[i].amp, WithinAbs (startAmp + (endAmp - startAmp) * phase, 1.0e-6));
+        }
+
+        CHECK_THAT (random.unit(), WithinAbs (expected.unit(), tolerance));
+    }
+
+    CHECK (sawRatchet);
+    CHECK (sawOrdinary);
+}
+
+TEST_CASE ("Ratchet is eligible only within epsilon of the zone start", "[bounce][ratchet]")
+{
+    const auto offset = GENERATE (-4.0e-9, -0.5e-9, 0.0, 0.5e-9, 4.0e-9, 0.5);
+    Bounce procedure;
+    auto params = ordinaryMoves (0.4);
+    params.ratchetChance = 1.0;
+    BlockContext context;
+    context.phraseUnits = 16.0;
+    context.unitsDone = 12.0 + offset;
+    Random random (31);
+    std::vector<Cut> cuts;
+    procedure.chooseBlock (random, params, context, cuts);
+
+    if (std::abs (offset) < tolerance)
+    {
+        REQUIRE (cuts.size() == 12);
+        return;
+    }
+
+    REQUIRE (cuts.size() <= 3);
+    // These off-beat positions draw only the recovery cut's amplitude.
+    Random expected (31);
+    expected.uniform (params.minAmp, params.maxAmp);
+    CHECK_THAT (random.unit(), WithinAbs (expected.unit(), tolerance));
 }

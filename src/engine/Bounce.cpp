@@ -3,6 +3,7 @@
 // Bounce is new to this port, not from Nick Collins' BBCut library.
 
 #include "engine/CutProcedures.h"
+#include "engine/CutShaping.h"
 
 #include <algorithm>
 #include <cmath>
@@ -32,6 +33,25 @@ void Bounce::chooseBlock (Random& random,
     // Leave the start of the ratchet zone available for its own block decision.
     if (context.unitsDone < zoneStart - epsilon)
         boundary = std::min (boundary, zoneStart - context.unitsDone);
+
+    // In fractional meters the zone can start off the beat, before recovery applies.
+    if (std::abs (context.unitsDone - zoneStart) <= epsilon && random.chance (params.ratchetChance))
+    {
+        Cut cut;
+        cut.gate = params.fillDutyCycle;
+        cuts.assign (12, cut);
+        sweep (cuts, random, params);
+
+        for (std::size_t i = 0; i < cuts.size(); ++i)
+        {
+            const auto step = i < 3 ? 0 : i < 6 ? 1 : 2;
+            cuts[i].units = zone / (step == 0 ? 6.0 : step == 1 ? 12.0 : 24.0);
+            // Keep sweep's pitch draw, but replace its ramp with whole semitone steps.
+            cuts[i].cents = static_cast<float> (100.0 * std::round (params.climb * step / 2.0));
+        }
+
+        return;
+    }
 
     const auto addCut = [&] (double units)
     {
