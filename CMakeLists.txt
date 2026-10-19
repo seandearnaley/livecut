@@ -60,12 +60,23 @@ target_compile_definitions(Livecut
 add_library(LivecutCode INTERFACE)
 target_sources(LivecutCode
     INTERFACE
+        src/DisplayState.h
         src/HostSync.cpp
         src/HostSync.h
         src/Parameters.cpp
         src/Parameters.h
+        src/PluginEditor.cpp
+        src/PluginEditor.h
         src/PluginProcessor.cpp
-        src/PluginProcessor.h)
+        src/PluginProcessor.h
+        src/ui/Controls.cpp
+        src/ui/Controls.h
+        src/ui/LivecutLookAndFeel.cpp
+        src/ui/LivecutLookAndFeel.h
+        src/ui/PhraseRuler.cpp
+        src/ui/PhraseRuler.h
+        src/ui/RangeSlider.cpp
+        src/ui/RangeSlider.h)
 target_include_directories(LivecutCode INTERFACE src)
 target_link_libraries(LivecutCode INTERFACE LivecutEngine juce::juce_audio_utils)
 
@@ -91,6 +102,7 @@ if(LIVECUT_BUILD_TESTS)
     endfunction()
 
     add_executable(LivecutTests
+        tests/EditorTests.cpp
         tests/HostSyncTests.cpp
         tests/ParametersTests.cpp
         tests/PluginProcessorTests.cpp)

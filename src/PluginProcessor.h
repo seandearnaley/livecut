@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "DisplayState.h"
 #include "Parameters.h"
 #include "engine/Cutter.h"
 
@@ -38,11 +39,15 @@ public:
 
     juce::AudioProcessorValueTreeState& getParameterState() { return parameters; }
     const livecut::engine::Cutter& getCutter() const { return cutter; }
+    const livecut::DisplayState& getDisplayState() const { return display; }
 
 private:
+    void publishDisplay();
+
     juce::AudioProcessorValueTreeState parameters;
     livecut::SettingsReader settingsReader;
     livecut::engine::Cutter cutter;
+    livecut::DisplayState display;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivecutAudioProcessor)
 };

@@ -3,6 +3,7 @@
 #include "PluginProcessor.h"
 
 #include "HostSync.h"
+#include "PluginEditor.h"
 
 LivecutAudioProcessor::LivecutAudioProcessor()
     : AudioProcessor (BusesProperties()
@@ -40,15 +41,41 @@ void LivecutAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     if (! sync)
     {
         cutter.reset();
+        display.status = livecut::DisplayState::Status::waitingForHost;
         return;
     }
 
     cutter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), sync->timing, sync->position);
+    publishDisplay();
+}
+
+void LivecutAudioProcessor::publishDisplay()
+{
+    using Status = livecut::DisplayState::Status;
+
+    if (! cutter.isTimingSupported())
+    {
+        display.status = Status::barTooLong;
+        return;
+    }
+
+    if (! cutter.isCutting())
+    {
+        display.status = Status::startingSoon;
+        return;
+    }
+
+    display.phraseBars = cutter.phraseBarCount();
+    display.unitsPerBar = cutter.activeUnitsPerBar();
+    display.blockStart = cutter.blockStartUnits();
+    display.blockEnd = cutter.blockEndUnits();
+    display.position = cutter.positionInPhrase();
+    display.status = Status::cutting;
 }
 
 juce::AudioProcessorEditor* LivecutAudioProcessor::createEditor()
 {
-    return new juce::GenericAudioProcessorEditor (*this);
+    return new LivecutAudioProcessorEditor (*this);
 }
 
 bool LivecutAudioProcessor::hasEditor() const { return true; }
