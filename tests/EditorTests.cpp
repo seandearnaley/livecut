@@ -178,6 +178,7 @@ TEST_CASE ("Only the active procedure's controls are shown", "[editor]")
     CHECK (shows (livecut::ids::stutterChance));
     CHECK_FALSE (shows (livecut::ids::straightChance));
     CHECK_FALSE (shows (livecut::ids::activity));
+    CHECK_FALSE (shows (livecut::ids::bounceChance));
 
     auto* procedure = state.getParameter (livecut::ids::procedure);
     procedure->setValueNotifyingHost (procedure->convertTo0to1 (1.0f)); // WarpCut
@@ -185,6 +186,19 @@ TEST_CASE ("Only the active procedure's controls are shown", "[editor]")
     CHECK_FALSE (shows (livecut::ids::stutterChance));
     CHECK (shows (livecut::ids::straightChance));
     CHECK_FALSE (shows (livecut::ids::activity));
+
+    procedure->setValueNotifyingHost (procedure->convertTo0to1 (3.0f)); // Bounce
+
+    CHECK_FALSE (shows (livecut::ids::stutterChance));
+    CHECK_FALSE (shows (livecut::ids::straightChance));
+    CHECK_FALSE (shows (livecut::ids::activity));
+    for (const auto* id : { livecut::ids::bounceChance, livecut::ids::ratchetChance,
+                           livecut::ids::climb, livecut::ids::halftimeChance })
+        CHECK (shows (id));
+
+    procedure->setValueNotifyingHost (procedure->convertTo0to1 (0.0f)); // CutProc11
+    CHECK (shows (livecut::ids::stutterChance));
+    CHECK_FALSE (shows (livecut::ids::bounceChance));
 }
 
 TEST_CASE ("The status line says how to start cutting", "[editor]")

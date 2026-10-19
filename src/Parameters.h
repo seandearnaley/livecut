@@ -49,6 +49,10 @@ inline constexpr auto combType = "combType";
 inline constexpr auto combFeedback = "combFeedback";
 inline constexpr auto minDelay = "minDelay";
 inline constexpr auto maxDelay = "maxDelay";
+inline constexpr auto bounceChance = "bounceChance";
+inline constexpr auto ratchetChance = "ratchetChance";
+inline constexpr auto climb = "climb";
+inline constexpr auto halftimeChance = "halftimeChance";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
@@ -125,6 +129,10 @@ private:
     Source combFeedback;
     Source minDelay;
     Source maxDelay;
+    Source bounceChance;
+    Source ratchetChance;
+    Source climb;
+    Source halftimeChance;
 };
 
 void applySettings (engine::Cutter& cutter, const Settings& settings);

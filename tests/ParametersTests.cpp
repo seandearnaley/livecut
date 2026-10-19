@@ -20,7 +20,8 @@ constexpr std::array allIds {
     ids::fillDuty, ids::minRepeats, ids::maxRepeats, ids::stutterChance, ids::stutterArea,
     ids::straightChance, ids::regularChance, ids::ritardChance, ids::accel, ids::activity,
     ids::crusher, ids::minBits, ids::maxBits, ids::minRate, ids::maxRate, ids::comb, ids::combType,
-    ids::combFeedback, ids::minDelay, ids::maxDelay
+    ids::combFeedback, ids::minDelay, ids::maxDelay,
+    ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -66,18 +67,20 @@ TEST_CASE ("Choice parameters are discrete steps for the host", "[parameters]")
     LivecutAudioProcessor processor;
     auto& state = processor.getParameterState();
 
-    CHECK (parameter (state, ids::procedure).getNumSteps() == 3);
+    CHECK (parameter (state, ids::procedure).getNumSteps() == 4);
     CHECK (parameter (state, ids::subdivision).getNumSteps() == 7);
     CHECK (parameter (state, ids::combType).getNumSteps() == 2);
     CHECK (parameter (state, ids::seed).getNumSteps() == 16);
     CHECK (parameter (state, ids::crusher).isBoolean());
 
-    // SQPusher now owns the top third of the knob instead of only its very end.
+    // SQPusher remains reachable below the new final choice.
     setNormalised (state, ids::procedure, 0.8f);
     CHECK (SettingsReader (state).read().procedure == engine::Procedure::sqPusher);
+    setNormalised (state, ids::procedure, 1.0f);
+    CHECK (SettingsReader (state).read().procedure == engine::Procedure::bounce);
 }
 
-TEST_CASE ("Defaults match the original plugin", "[parameters]")
+TEST_CASE ("Defaults preserve the original plugin and add Bounce", "[parameters]")
 {
     LivecutAudioProcessor processor;
     auto& state = processor.getParameterState();
@@ -89,7 +92,16 @@ TEST_CASE ("Defaults match the original plugin", "[parameters]")
     CHECK_THAT (defaultValue (state, ids::maxBits), WithinAbs (32.0, 1.0e-6));
     CHECK_THAT (defaultValue (state, ids::minDelay), WithinAbs (10.0, 1.0e-6));
 
+    CHECK_THAT (defaultValue (state, ids::bounceChance), WithinAbs (0.4, 1.0e-6));
+    CHECK_THAT (defaultValue (state, ids::ratchetChance), WithinAbs (0.7, 1.0e-6));
+    CHECK_THAT (defaultValue (state, ids::climb), WithinAbs (7.0, 1.0e-6));
+    CHECK_THAT (defaultValue (state, ids::halftimeChance), WithinAbs (0.15, 1.0e-6));
+
     const auto settings = SettingsReader (state).read();
+    CHECK_THAT (settings.cut.bounceChance, WithinAbs (0.4, 1.0e-6));
+    CHECK_THAT (settings.cut.ratchetChance, WithinAbs (0.7, 1.0e-6));
+    CHECK (settings.cut.climb == 7);
+    CHECK_THAT (settings.cut.halftimeChance, WithinAbs (0.15, 1.0e-6));
     const engine::CutParameters original;
 
     CHECK (settings.procedure == engine::Procedure::cutProc11);
@@ -120,6 +132,10 @@ TEST_CASE ("Settings follow the values the host sets", "[parameters]")
     LivecutAudioProcessor processor;
     auto& state = processor.getParameterState();
 
+    setValue (state, ids::bounceChance, 0.2f);
+    setValue (state, ids::ratchetChance, 0.9f);
+    setValue (state, ids::climb, 11.0f);
+    setValue (state, ids::halftimeChance, 0.6f);
     setValue (state, ids::subdivision, 3.0f); // "16"
     setValue (state, ids::seed, 7.0f);
     setValue (state, ids::stutterChance, 0.25f);
@@ -129,6 +145,10 @@ TEST_CASE ("Settings follow the values the host sets", "[parameters]")
 
     const auto settings = SettingsReader (state).read();
 
+    CHECK_THAT (settings.cut.bounceChance, WithinAbs (0.2, 1.0e-6));
+    CHECK_THAT (settings.cut.ratchetChance, WithinAbs (0.9, 1.0e-6));
+    CHECK (settings.cut.climb == 11);
+    CHECK_THAT (settings.cut.halftimeChance, WithinAbs (0.6, 1.0e-6));
     CHECK (settings.unitsPerBar == 16);
     CHECK (settings.seed == 7);
     CHECK_THAT (settings.cut.stutterChance, WithinAbs (0.25, 1.0e-5));
@@ -162,7 +182,7 @@ TEST_CASE ("Settings stay usable when a parameter holds an invalid value", "[par
     const auto settings = SettingsReader (state).read();
 
     CHECK (settings.unitsPerBar == 8); // the default
-    CHECK (settings.procedure == engine::Procedure::sqPusher);
+    CHECK (settings.procedure == engine::Procedure::bounce);
     CHECK_THAT (settings.comb.minDelayMs, WithinAbs (10.0, 1.0e-6));
     CHECK_THAT (settings.comb.maxDelayMs, WithinAbs (1.0, 1.0e-6));
     CHECK (settings.cut.maxRepeats == 1);
@@ -179,6 +199,12 @@ TEST_CASE ("Parameter values read naturally in hosts", "[parameters]")
         return p.getText (p.convertTo0to1 (value), 32);
     };
 
+    CHECK (text (ids::bounceChance, 0.4f) == "40%");
+    CHECK (text (ids::ratchetChance, 0.7f) == "70%");
+    CHECK (text (ids::halftimeChance, 0.15f) == "15%");
+    CHECK (text (ids::climb, 7.0f) == "+7 st");
+    CHECK (text (ids::climb, 0.0f) == "0 st");
+    CHECK (text (ids::climb, 12.0f) == "+12 st");
     CHECK (text (ids::stutterChance, 0.8f) == "80%");
     CHECK (text (ids::maxAmp, 1.0f) == "100%");
     CHECK (text (ids::combFeedback, 0.5f) == "50%");
@@ -211,10 +237,83 @@ TEST_CASE ("Typed values are read in the same format", "[parameters]")
         return p.convertFrom0to1 (p.getValueForText (text));
     };
 
+    CHECK_THAT (valueOf (ids::climb, "+7 st"), WithinAbs (7.0, 1.0e-6));
+    CHECK_THAT (valueOf (ids::climb, "0 st"), WithinAbs (0.0, 1.0e-6));
+    CHECK_THAT (valueOf (ids::bounceChance, "40%"), WithinAbs (0.4, 1.0e-6));
+    CHECK_THAT (valueOf (ids::ratchetChance, "70%"), WithinAbs (0.7, 1.0e-6));
+    CHECK_THAT (valueOf (ids::halftimeChance, "15%"), WithinAbs (0.15, 1.0e-6));
     CHECK_THAT (valueOf (ids::stutterChance, "80%"), WithinAbs (0.8, 1.0e-4));
     CHECK_THAT (valueOf (ids::minPan, "20L"), WithinAbs (-0.2, 1.0e-4));
     CHECK_THAT (valueOf (ids::minPan, "C"), WithinAbs (0.0, 1.0e-4));
     CHECK_THAT (valueOf (ids::maxPan, "35R"), WithinAbs (0.35, 1.0e-4));
     CHECK_THAT (valueOf (ids::minRate, "4.41"), WithinAbs (4410.0, 0.5));
     CHECK_THAT (valueOf (ids::minPitch, "+300"), WithinAbs (300.0, 1.0e-2));
+}
+
+TEST_CASE ("Parameters added for Bounce carry version hint 2", "[parameters]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+
+    for (const auto* id : allIds)
+    {
+        INFO (id);
+        const juce::String name (id);
+        const auto isBounce = name == ids::bounceChance || name == ids::ratchetChance
+                           || name == ids::climb || name == ids::halftimeChance;
+        CHECK (parameter (state, id).getVersionHint() == (isBounce ? 2 : 1));
+    }
+}
+
+TEST_CASE ("Bounce parameters have the specified names and ranges and are appended", "[parameters]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    constexpr std::array bounceIds { ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance };
+    constexpr std::array names { "Bounce", "Ratchet", "Climb", "Halftime" };
+
+    for (std::size_t i = 0; i < bounceIds.size(); ++i)
+    {
+        auto& p = parameter (state, bounceIds[i]);
+        CHECK (p.getName (32) == names[i]);
+        CHECK (p.getParameterIndex() == static_cast<int> (allIds.size() - bounceIds.size() + i));
+        CHECK_THAT (p.convertFrom0to1 (0.0f), WithinAbs (0.0, 1.0e-6));
+        CHECK_THAT (p.convertFrom0to1 (1.0f), WithinAbs (i == 2 ? 12.0 : 1.0, 1.0e-6));
+    }
+    CHECK (parameter (state, ids::climb).getNumSteps() == 13);
+}
+
+TEST_CASE ("Bounce settings validate host values and round Climb", "[parameters]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    for (const auto* id : { ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance })
+        parameter (state, id);
+
+    SettingsReader reader (state);
+    for (const auto invalid : { std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity() })
+    {
+        for (const auto* id : { ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance })
+            state.getRawParameterValue (id)->store (invalid);
+        const auto cut = reader.read().cut;
+        CHECK_THAT (cut.bounceChance, WithinAbs (0.4, 1.0e-6));
+        CHECK_THAT (cut.ratchetChance, WithinAbs (0.7, 1.0e-6));
+        CHECK (cut.climb == 7);
+        CHECK_THAT (cut.halftimeChance, WithinAbs (0.15, 1.0e-6));
+    }
+    for (const auto raw : { -99.0f, 99.0f })
+    {
+        for (const auto* id : { ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance })
+            state.getRawParameterValue (id)->store (raw);
+        const auto cut = reader.read().cut;
+        const auto expected = raw < 0.0f ? 0.0 : 1.0;
+        CHECK_THAT (cut.bounceChance, WithinAbs (expected, 1.0e-6));
+        CHECK_THAT (cut.ratchetChance, WithinAbs (expected, 1.0e-6));
+        CHECK (cut.climb == (raw < 0.0f ? 0 : 12));
+        CHECK_THAT (cut.halftimeChance, WithinAbs (expected, 1.0e-6));
+    }
+    state.getRawParameterValue (ids::climb)->store (7.6f);
+    CHECK (reader.read().cut.climb == 8);
+    state.getRawParameterValue (ids::climb)->store (7.4f);
+    CHECK (reader.read().cut.climb == 7);
 }

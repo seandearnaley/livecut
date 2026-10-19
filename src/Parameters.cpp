@@ -12,8 +12,6 @@ namespace livecut
 
 namespace
 {
-constexpr int version = 1;
-
 using FloatRange = juce::NormalisableRange<float>;
 
 // How a float parameter reads in hosts and in the editor, and how typed text is read back.
@@ -66,6 +64,16 @@ Format cents()
              numberIn, "cents" };
 }
 
+juce::AudioParameterIntAttributes semitones()
+{
+    return juce::AudioParameterIntAttributes()
+        .withStringFromValueFunction ([] (int value, int)
+        {
+            return (value > 0 ? "+" : "") + juce::String (value) + " st";
+        })
+        .withValueFromStringFunction ([] (const juce::String& text) { return juce::roundToInt (numberIn (text)); });
+}
+
 // Stored in Hz, shown in kHz with three significant figures.
 Format kilohertz()
 {
@@ -77,7 +85,7 @@ Format kilohertz()
              [] (const juce::String& text) { return numberIn (text) * 1000.0f; }, "kHz" };
 }
 
-std::unique_ptr<juce::AudioParameterFloat> number (const char* id, const char* name, FloatRange range, float defaultValue, const Format& format)
+std::unique_ptr<juce::AudioParameterFloat> number (const char* id, const char* name, FloatRange range, float defaultValue, const Format& format, int version = 1)
 {
     const auto attributes = juce::AudioParameterFloatAttributes()
                                 .withStringFromValueFunction ([toText = format.toText] (float value, int) { return toText (value); })
@@ -86,18 +94,19 @@ std::unique_ptr<juce::AudioParameterFloat> number (const char* id, const char* n
     return std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id, version }, name, range, defaultValue, attributes);
 }
 
-std::unique_ptr<juce::AudioParameterInt> integer (const char* id, const char* name, int min, int max, int defaultValue, const char* label = "")
+std::unique_ptr<juce::AudioParameterInt> integer (const char* id, const char* name, int min, int max, int defaultValue, const char* label = "", int version = 1,
+                                                  const juce::AudioParameterIntAttributes& attributes = {})
 {
     return std::make_unique<juce::AudioParameterInt> (juce::ParameterID { id, version }, name, min, max, defaultValue,
-                                                      juce::AudioParameterIntAttributes().withLabel (label));
+                                                      attributes.withLabel (label));
 }
 
-std::unique_ptr<juce::AudioParameterChoice> choice (const char* id, const char* name, const juce::StringArray& choices, int defaultIndex)
+std::unique_ptr<juce::AudioParameterChoice> choice (const char* id, const char* name, const juce::StringArray& choices, int defaultIndex, int version = 1)
 {
     return std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id, version }, name, choices, defaultIndex);
 }
 
-std::unique_ptr<juce::AudioParameterBool> toggle (const char* id, const char* name, bool defaultValue)
+std::unique_ptr<juce::AudioParameterBool> toggle (const char* id, const char* name, bool defaultValue, int version = 1)
 {
     return std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id, version }, name, defaultValue);
 }
@@ -143,10 +152,10 @@ int SettingsReader::Source::readIndex() const
 
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
 {
-    // Ranges and defaults are the original plugin's.
+    // Existing ranges and defaults are the original plugin's.
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
-    layout.add (choice (ids::procedure, "Cut Procedure", { "CutProc11", "WarpCut", "SQPusher" }, 0),
+    layout.add (choice (ids::procedure, "Cut Procedure", { "CutProc11", "WarpCut", "SQPusher", "Bounce" }, 0),
                 choice (ids::subdivision, "Subdivision", subdivisionNames(), 1),
                 integer (ids::seed, "Seed", 1, 16, 1),
                 integer (ids::minPhraseBars, "Min Phrase", 1, 8, 1, "bars"),
@@ -178,7 +187,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 choice (ids::combType, "Comb Type", { "Feedforward", "Feedback" }, 0),
                 number (ids::combFeedback, "Comb Feedback", FloatRange (0.0f, 0.9f), 0.5f, percent()),
                 number (ids::minDelay, "Min Delay", FloatRange (1.0f, 50.0f), 10.0f, decimals (1, "ms")),
-                number (ids::maxDelay, "Max Delay", FloatRange (1.0f, 50.0f), 10.0f, decimals (1, "ms")));
+                number (ids::maxDelay, "Max Delay", FloatRange (1.0f, 50.0f), 10.0f, decimals (1, "ms")),
+                number (ids::bounceChance, "Bounce", FloatRange (0.0f, 1.0f), 0.4f, percent(), 2),
+                number (ids::ratchetChance, "Ratchet", FloatRange (0.0f, 1.0f), 0.7f, percent(), 2),
+                integer (ids::climb, "Climb", 0, 12, 7, "", 2, semitones()),
+                number (ids::halftimeChance, "Halftime", FloatRange (0.0f, 1.0f), 0.15f, percent(), 2));
 
     return layout;
 }
@@ -216,7 +229,11 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       combType (state, ids::combType),
       combFeedback (state, ids::combFeedback),
       minDelay (state, ids::minDelay),
-      maxDelay (state, ids::maxDelay)
+      maxDelay (state, ids::maxDelay),
+      bounceChance (state, ids::bounceChance),
+      ratchetChance (state, ids::ratchetChance),
+      climb (state, ids::climb),
+      halftimeChance (state, ids::halftimeChance)
 {
 }
 
@@ -248,6 +265,10 @@ Settings SettingsReader::read() const
     cut.ritardChance = ritardChance.read();
     cut.accel = accel.read();
     cut.activity = activity.read();
+    cut.bounceChance = bounceChance.read();
+    cut.ratchetChance = ratchetChance.read();
+    cut.climb = climb.readIndex();
+    cut.halftimeChance = halftimeChance.read();
 
     auto& crusherSettings = settings.crusher;
     crusherSettings.enabled = crusher.read() > 0.5f;
