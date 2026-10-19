@@ -11,18 +11,25 @@ This repository is a ground-up port of the original plugin to
 **Standalone** app, for current DAWs (Ableton Live 12, Logic, Reaper, Bitwig…)
 on Apple Silicon, Intel Macs and Windows.
 
+![Livecut's editor: an LCD phrase ruler above the phrase, cut and procedure controls](docs/editor.png)
+
+The LCD across the top shows the phrase being cut: its bars and units, the
+block playing now and the playhead. Livecut follows the host's transport; while
+the host is stopped, audio passes through untouched.
+
 ## Status
 
 Work in progress, landing as a stack of small pull requests:
 
 1. **Scaffold**: CMake build, universal macOS + Windows CI, plugin validation.
-   The plugin is currently a transparent pass-through.
-2. **Engine**: the CutProc11, WarpCut and SQPusher cutting procedures and the
-   effects, ported to a dependency-free C++20 core with unit tests and the
-   original bugs fixed against BBCut's reference implementation.
-3. **Plugin layer**: parameters, saved state, sample-accurate host sync.
-4. **Editor**: the user interface.
-5. **Release**: signed and notarised installers.
+2. **Engine**: a per-instance random generator and the CutProc11, WarpCut and
+   SQPusher cut procedures, in a dependency-free C++20 core, with the original
+   bugs fixed against BBCut's reference implementation.
+3. **Player**: the live player and the cutter that follows the host's bars.
+4. **Effects**: the BitCrusher and Comb, driven by the cuts.
+5. **Plugin**: parameters, saved state and host-synced processing.
+6. **Editor**: the user interface.
+7. **Release**: signed and notarised installers.
 
 ## Building
 
