@@ -225,3 +225,22 @@ TEST_CASE ("The fade envelope rises from silence and falls towards it", "[player
     CHECK (fadeEnvelope (99, 10, 100) < 0.4f);
     CHECK (fadeEnvelope (5, 10, 100) < fadeEnvelope (10, 10, 100));
 }
+
+TEST_CASE ("A tempo change re-times the rest of the block", "[player]")
+{
+    LivePlayer player;
+    player.prepare (1000);
+    const std::vector cuts { makeCut (1.0), makeCut (1.0, 0.5) };
+    player.startBlock (cuts, 100.0);
+    play (player, 50);
+
+    player.setSamplesPerUnit (200.0); // half the tempo
+
+    const auto playing = player.cuts();
+    REQUIRE (playing.size() == 2);
+    CHECK (playing[0].size == 150);     // 50 samples played, half a unit (now 100 samples) to go
+    CHECK (playing[0].playable == 150);
+    CHECK (playing[1].start == 150);
+    CHECK (playing[1].size == 200);
+    CHECK (playing[1].playable == 100); // its gate is still half the cut
+}

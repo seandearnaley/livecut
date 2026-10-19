@@ -76,19 +76,25 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
         return; // the input passes through untouched
     }
 
+    // Count a position outside its bar (a host's stale bar start, or a count-in
+    // before bar 0) into the bar it actually falls in.
+    const auto barsOver = std::floor (position.beatsIntoBar / timing.beatsPerBar);
+    auto bar = position.bar + static_cast<std::int64_t> (barsOver);
+    auto beats = position.beatsIntoBar - barsOver * timing.beatsPerBar;
+
     if (havePosition)
     {
-        const auto drift = static_cast<double> (position.bar - expectedBar) * timing.beatsPerBar
-                         + (position.beatsIntoBar - expectedBeatsIntoBar);
+        const auto drift = static_cast<double> (bar - expectedBar) * timing.beatsPerBar + (beats - expectedBeatsIntoBar);
 
         if (std::abs (drift) > jumpToleranceBeats)
             reset();
     }
 
+    if (cutting)
+        livePlayer.setSamplesPerUnit (samplesPerUnit (timing));
+
     const auto beatsPerSample = timing.bpm / 60.0 / sampleRate;
     const auto halfSampleBeats = 0.5 * beatsPerSample;
-    auto bar = position.bar;
-    auto beats = position.beatsIntoBar;
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -98,6 +104,11 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
             beats -= timing.beatsPerBar;
             ++bar;
         }
+
+        // While nothing is being cut, structural changes take effect at once,
+        // so the start position below is counted in the new subdivision.
+        if (! cutting)
+            applyStructuralChanges();
 
         const auto unitsPerBeat = unitsPerBar / timing.beatsPerBar;
         const auto unitsIntoBar = beats * unitsPerBeat;
@@ -148,6 +159,11 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
     havePosition = true;
     expectedBar = bar;
     expectedBeatsIntoBar = beats;
+}
+
+double Cutter::samplesPerUnit (const Timing& timing) const
+{
+    return sampleRate * 60.0 / timing.bpm * timing.beatsPerBar / unitsPerBar;
 }
 
 CutProcedure& Cutter::procedureFor (Procedure p)
@@ -202,8 +218,7 @@ void Cutter::startBlock (const Timing& timing)
     procedureFor (procedure).chooseBlock (random, params, context, cuts);
     blockEnd = blockStart + totalUnits (cuts);
 
-    const auto samplesPerUnit = sampleRate * 60.0 / timing.bpm * timing.beatsPerBar / unitsPerBar;
-    livePlayer.startBlock (cuts, samplesPerUnit);
+    livePlayer.startBlock (cuts, samplesPerUnit (timing));
 }
 
 } // namespace livecut::engine

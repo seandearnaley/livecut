@@ -30,6 +30,8 @@ public:
         int start = 0;    // samples after the block starts
         int size = 0;     // samples until the next cut starts
         int playable = 0; // samples that sound before the gate closes
+        double units = 0.0;
+        double gate = 1.0;
         bool pitched = false;
         double rate = 1.0;
         float leftToLeft = 1.0f, leftToRight = 0.0f, rightToLeft = 0.0f, rightToRight = 1.0f;
@@ -48,9 +50,16 @@ public:
     // Records one input frame and replaces it with the output frame.
     void process (float& left, float& right);
 
+    // Re-times the rest of the block for a new tempo: what has already played
+    // stays, and everything after it is laid out again at the new length of a unit.
+    void setSamplesPerUnit (double samplesPerUnit);
+
     std::span<const PlayingCut> cuts() const { return playing; }
 
 private:
+    int playableFor (const PlayingCut& cut, int soundingLength) const;
+    void skipFinishedCuts();
+
     std::vector<float> recordedLeft, recordedRight;
     std::vector<PlayingCut> playing;
     int capacity = 0;
@@ -58,6 +67,7 @@ private:
     std::size_t current = 0;
     int position = 0; // samples into the current cut
     int fade = 1;
+    double samplesPerUnit = 1.0;
 };
 
 } // namespace livecut::engine

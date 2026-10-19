@@ -67,13 +67,20 @@ void LivePlayer::setFadeSamples (int samples)
     fade = std::max (samples, 1);
 }
 
-void LivePlayer::startBlock (std::span<const Cut> cuts, double samplesPerUnit)
+int LivePlayer::playableFor (const PlayingCut& cut, int soundingLength) const
+{
+    return cut.pitched ? playableSamples (soundingLength, cut.rate, std::min (cut.start, capacity), capacity)
+                       : soundingLength;
+}
+
+void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit)
 {
     assert (cuts.size() <= maxCutsPerBlock);
     playing.clear();
     recorded = 0;
     current = 0;
     position = 0;
+    samplesPerUnit = newSamplesPerUnit;
 
     auto units = 0.0;
     auto start = 0;
@@ -91,13 +98,11 @@ void LivePlayer::startBlock (std::span<const Cut> cuts, double samplesPerUnit)
             PlayingCut playingCut;
             playingCut.start = start;
             playingCut.size = size;
-
-            const auto soundingLength = std::min (static_cast<int> (std::lround (size * cut.gate)), size);
+            playingCut.units = cut.units;
+            playingCut.gate = cut.gate;
             playingCut.pitched = i > 0 && std::abs (cut.cents) > 1.0e-3f;
             playingCut.rate = playingCut.pitched ? std::pow (2.0, cut.cents / 1200.0) : 1.0;
-            playingCut.playable = playingCut.pitched
-                                      ? playableSamples (soundingLength, playingCut.rate, std::min (start, capacity), capacity)
-                                      : soundingLength;
+            playingCut.playable = playableFor (playingCut, std::min (static_cast<int> (std::lround (size * cut.gate)), size));
 
             // Livecut's pan rotates the stereo pair: the input on the far side
             // folds into the near channel as the cut moves away from centre.
@@ -112,6 +117,60 @@ void LivePlayer::startBlock (std::span<const Cut> cuts, double samplesPerUnit)
         }
 
         start = end;
+    }
+}
+
+void LivePlayer::setSamplesPerUnit (double newSamplesPerUnit)
+{
+    const auto unchanged = std::abs (newSamplesPerUnit - samplesPerUnit) <= 1.0e-9 * samplesPerUnit;
+
+    if (unchanged || current >= playing.size())
+    {
+        samplesPerUnit = newSamplesPerUnit;
+        return;
+    }
+
+    // Lay out the rest of the block again in units from the current sample,
+    // rounding cumulatively so the cuts still add up to the block.
+    auto& now = playing[current];
+    const auto elapsedUnits = position / samplesPerUnit;
+    const auto samplesFromCutStart = [&] (double unitsFromNow)
+    {
+        return position + static_cast<int> (std::lround (std::max (unitsFromNow, 0.0) * newSamplesPerUnit));
+    };
+
+    const auto soundingUnitsLeft = now.gate * now.units - elapsedUnits;
+
+    if (soundingUnitsLeft > 0.0)
+        now.playable = playableFor (now, samplesFromCutStart (soundingUnitsLeft));
+
+    auto unitsFromNow = now.units - elapsedUnits;
+    auto end = samplesFromCutStart (unitsFromNow);
+    now.size = end;
+
+    for (auto i = current + 1; i < playing.size(); ++i)
+    {
+        auto& cut = playing[i];
+        unitsFromNow += cut.units;
+        const auto nextEnd = samplesFromCutStart (unitsFromNow);
+        cut.start = now.start + end;
+        cut.size = nextEnd - end;
+        cut.playable = playableFor (cut, std::min (static_cast<int> (std::lround (cut.size * cut.gate)), cut.size));
+        assert (cut.size <= capacity);
+        end = nextEnd;
+    }
+
+    samplesPerUnit = newSamplesPerUnit;
+    skipFinishedCuts();
+}
+
+void LivePlayer::skipFinishedCuts()
+{
+    // A faster tempo can shrink what's left of a cut, or a whole cut, to nothing.
+    while (current < playing.size() && position >= playing[current].size)
+    {
+        ++current;
+        position = 0;
     }
 }
 
@@ -161,12 +220,8 @@ void LivePlayer::process (float& left, float& right)
 
     left = outLeft;
     right = outRight;
-
-    if (++position >= cut.size)
-    {
-        ++current;
-        position = 0;
-    }
+    ++position;
+    skipFinishedCuts();
 }
 
 } // namespace livecut::engine

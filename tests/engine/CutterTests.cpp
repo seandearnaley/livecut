@@ -271,9 +271,20 @@ TEST_CASE ("Cutting never allocates memory", "[cutter]")
 
     AllocationCounter allocations;
     std::size_t largestBlock = 0;
+    constexpr int buffers = 32 * 96000 / 256;
 
-    for (int i = 0; i < 32 * 96000 / 256; ++i)
+    for (int i = 0; i < buffers; ++i)
     {
+        // Exercise the transitions too: a subdivision change, a jump and a tempo change.
+        if (i == buffers / 4)
+            cutter.setUnitsPerBar (16);
+
+        if (i == buffers / 2)
+            host.beats += 7.3;
+
+        if (i == 3 * buffers / 4)
+            host.bpm = 90.0;
+
         cutter.process (buffer.left.data(), buffer.right.data(), 256, host.timing(), host.position());
         host.advance (256);
         largestBlock = std::max (largestBlock, cutter.currentCuts().size());
@@ -304,4 +315,93 @@ TEST_CASE ("Bars too long for the recording buffer pass through untouched", "[cu
     CHECK_FALSE (cutter.isTimingSupported());
     CHECK_FALSE (cutter.isCutting());
     CHECK (buffer == untouched);
+}
+
+// Found in review: a subdivision changed while stopped was applied after the
+// cutter had worked out where to start in the old subdivision, so the first
+// block started at the wrong unit, or ran past the end of a one-bar phrase.
+TEST_CASE ("Changes made while stopped are in place before cutting resumes mid-bar", "[cutter]")
+{
+    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher);
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    cutter.setProcedure (procedure);
+    CutParameters params;
+    params.minPhraseBars = 1;
+    params.maxPhraseBars = 1;
+    cutter.setParameters (params);
+    cutter.setUnitsPerBar (16);
+    Host host;
+    runSamples (cutter, host, samplesPerBar (host));
+    REQUIRE (cutter.activeUnitsPerBar() == 16);
+
+    cutter.reset();
+    cutter.setUnitsPerBar (8);
+    host.beats = 5 * 4.0 + 3.0; // bar 5, beat 4: unit 6 at 8 units per bar
+
+    REQUIRE_NOTHROW (runSamples (cutter, host, 1));
+    CHECK (cutter.isCutting());
+    CHECK (cutter.activeUnitsPerBar() == 8);
+    CHECK (cutter.phraseStartBar() == 5);
+    CHECK_THAT (cutter.blockStartUnits(), WithinAbs (6.0, 1.0e-9));
+    REQUIRE_NOTHROW (runSamples (cutter, host, 2 * samplesPerBar (host)));
+}
+
+// Found in review: a host whose bar start lags behind its position (or a
+// count-in before bar 0) reports beats outside the bar, which were only wrapped once.
+TEST_CASE ("Host positions outside the bar are counted into the right bar", "[cutter]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    const Host host;
+    float left[1] {};
+    float right[1] {};
+
+    cutter.process (left, right, 1, host.timing(), Position { 3, 9.0 }); // really bar 5, beat 2
+    CHECK (cutter.isCutting());
+    CHECK (cutter.phraseStartBar() == 5);
+    CHECK_THAT (cutter.blockStartUnits(), WithinAbs (2.0, 1.0e-9));
+
+    cutter.reset();
+    cutter.process (left, right, 1, host.timing(), Position { 2, -1.0 }); // really bar 1, beat 4
+    CHECK (cutter.isCutting());
+    CHECK (cutter.phraseStartBar() == 1);
+    CHECK_THAT (cutter.blockStartUnits(), WithinAbs (6.0, 1.0e-9));
+}
+
+// Found in review: blocks were sized in samples at the tempo they started at,
+// so slowing down part way through one left the rest of it silent.
+TEST_CASE ("A tempo drop part way through a block doesn't leave it silent", "[cutter]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    cutter.setFadeMilliseconds (0.0);
+    Host host;
+    std::vector<float> left (512, 0.5f);
+    std::vector<float> right (512, 0.5f);
+
+    cutter.process (left.data(), right.data(), 512, host.timing(), host.position());
+    host.advance (512);
+    host.bpm = 60.0;
+
+    int longestSilence = 0;
+    int silence = 0;
+
+    for (int i = 0; i < 2 * 4 * 48000 / 512; ++i)
+    {
+        std::fill (left.begin(), left.end(), 0.5f);
+        std::fill (right.begin(), right.end(), 0.5f);
+        cutter.process (left.data(), right.data(), 512, host.timing(), host.position());
+        host.advance (512);
+        REQUIRE (cutter.isCutting());
+
+        for (const auto sample : left)
+        {
+            silence = std::abs (sample) > 0.0f ? 0 : silence + 1;
+            longestSilence = std::max (longestSilence, silence);
+        }
+    }
+
+    // With the gate fully open, the only silent samples are the single first sample of each cut's fade-in.
+    CHECK (longestSilence <= 1);
 }

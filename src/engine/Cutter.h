@@ -77,6 +77,7 @@ public:
 
 private:
     CutProcedure& procedureFor (Procedure p);
+    double samplesPerUnit (const Timing& timing) const;
     void startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timing);
     void startBlock (const Timing& timing);
     void applyStructuralChanges();
