@@ -30,7 +30,9 @@ inline void sweep (std::span<Cut> cuts, Random& random, const CutParameters& par
     }
 }
 
-// Gives every cut its own random pan, amplitude and pitch.
+// Gives every cut its own random pan, amplitude and pitch. The first cut
+// plays the input live and keeps its original pitch, but still draws its
+// random pitch so existing seeds keep the same pattern.
 inline void scatter (std::span<Cut> cuts, Random& random, const CutParameters& params)
 {
     for (auto& cut : cuts)
@@ -39,6 +41,9 @@ inline void scatter (std::span<Cut> cuts, Random& random, const CutParameters& p
         cut.amp = static_cast<float> (random.uniform (params.minAmp, params.maxAmp));
         cut.cents = static_cast<float> (random.uniform (params.minCents, params.maxCents));
     }
+
+    if (! cuts.empty())
+        cuts.front().cents = 0.0f;
 }
 
 } // namespace livecut::engine
