@@ -62,6 +62,8 @@ target_sources(LivecutCode
     INTERFACE
         src/HostSync.cpp
         src/HostSync.h
+        src/Parameters.cpp
+        src/Parameters.h
         src/PluginProcessor.cpp
         src/PluginProcessor.h)
 target_include_directories(LivecutCode INTERFACE src)
@@ -90,6 +92,7 @@ if(LIVECUT_BUILD_TESTS)
 
     add_executable(LivecutTests
         tests/HostSyncTests.cpp
+        tests/ParametersTests.cpp
         tests/PluginProcessorTests.cpp)
     livecut_build_for_host_only(LivecutTests)
     # The JucePlugin_* definitions only exist on the plugin target, so copy them.
