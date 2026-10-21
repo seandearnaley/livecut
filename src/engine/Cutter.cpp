@@ -6,6 +6,8 @@
 #include "engine/PhraseSeed.h"
 #include "engine/SwingGrid.h"
 #include "engine/Accent.h"
+#include "engine/TransformSpan.h"
+#include <bit>
 #include <algorithm>
 
 #include <cassert>
@@ -87,6 +89,15 @@ void Cutter::setAccent (float amount)
     accent = amount;
 }
 
+void Cutter::setTransforms (TransformParameters parameters)
+{
+    assert (std::isfinite (parameters.thresholdDb) && parameters.thresholdDb >= 3.0 && parameters.thresholdDb <= 24.0);
+    assert (std::isfinite (parameters.reverseChance) && parameters.reverseChance >= 0.0 && parameters.reverseChance <= 1.0);
+    transformParameters = parameters;
+    if (! cutting && (parameters.attackAlign || parameters.reverseChance > 0.0))
+        transforms.reason = TransformReason::awaitingCut;
+}
+
 void Cutter::setFadeMilliseconds (double milliseconds)
 {
     fadeMilliseconds = milliseconds;
@@ -97,6 +108,7 @@ void Cutter::reset()
 {
     resetRendering();
     livePlayer.resetSource();
+    transforms = {};
 }
 
 void Cutter::resetRendering()
@@ -297,9 +309,15 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
         if (hasSwingWarp (swing, timing.beatsPerBar))
             renderSwung (left, right, bar, beats, beatsPerSample, timing, frame + 1);
         else
+        {
+            selectTransform (frame);
             livePlayer.renderFrame (left, right);
+        }
         if (livePlayer.hasSourceError())
+        {
             processingError = Error::sourceUnavailable;
+            transforms.reason = TransformReason::sourceLost;
+        }
 
         // The effects always run, so switching one on picks up a current
         // delay line and hold rather than stale audio.
@@ -442,6 +460,20 @@ void Cutter::planBlock (const Timing& timing)
     plan.source = planningSource;
     plan.phraseBar = phraseBar;
     plan.unitsPerBar = unitsPerBar;
+    plan.transform = transformParameters;
+    plan.transformSeed = seed;
+    plan.transportEpoch = 0;
+    plan.attacks = {};
+    if (plan.transform.attackAlign || plan.transform.reverseChance > 0.0)
+    {
+        if (sourceContext != nullptr)
+            if (const auto bounds = sourceContext->sourceBoundsAt (planningSource.firstFrame))
+            {
+                plan.transportEpoch = bounds->epoch;
+                if (plan.transform.attackAlign)
+                    plan.attacks.reset (planningSource.firstFrame, bounds->epoch, bounds->first, sampleRate, plan.transform.thresholdDb);
+            }
+    }
     const auto intoBar = blockStart - std::floor (blockStart / unitsPerBar) * unitsPerBar;
     plan.activationBar = phraseBar + static_cast<std::int64_t> (std::floor (blockStart / unitsPerBar));
     plan.activationBeat = *SwingGrid::toPhysical (std::clamp (intoBar * timing.beatsPerBar / unitsPerBar, 0.0, timing.beatsPerBar), timing.beatsPerBar, swing);
@@ -511,7 +543,99 @@ void Cutter::renderSwung (float& left, float& right, std::int64_t bar, double be
         const auto toGate = physicalDistance (start + cut.units * cut.gate, bar, beats, timing);
         livePlayer.retimeMusicalCut (static_cast<int> (std::lround (toEnd / beatsPerSample)), static_cast<int> (std::lround (toGate / beatsPerSample)), renderedExclusiveEnd);
     }
+    selectTransform (renderedExclusiveEnd - 1);
     livePlayer.renderFrame (left, right, false);
+}
+
+void Cutter::selectTransform (std::int64_t frame)
+{
+    const auto index = livePlayer.currentCut();
+    if (index >= livePlayer.cuts().size() || livePlayer.cuts()[index].transformDecided)
+        return;
+    const auto& parameters = activePlan.transform;
+    const auto ineligible = [&] (TransformReason reason)
+    {
+        ++transforms.ineligible;
+        transforms.reason = reason;
+        livePlayer.markCurrentTransformDecided();
+    };
+    if (! parameters.attackAlign && parameters.reverseChance <= 0.0)
+    {
+        transforms.reason = TransformReason::off;
+        livePlayer.markCurrentTransformDecided();
+        return;
+    }
+    const auto& cut = livePlayer.cuts()[index];
+    if (livePlayer.currentSoundingFrames() <= 0)
+    {
+        ineligible (TransformReason::silentCut);
+        return;
+    }
+    const auto required = requiredSourceFrames (livePlayer.currentSoundingFrames(), cut.rate, activePlan.source.frameCount);
+    if (! required)
+    {
+        ineligible (TransformReason::tooLong);
+        return;
+    }
+    const auto bounds = sourceContext != nullptr ? sourceContext->sourceBoundsAt (frame) : std::nullopt;
+    if (! bounds || bounds->epoch != activePlan.transportEpoch || (parameters.attackAlign && onsetDetector == nullptr))
+    {
+        ineligible (TransformReason::analysisError);
+        return;
+    }
+    const auto eligible = [&] (std::int64_t start, std::int64_t count)
+    {
+        return start >= bounds->first && (! bounds->end || (start < *bounds->end && count <= *bounds->end - start))
+            && livePlayer.sourceAvailable ({ activePlan.source.epoch, start, count });
+    };
+    auto sourceStart = activePlan.source.firstFrame;
+    if (parameters.attackAlign)
+    {
+        const auto state = activePlan.attacks.update (*onsetDetector, bounds->end);
+        if (state != AttackCandidates::State::ready)
+        {
+            ineligible (state == AttackCandidates::State::pending ? TransformReason::searchPending : TransformReason::analysisError);
+            return;
+        }
+        const auto chosen = activePlan.attacks.nearestEligible (*required, eligible);
+        if (! chosen)
+        {
+            ineligible (activePlan.attacks.count() == 0 ? TransformReason::noAttack : TransformReason::sourceIncomplete);
+            return; // Attack Align also conditions reverse eligibility.
+        }
+        sourceStart = chosen->sourceStart;
+    }
+    else if (! eligible (sourceStart, *required))
+    {
+        ineligible (TransformReason::sourceIncomplete);
+        return;
+    }
+
+    // Independent, stateless decision. Neither planning nor activation consumes
+    // a draw from the legacy musical/effect RNG, including ineligible cuts.
+    auto hash = static_cast<std::uint64_t> (activePlan.phraseBar)
+              ^ (static_cast<std::uint64_t> (activePlan.transformSeed) << 32)
+              ^ std::bit_cast<std::uint64_t> (activePlan.start)
+              ^ (std::bit_cast<std::uint64_t> (cut.logicalStart) * 0x9e3779b97f4a7c15ULL)
+              ^ 0xd6e8feb86659fd93ULL;
+    hash = (hash ^ (hash >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    hash = (hash ^ (hash >> 27)) * 0x94d049bb133111ebULL;
+    hash ^= hash >> 31;
+    const auto reverse = parameters.reverseChance >= 1.0
+                      || static_cast<double> (hash >> 11) * 0x1p-53 < parameters.reverseChance;
+    if ((parameters.attackAlign || reverse)
+        && ! livePlayer.setCurrentTransform ({ activePlan.source.epoch, sourceStart, *required }, reverse))
+    {
+        processingError = Error::sourceUnavailable;
+        ineligible (TransformReason::sourceLost);
+        return;
+    }
+    livePlayer.markCurrentTransformDecided();
+    ++transforms.eligible;
+    transforms.attackAligned += parameters.attackAlign ? 1 : 0;
+    transforms.reversed += reverse ? 1 : 0;
+    transforms.lastSourceStart = sourceStart;
+    transforms.reason = parameters.attackAlign || reverse ? TransformReason::applied : TransformReason::eligibleForward;
 }
 
 void Cutter::startEffectsCut()

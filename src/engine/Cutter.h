@@ -5,6 +5,7 @@
 #include "engine/CutProcedures.h"
 #include "engine/Effects.h"
 #include "engine/LivePlayer.h"
+#include "engine/AttackCandidates.h"
 
 #include <cstdint>
 #include <array>
@@ -65,6 +66,27 @@ public:
     void setSeed (std::uint32_t seed);
     void setSwing (double percent);
     void setAccent (float amount);
+
+    struct TransformParameters { bool attackAlign = false; double thresholdDb = 6.0, reverseChance = 0.0; };
+    struct TransportBounds { std::uint64_t epoch; std::int64_t first; std::optional<std::int64_t> end; };
+    struct SourceContext
+    {
+        virtual ~SourceContext() = default;
+        // Queried at planning/activation, never cached across future input epochs.
+        virtual std::optional<TransportBounds> sourceBoundsAt (std::int64_t renderFrame) const = 0;
+    };
+    void setTransforms (TransformParameters);
+    void setTransformSource (const OnsetDetector& detector, const SourceContext& source)
+    { onsetDetector = &detector; sourceContext = &source; }
+    enum class TransformReason { off, awaitingCut, searchPending, noAttack, sourceIncomplete, tooLong,
+                                 sourceLost, applied, eligibleForward, silentCut, analysisError };
+    struct TransformStats
+    {
+        std::uint64_t eligible = 0, attackAligned = 0, reversed = 0, ineligible = 0;
+        std::int64_t lastSourceStart = -1;
+        TransformReason reason = TransformReason::off;
+    };
+    const TransformStats& transformStats() const { return transforms; }
 
     void setFadeMilliseconds (double milliseconds);
 
@@ -129,6 +151,7 @@ private:
     void renderSwung (float& left, float& right, std::int64_t bar, double beats, double beatsPerSample, const Timing& timing, std::int64_t renderedExclusiveEnd);
     double physicalDistance (double phraseUnits, std::int64_t bar, double beats, const Timing& timing) const;
     void startEffectsCut();
+    void selectTransform (std::int64_t renderFrame);
     void applyStructuralChanges();
 
     struct BlockPlan
@@ -141,6 +164,10 @@ private:
         int unitsPerBar = 8;
         std::array<double, 6> effects {};
         CombParameters comb;
+        TransformParameters transform;
+        AttackCandidates attacks;
+        std::uint64_t transportEpoch = 0;
+        std::uint32_t transformSeed = 1;
     };
     // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
     // 1/32-bar block starts plus a boundary/recovery plan await activation.
@@ -151,6 +178,10 @@ private:
     std::size_t queueHead = 0, queued = 0, maximumQueued = 0;
     bool hasActivePlan = false;
     SourceRegion planningSource {};
+    TransformParameters transformParameters;
+    TransformStats transforms;
+    const OnsetDetector* onsetDetector = nullptr;
+    const SourceContext* sourceContext = nullptr;
     Error processingError = Error::none;
     double swing = 50.0, pendingSwing = 50.0;
     float accent = 0.0f;

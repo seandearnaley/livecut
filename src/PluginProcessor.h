@@ -64,6 +64,7 @@ private:
     void observeTransport (const juce::Optional<juce::AudioPlayHead::PositionInfo>&);
     void process (juce::AudioBuffer<float>&, bool bypass);
     void publishDisplay();
+    void publishTransformDisplay();
     void discontinuity (int) override { capture.rolling().interrupt(); wetHold.interrupt(); }
     void barStarted (int, std::int64_t) override { wetHold.barStarted(); }
     void phraseCompleted (int) override { capture.rolling().completePhrase(); wetHold.completePhrase(); }

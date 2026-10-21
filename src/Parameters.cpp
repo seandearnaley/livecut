@@ -323,6 +323,7 @@ void applySettings (engine::Cutter& cutter, const Settings& settings)
     cutter.setSeed (settings.seed);
     cutter.setSwing (settings.swingPercent);
     cutter.setAccent (settings.accent);
+    cutter.setTransforms ({ settings.attackAlign, settings.attackThresholdDb, settings.reverseChance });
     cutter.setFadeMilliseconds (settings.fadeMilliseconds);
     cutter.setParameters (settings.cut);
     cutter.setCrusher (settings.crusher);

@@ -51,6 +51,7 @@ void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
             mixer.prepare (sampleRate, settings.wet, settings.outputTrimDb);
             processingRunning = false;
             stream = std::move (prepared);
+            publishTransformDisplay();
             ++configurationGeneration;
             display.hold = wetHold.state();
             display.status = livecut::DisplayState::Status::waitingForHost;
@@ -235,6 +236,7 @@ void LivecutAudioProcessor::tryApplyMode()
         suspendProcessing (true);
         retired = std::move (stream);
         stream = std::move (prepared);
+        publishTransformDisplay();
         ++configurationGeneration;
         observedTransport = AudioObservation::unknown;
         capture.rolling().interrupt();
@@ -421,6 +423,7 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float>& buffer, bool bypa
             break;
         }
     }
+    publishTransformDisplay();
     if (resources.fault)
         display.status = livecut::DisplayState::Status::streamError;
     else if (! produced)
@@ -433,6 +436,16 @@ void LivecutAudioProcessor::processOutput (int, float dryLeft, float dryRight, f
 {
     wetHold.process (left, right, processingBeatsPerSample);
     mixer.process (dryLeft, dryRight, left, right);
+}
+
+void LivecutAudioProcessor::publishTransformDisplay()
+{
+    const auto& transforms = stream->cutter.transformStats();
+    display.transformEligible = transforms.eligible;
+    display.attackApplied = transforms.attackAligned;
+    display.reverseApplied = transforms.reversed;
+    display.transformIneligible = transforms.ineligible;
+    display.transformReason = transforms.reason;
 }
 
 void LivecutAudioProcessor::publishDisplay()
@@ -577,6 +590,10 @@ juce::String LivecutAudioProcessor::transformStatusText() const
         case Reason::sourceIncomplete: reason = "Complete source audio has not arrived for this cut"; break;
         case Reason::tooLong: reason = "This cut needs more source audio than the available budget"; break;
         case Reason::sourceLost: reason = "Selected source was lost; wet audio is gated"; break;
+        case Reason::applied: reason = "Selected complete source is fixed for this cut"; break;
+        case Reason::eligibleForward: reason = "Source eligible; reverse draw chose forward playback"; break;
+        case Reason::silentCut: reason = "Silent cut has no source to transform"; break;
+        case Reason::analysisError: reason = "Attack/source metadata unavailable for this cut"; break;
     }
     return reason + "\nEligible " + juce::String (display.transformEligible.load())
          + " | Attack aligned " + juce::String (display.attackApplied.load())

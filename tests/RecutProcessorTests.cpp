@@ -723,3 +723,69 @@ TEST_CASE ("Obsolete Apply prebuild cannot overwrite a newer published configura
     CHECK (processor.reportedLatencySamples() == 8000);
     CHECK_FALSE (processor.isSuspended());
 }
+
+TEST_CASE ("Studio transforms feed one delayed mixer and final-output capture with published counters", "[processor][recut][selection][capture]")
+{
+    const auto reverse = GENERATE (false, true);
+    LivecutAudioProcessor processor;
+    for (const auto* id : { "mode", "attackAlign", "minPhraseBars", "maxPhraseBars", "straightChance" })
+        setRecut (processor, id, 1.0f);
+    setRecut (processor, "reverseChance", reverse ? 1.0f : 0.0f);
+    setRecut (processor, "procedure", 1.0f);
+    setRecut (processor, "subdivision", 6.0f); //32 units: complete first source fits the500ms lead
+    setRecut (processor, "minPan", 0.0f);
+    setRecut (processor, "maxPan", 0.0f);
+    setRecut (processor, "wet", .5f);
+    setRecut (processor, "outputTrim", -6.0f);
+    processor.prepareToPlay (8000.0, 137);
+    RecutHead head;
+    processor.setPlayHead (&head);
+    const auto raw = [] (int frame, int channel)
+    {
+        if (frame == 96)
+            return channel == 0 ? .9f : -.6f;
+        return channel == 0 ? .01f + static_cast<float> (frame) * .000001f
+                            : -.03f - static_cast<float> (frame) * .000002f;
+    };
+    juce::MidiBuffer midi;
+    std::array<std::vector<float>, 2> heard;
+    int firstSoundingFrames = 0;
+    std::size_t allocations = 0;
+    for (int first = 0; first < 21000; first += 137)
+    {
+        const auto frames = std::min (137, 21000 - first);
+        head.at (first / 4000.0);
+        juce::AudioBuffer<float> buffer (2, frames);
+        for (int channel = 0; channel < 2; ++channel)
+            for (int i = 0; i < frames; ++i)
+                buffer.setSample (channel, i, raw (first + i, channel));
+        {
+            const livecut::engine::testing::AllocationCounter counter;
+            processor.processBlock (buffer, midi);
+            allocations += counter.count();
+        }
+        if (firstSoundingFrames == 0 && processor.getDisplayState().attackApplied.load() > 0)
+            firstSoundingFrames = processor.getCutter().player().currentSoundingFrames();
+        for (int channel = 0; channel < 2; ++channel)
+            heard[static_cast<std::size_t> (channel)].insert (heard[static_cast<std::size_t> (channel)].end(),
+                buffer.getReadPointer (channel), buffer.getReadPointer (channel) + frames);
+    }
+    REQUIRE (firstSoundingFrames > 17);
+    const auto gain = juce::Decibels::decibelsToGain (-6.0f);
+    for (int channel = 0; channel < 2; ++channel)
+    {
+        const auto source = raw (80 + (reverse ? firstSoundingFrames - 1 - 17 : 17), channel);
+        const auto wet = livecut::engine::fadeEnvelope (17, 1, firstSoundingFrames) * source;
+        const auto dry = raw (17, channel);
+        CHECK (heard[static_cast<std::size_t> (channel)][4017] == (dry + .5f * (wet - dry)) * gain);
+    }
+    CHECK (processor.getDisplayState().attackApplied.load() >= 1);
+    CHECK (processor.getDisplayState().reverseApplied.load() == (reverse ? processor.getDisplayState().attackApplied.load() : 0));
+    CHECK (processor.transformStatusText().contains ("Attack aligned"));
+    auto captured = processor.getCaptureService().rolling().acquireLatest();
+    REQUIRE (captured);
+    REQUIRE (captured.channel (0).size() == 16000);
+    CHECK (std::memcmp (captured.channel (0).data(), heard[0].data() + 4000, 16000 * sizeof (float)) == 0);
+    CHECK (std::memcmp (captured.channel (1).data(), heard[1].data() + 4000, 16000 * sizeof (float)) == 0);
+    CHECK (allocations == 0);
+}

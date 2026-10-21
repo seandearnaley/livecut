@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include "engine/WetHold.h"
+#include "engine/Cutter.h"
 
 namespace livecut
 {
@@ -33,7 +34,7 @@ struct DisplayState
     std::atomic<double> blockStart { 0.0 }; // units into the phrase
     std::atomic<double> blockEnd { 0.0 };
     std::atomic<double> position { 0.0 };
-    enum class TransformReason { off, awaitingCut, searchPending, noAttack, sourceIncomplete, tooLong, sourceLost };
+    using TransformReason = engine::Cutter::TransformReason;
     std::atomic<TransformReason> transformReason { TransformReason::off };
     std::atomic<std::uint64_t> transformEligible { 0 }, attackApplied { 0 }, reverseApplied { 0 }, transformIneligible { 0 };
 

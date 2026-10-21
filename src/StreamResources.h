@@ -19,7 +19,7 @@ struct RenderContext
 
 // One physical stream, exclusively mutated by audio after preparation/swap.
 // The processor keeps Hold, mixer and CaptureService stable across mode changes.
-struct StreamResources
+struct StreamResources : private engine::Cutter::SourceContext
 {
     using Timeline = engine::DelayTimeline<RenderContext>;
     StreamResources (double rate, ProcessingMode selected) : sampleRate (rate), mode (selected)
@@ -30,6 +30,7 @@ struct StreamResources
         cutter.prepare (rate, latency);
         if (! detector.prepare (rate, 8192, 3.0) || ! timeline.prepare (latency))
             throw std::runtime_error ("Cannot prepare stream metadata");
+        cutter.setTransformSource (detector, *this);
     }
 
     bool appendContext (RenderContext context, int frames, std::uint64_t& epochCounter)
@@ -55,6 +56,13 @@ struct StreamResources
         if (context.running)
             expectedPpq = context.ppq + frames * context.timing.bpm / 60.0 / sampleRate;
         return true;
+    }
+
+    std::optional<engine::Cutter::TransportBounds> sourceBoundsAt (std::int64_t frame) const override
+    {
+        if (const auto epoch = timeline.sourceEpoch (frame))
+            return engine::Cutter::TransportBounds { epoch->id, epoch->start, epoch->end };
+        return std::nullopt;
     }
 
     engine::Cutter cutter;
