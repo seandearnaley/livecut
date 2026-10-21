@@ -7,6 +7,7 @@
 #include "OutputMixer.h"
 #include "Parameters.h"
 #include "engine/Cutter.h"
+#include "engine/WetHold.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -43,12 +44,14 @@ public:
     const livecut::engine::Cutter& getCutter() const { return cutter; }
     const livecut::DisplayState& getDisplayState() const { return display; }
     livecut::CaptureService& getCaptureService() { return capture; }
+    juce::String holdStatusText() const;
 
 private:
     void publishDisplay();
-    void discontinuity (int) override { capture.rolling().interrupt(); }
-    void phraseCompleted (int) override { capture.rolling().completePhrase(); }
-    void phraseStarted (int, bool fullStart) override { capture.rolling().startPhrase (fullStart); }
+    void discontinuity (int) override { capture.rolling().interrupt(); wetHold.interrupt(); }
+    void barStarted (int, std::int64_t) override { wetHold.barStarted(); }
+    void phraseCompleted (int) override { capture.rolling().completePhrase(); wetHold.completePhrase(); }
+    void phraseStarted (int, bool fullStart) override { capture.rolling().startPhrase (fullStart); wetHold.startPhrase (fullStart, cutter.phraseBarCount() * processingBeatsPerBar); }
     void processOutput (int, float dryLeft, float dryRight, float& left, float& right) override;
 
     juce::AudioProcessorValueTreeState parameters;
@@ -57,6 +60,9 @@ private:
     livecut::DisplayState display;
     livecut::OutputMixer mixer;
     livecut::CaptureService capture;
+    livecut::engine::WetHold wetHold;
+    double processingSampleRate = 48000.0, processingBeatsPerSample = 0.0, processingBeatsPerBar = 4.0;
+    std::atomic<bool> resetHoldRequested { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivecutAudioProcessor)
 };

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <atomic>
+#include "engine/WetHold.h"
 
 namespace livecut
 {
@@ -17,10 +18,13 @@ struct DisplayState
         waitingForHost, // the host is stopped or doesn't report its transport
         barTooLong,     // bars last longer than the cutter can record
         startingSoon,   // playing, waiting for the next unit to start cutting
-        cutting
+        cutting,
+        planOverflow,
+        sourceUnavailable
     };
 
     std::atomic<Status> status { Status::waitingForHost };
+    std::atomic<engine::WetHold::State> hold { engine::WetHold::State::live };
     std::atomic<int> phraseBars { 0 };
     std::atomic<int> unitsPerBar { 8 };
     std::atomic<double> blockStart { 0.0 }; // units into the phrase

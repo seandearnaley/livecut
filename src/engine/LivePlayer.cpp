@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <numbers>
+#include <stdexcept>
 
 namespace livecut::engine
 {
@@ -53,11 +54,14 @@ int playableSamples (int length, double rate, int recorded, int capacity)
 void LivePlayer::prepare (int newCapacity)
 {
     capacity = newCapacity;
-    recordedLeft.assign (static_cast<std::size_t> (capacity), 0.0f);
-    recordedRight.assign (static_cast<std::size_t> (capacity), 0.0f);
+    // A block may repeat its first eight seconds for the entire eight-bar
+    // phrase. Every supported bar <=8s, so 8*sourceExtent plus two interpolation
+    // guards retains its origin until its last output frame, even with swing.
+    if (! history.prepare (8 * static_cast<std::size_t> (capacity) + 2))
+        throw std::runtime_error ("Cannot prepare source history");
+    sourceError = false;
     playing.clear();
     playing.reserve (maxCutsPerBlock);
-    recorded = 0;
     current = 0;
     position = 0;
 }
@@ -79,9 +83,14 @@ int LivePlayer::playableFor (const PlayingCut& cut, int soundingLength) const
 
 void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit)
 {
+    startBlock (cuts, newSamplesPerUnit, sourceForNextFrame());
+}
+
+void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit, SourceRegion newSource)
+{
+    source = newSource;
     assert (cuts.size() <= maxCutsPerBlock);
     playing.clear();
-    recorded = 0;
     current = 0;
     position = 0;
     samplesPerUnit = newSamplesPerUnit;
@@ -103,6 +112,7 @@ void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit
             playingCut.start = start;
             playingCut.size = size;
             playingCut.units = cut.units;
+            playingCut.logicalStart = units - cut.units;
             playingCut.gate = cut.gate;
             playingCut.pitched = std::abs (cut.cents) > 1.0e-3f && (i > 0 || cut.cents < 0.0f);
             playingCut.rate = playingCut.pitched ? std::pow (2.0, cut.cents / 1200.0) : 1.0;
@@ -178,15 +188,77 @@ void LivePlayer::skipFinishedCuts()
     }
 }
 
+SourceRegion LivePlayer::sourceAtFrame (std::int64_t frame) const
+{
+    return { history.retainedRegion().epoch, frame, capacity };
+}
+
+SourceRegion LivePlayer::sourceForNextFrame() const
+{
+    const auto retained = history.retainedRegion();
+    return sourceAtFrame (retained.firstFrame + retained.frameCount);
+}
+
+void LivePlayer::resetRendering()
+{
+    playing.clear();
+    current = 0;
+    position = 0;
+    sourceError = false;
+}
+
+void LivePlayer::resetSource()
+{
+    sourceError = ! history.reset();
+}
+
+bool LivePlayer::ingestFrame (float left, float right)
+{
+    if (! history.append ({ left, right }))
+        sourceError = true;
+    return ! sourceError;
+}
+
+std::optional<StereoFrame> LivePlayer::readSourceFrame (double relativeFrame) const
+{
+    if (! std::isfinite (relativeFrame) || relativeFrame < 0.0 || relativeFrame >= static_cast<double> (source.frameCount))
+        return std::nullopt;
+    const auto index = static_cast<std::int64_t> (relativeFrame);
+    // Validate the double fraction before AudioHistory converts it to float
+    // for classic interpolation; a value below one can round to float 1.0.
+    return history.readFractional (source, index, relativeFrame - static_cast<double> (index));
+}
+
 void LivePlayer::process (float& left, float& right)
 {
-    if (recorded < capacity)
-    {
-        recordedLeft[static_cast<std::size_t> (recorded)] = left;
-        recordedRight[static_cast<std::size_t> (recorded)] = right;
-        ++recorded;
-    }
+    ingestFrame (left, right);
+    renderFrame (left, right);
+}
 
+void LivePlayer::advanceToUnits (double logicalUnits)
+{
+    while (current < playing.size() && logicalUnits >= playing[current].logicalStart + playing[current].units)
+    {
+        ++current;
+        position = 0;
+    }
+}
+
+void LivePlayer::retimeMusicalCut (int samplesToEnd, int samplesToGate)
+{
+    if (current >= playing.size())
+        return;
+    auto& cut = playing[current];
+    cut.size = position + std::max (samplesToEnd, 1);
+    const auto sounding = position + std::max (samplesToGate, 0);
+    const auto progress = sourceForNextFrame().firstFrame - source.firstFrame;
+    const auto recordedAtStart = static_cast<int> (std::clamp<std::int64_t> (progress - position - 1, 0, capacity));
+    cut.playable = cut.pitched ? (cut.start == 0 && cut.rate < 1.0 ? sounding : playableSamples (sounding, cut.rate, recordedAtStart, capacity))
+                               : std::min (sounding, capacity);
+}
+
+void LivePlayer::renderFrame (float& left, float& right, bool advanceBySamples)
+{
     if (current >= playing.size())
     {
         left = 0.0f;
@@ -203,26 +275,16 @@ void LivePlayer::process (float& left, float& right)
         float inLeft;
         float inRight;
 
-        if (cut.pitched)
+        const auto read = cut.pitched ? static_cast<double> (position) * cut.rate : static_cast<double> (position);
+        const auto frame = readSourceFrame (read);
+        if (! frame)
         {
-            const auto read = static_cast<double> (position) * cut.rate;
-            const auto index = static_cast<std::size_t> (read);
-            const auto fraction = static_cast<float> (read - static_cast<double> (index));
-            inLeft = recordedLeft[index];
-            inRight = recordedRight[index];
-
-            // At the first live sample, only index has been recorded.
-            if (fraction > 0.0f)
-            {
-                inLeft += fraction * (recordedLeft[index + 1] - recordedLeft[index]);
-                inRight += fraction * (recordedRight[index + 1] - recordedRight[index]);
-            }
+            sourceError = true;
+            left = right = 0.0f;
+            return;
         }
-        else
-        {
-            inLeft = recordedLeft[static_cast<std::size_t> (position)];
-            inRight = recordedRight[static_cast<std::size_t> (position)];
-        }
+        inLeft = frame->left;
+        inRight = frame->right;
 
         const auto envelope = fadeEnvelope (position, fade, cut.playable);
         outLeft = envelope * (cut.leftToLeft * inLeft + cut.rightToLeft * inRight);
@@ -232,7 +294,8 @@ void LivePlayer::process (float& left, float& right)
     left = outLeft;
     right = outRight;
     ++position;
-    skipFinishedCuts();
+    if (advanceBySamples)
+        skipFinishedCuts();
 }
 
 } // namespace livecut::engine

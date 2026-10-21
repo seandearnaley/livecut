@@ -323,3 +323,15 @@ TEST_CASE ("Capture controls follow readiness and jobs survive editor destructio
     REQUIRE (save != nullptr);
     CHECK (save->isEnabled());
 }
+
+TEST_CASE ("Perform editor displays groove Hold and its status", "[editor][perform]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    for (const auto* id : { "swing", "accent", "hold", "holdStatus" })
+    {
+        INFO (id);
+        REQUIRE (findById (editor, id) != nullptr);
+    }
+}

@@ -194,7 +194,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 integer (ids::climb, "Climb", 0, 12, 7, "", 2, semitones()),
                 number (ids::halftimeChance, "Halftime", FloatRange (0.0f, 1.0f), 0.15f, percent(), 2),
                 number (ids::wet, "Wet", FloatRange (0.0f, 1.0f), 1.0f, percent(), 3),
-                number (ids::outputTrim, "Output Trim", FloatRange (-24.0f, 24.0f), 0.0f, decimals (1, "dB"), 3));
+                number (ids::outputTrim, "Output Trim", FloatRange (-24.0f, 24.0f), 0.0f, decimals (1, "dB"), 3),
+                number (ids::swing, "Swing", FloatRange (50.0f, 75.0f), 50.0f, decimals (1, "%"), 4),
+                number (ids::accent, "Accent", FloatRange (0.0f, 1.0f), 0.0f, percent(), 4),
+                toggle (ids::hold, "Audio Hold", false, 4));
 
     return layout;
 }
@@ -238,7 +241,10 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       climb (state, ids::climb),
       halftimeChance (state, ids::halftimeChance),
       wet (state, ids::wet),
-      outputTrim (state, ids::outputTrim)
+      outputTrim (state, ids::outputTrim),
+      swing (state, ids::swing),
+      accent (state, ids::accent),
+      hold (state, ids::hold)
 {
 }
 
@@ -251,6 +257,9 @@ Settings SettingsReader::read() const
     settings.fadeMilliseconds = fade.read();
     settings.wet = wet.read();
     settings.outputTrimDb = outputTrim.read();
+    settings.swingPercent = swing.read();
+    settings.accent = accent.read();
+    settings.hold = hold.read() > 0.5f;
 
     auto& cut = settings.cut;
     cut.minPhraseBars = minPhraseBars.readIndex();
@@ -299,6 +308,8 @@ void applySettings (engine::Cutter& cutter, const Settings& settings)
     cutter.setProcedure (settings.procedure);
     cutter.setUnitsPerBar (settings.unitsPerBar);
     cutter.setSeed (settings.seed);
+    cutter.setSwing (settings.swingPercent);
+    cutter.setAccent (settings.accent);
     cutter.setFadeMilliseconds (settings.fadeMilliseconds);
     cutter.setParameters (settings.cut);
     cutter.setCrusher (settings.crusher);

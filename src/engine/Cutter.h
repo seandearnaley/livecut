@@ -7,6 +7,7 @@
 #include "engine/LivePlayer.h"
 
 #include <cstdint>
+#include <array>
 #include <span>
 #include <vector>
 
@@ -62,12 +63,16 @@ public:
 
     // Takes effect from the next phrase.
     void setSeed (std::uint32_t seed);
+    void setSwing (double percent);
+    void setAccent (float amount);
 
     void setFadeMilliseconds (double milliseconds);
 
     // Forgets the current phrase. Until the next unit boundary the input
     // passes through; cutting then resumes in the current bar.
     void reset();
+    // Drops render/planner state while preserving already ingested raw history.
+    void resetRendering();
 
     // Synchronous sample events; implementations must never allocate or wait.
     // phraseStarted precedes that phrase's first output sample. fullStart is
@@ -75,6 +80,7 @@ public:
     struct Observer
     {
         virtual ~Observer() = default;
+        virtual void barStarted (int, std::int64_t) {}
         virtual void discontinuity (int sampleOffset) = 0;
         // Exclusive end, including numSamples when a phrase ends exactly at
         // the host buffer boundary. Does not generate the next phrase's cuts.
@@ -86,16 +92,21 @@ public:
     // Cuts a stereo buffer in place. `position` is the host's position at its first sample.
     void process (float* left, float* right, int numSamples, const Timing& timing, const Position& position, Observer* observer = nullptr);
 
-    bool isCutting() const { return cutting; }
+    bool isCutting() const { return cutting && hasActivePlan; }
     bool isTimingSupported() const { return timingSupported; }
     Procedure activeProcedure() const { return procedure; }
     int activeUnitsPerBar() const { return unitsPerBar; }
     std::int64_t phraseStartBar() const { return phraseBar; }
-    double blockStartUnits() const { return blockStart; } // within the phrase
-    double blockEndUnits() const { return blockEnd; }
+    double blockStartUnits() const { return hasActivePlan ? activePlan.start : blockStart; } // within the phrase
+    double blockEndUnits() const { return hasActivePlan ? activePlan.end : blockEnd; }
     int phraseBarCount() const { return phraseBars; }
     double positionInPhrase() const { return phrasePosition; } // units, at the end of the last buffer
-    std::span<const Cut> currentCuts() const { return cuts; }
+    std::span<const Cut> currentCuts() const { return { activePlan.cuts.data(), hasActivePlan ? activePlan.count : 0 }; }
+    SourceRegion activeSourceRegion() const { return activePlan.source; }
+    std::size_t maximumQueuedPlans() const { return maximumQueued; }
+    enum class Error { none, planOverflow, sourceUnavailable };
+    Error error() const { return processingError; }
+    double swingPercent() const { return swing; }
     const LivePlayer& player() const { return livePlayer; }
     const BitCrusher& crusher() const { return bitCrusher; }
     const Comb& comb() const { return combFilter; }
@@ -104,9 +115,39 @@ private:
     CutProcedure& procedureFor (Procedure p);
     double samplesPerUnit (const Timing& timing) const;
     void startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timing);
-    void startBlock (const Timing& timing);
+    void planBlock (const Timing& timing);
+    void activatePlans (std::int64_t bar, double beats, double halfSample, const Timing& timing);
+    void renderSwung (float& left, float& right, std::int64_t bar, double beats, double beatsPerSample, const Timing& timing);
+    double physicalDistance (double phraseUnits, std::int64_t bar, double beats, const Timing& timing) const;
     void startEffectsCut();
     void applyStructuralChanges();
+
+    struct BlockPlan
+    {
+        std::array<Cut, maxCutsPerBlock> cuts {};
+        std::size_t count = 0;
+        SourceRegion source {};
+        std::int64_t phraseBar = 0, activationBar = 0;
+        double activationBeat = 0.0, start = 0.0, end = 0.0;
+        int unitsPerBar = 8;
+        std::array<double, 6> effects {};
+        CombParameters comb;
+    };
+    // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
+    // 1/32-bar block starts plus a boundary/recovery plan await activation.
+    // Sub-quarter bars are straight; SQPusher fills are >=1/8 beat and Bounce
+    // adds at most one fractional recovery. Sixteen slots include that guard.
+    std::array<BlockPlan, 16> plans;
+    BlockPlan activePlan;
+    std::size_t queueHead = 0, queued = 0, maximumQueued = 0;
+    bool hasActivePlan = false;
+    SourceRegion planningSource {};
+    Error processingError = Error::none;
+    double swing = 50.0, pendingSwing = 50.0;
+    float accent = 0.0f;
+    std::uint64_t cutOrdinal = 0;
+    bool emittedBar = false;
+    std::int64_t lastEmittedBar = 0;
 
     double sampleRate = 48000.0;
     CutProc11 cutProc11;
