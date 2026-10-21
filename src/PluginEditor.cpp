@@ -146,6 +146,173 @@ private:
     std::vector<Row> rows;
     juce::Label help;
 };
+// A fixed three-column reader/FX page; it does not own audio or a second AD clock.
+class FracturePage final : public juce::Component
+{
+public:
+    explicit FracturePage (juce::AudioProcessorValueTreeState& state)
+        : familyAttachment (*state.getParameter (ids::fractureProcedure), [this] (float value)
+          {
+              family = static_cast<livecut::engine::FractureProcedure> (juce::jlimit (0, 2, juce::roundToInt (value)));
+              updateEnabled();
+              if (onFamilyChange)
+                  onFamilyChange();
+          })
+    {
+        const auto add = [&] (const char* id, const char* caption, const char* help, int column)
+        {
+            auto* parameter = state.getParameter (id);
+            jassert (parameter != nullptr);
+            std::unique_ptr<juce::Component> control;
+            const auto isChoice = dynamic_cast<juce::AudioParameterChoice*> (parameter) != nullptr;
+            if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (parameter))
+                control = std::make_unique<ui::ChoiceRow> (*choice, column < 0 ? "Family" : "");
+            else if (parameter->isBoolean())
+                control = std::make_unique<ui::PowerSwitch> (*parameter, caption);
+            else
+                control = std::make_unique<ui::SliderRow> (*parameter, caption);
+            control->setTitle (parameter->getName (80));
+            for (auto* child : control->getChildren())
+            {
+                child->setTitle (parameter->getName (80));
+                if (auto* tooltip = dynamic_cast<juce::SettableTooltipClient*> (child))
+                    tooltip->setTooltip (help);
+            }
+            addAndMakeVisible (*control);
+            rows.push_back ({ std::move (control), column, parameter->isBoolean() ? 26 : isChoice ? 28 : 35 });
+        };
+        add (ids::fractureProcedure, "Family", "Classic retains the original four procedures. GrainCut and TapeCut replace the wet source reader. Family changes apply at the next bar.", -1);
+        add (ids::fractureActivity, "Activity", "Grain outer rhythm: 0%, 50%, 100% select 1, 2, 4 cuts per beat. Intermediate values choose adjacent densities deterministically.", 0);
+        add (ids::fractureGrainSizeMs, "Size", "Grain lifetime, 10 to 160 ms. Complete source history is required; otherwise wet audio waits explicitly.", 0);
+        add (ids::fractureGrainDensity, "Density", "Overlap density from 0.5 to 4. Low density intentionally leaves gaps. Fixed eight-voice storage.", 0);
+        add (ids::fractureGrainPositionSpreadMs, "Position spread", "Source scatter within a fixed complete pool, 0 to 250 ms. Missing source is never replaced with Classic audio.", 0);
+        add (ids::fractureGrainPitchSpreadCents, "Pitch spread", "Seeded grain pitch variation, 0 to 1200 cents around common Pitch. Bounded antialiasing resampling reduces aliasing; it is not alias-free.", 0);
+        add (ids::fractureGrainPanSpread, "Pan spread", "Seeded per-grain pan variation around common Pan, clamped to the stereo range.", 0);
+        add (ids::fractureTapeStartSpeed, "Start speed", "Tape speed from 0 to 1x. Speed also changes pitch and replaces the common Pitch controls. At 0x the reader is silent.", 1);
+        add (ids::fractureTapeEndSpeed, "End speed", "Target tape speed from 0 to 1x. Both 0x endpoints produce silence; 1x to 1x retains unit-rate playback.", 1);
+        add (ids::fractureTapeCurve, "Tape curve", "Linear or smooth speed trajectory. Normal forward playback keeps source position and speed continuous through tempo changes.", 1);
+        add (ids::fractureTapeCycle, "Tape cycle", "Outer tape gesture: half, one, two or four quarter-note beats, shortened at bar/phrase end.", 1);
+        add (ids::fractureTapeAlternate, "Alternate sweep", "Swap start/end speed on alternate outer cuts. This does not reverse source audio.", 1);
+        add (ids::fractureFrequencyEnabled, "Ring / shift", "Enable the post-Impact frequency effect for any reader family. No fixed buffered latency; frequency shift has nonlinear phase and is not dry-phase-aligned.", 2);
+        add (ids::fractureFrequencyMode, "Frequency mode", "Ring retains both sidebands and uses absolute Hz. Frequency Shift selects a signed sideband. Shifted content can fold at Nyquist; DC is outside the quadrature guarantee.", 2);
+        add (ids::fractureFrequencyChance, "Chance", "Independent deterministic effect probability once per admitted outer cut, not per internal grain.", 2);
+        add (ids::fractureFrequencyHz, "Rate", "Signed -2000 to +2000 Hz; Ring uses absolute rate, Frequency Shift preserves sign. Settled combined 0 Hz is dry.", 2);
+        add (ids::fractureFrequencyEnvHz, "Env depth", "Hz offset driven by the existing Impact cut attack/decay clock. Edit AD timing on the Impact page; internal grains do not retrigger it.", 2);
+        add (ids::fractureFrequencyRepeatHz, "Repeat", "Hz offset from first to last outer cut in the block. A single cut uses zero progression.", 2);
+        add (ids::fractureFrequencyMix, "Frequency mix", "Frequency amount. Off or 0% is exact dry after a 2 ms transition. IIR phase coloration can affect mixed audio.", 2);
+        const auto label = [&] (juce::Label& target, const char* id, const char* title)
+        {
+            target.setComponentID (id);
+            target.setTitle (title);
+            target.setFont (ui::uiFont (12.0f));
+            target.setColour (juce::Label::textColourId, ui::palette::inkMuted);
+            target.setBorderSize ({});
+            target.setJustificationType (juce::Justification::centredLeft);
+            addAndMakeVisible (target);
+        };
+        label (status, "fractureStatus", "Active reader and source status");
+        label (help, "fractureHelp", "Reader timing and shared envelope instructions");
+        familyAttachment.sendInitialUpdate();
+    }
+
+    std::function<void()> onFamilyChange;
+    livecut::engine::FractureProcedure requestedFamily() const { return family; }
+
+    void refresh (const livecut::DisplayState& display)
+    {
+        const auto main = ui::PhraseRuler::Snapshot::of (display);
+        if (main.status != livecut::DisplayState::Status::cutting)
+        {
+            status.setText (ui::PhraseRuler::describe (main), juce::dontSendNotification);
+            return;
+        }
+        const auto active = display.fractureFamily.load();
+        juce::String text;
+        switch (display.fractureState.load())
+        {
+            case livecut::engine::FractureState::off: text = "Classic reader; Ring / Shift available"; break;
+            case livecut::engine::FractureState::waiting: text = "Waiting for Grain history; wet silent"; break;
+            case livecut::engine::FractureState::playing:
+                text = active == livecut::engine::FractureProcedure::grainCut
+                    ? "GrainCut playing | voices " + juce::String (display.fractureVoices.load())
+                    : "TapeCut playing | speed " + juce::String (display.fractureTapeSpeed.load(), 2) + "x";
+                break;
+            case livecut::engine::FractureState::ended: text = "Cut ended; waiting for next cut"; break;
+            case livecut::engine::FractureState::sourceLost: text = "Source lost; wet silent"; break;
+            case livecut::engine::FractureState::transformBudgetExhausted: text = "Transform budget exhausted; wet silent"; break;
+            case livecut::engine::FractureState::capacityError: text = "Voice capacity error; wet silent"; break;
+            case livecut::engine::FractureState::contextUnavailable: text = "Source context unavailable; wet silent"; break;
+        }
+        if (active != family)
+            text = "Pending next bar: " + familyName (family) + " | " + text;
+        status.setText (text, juce::dontSendNotification);
+    }
+
+    void resized() override
+    {
+        const auto width = (getWidth() - 2 * gap) / 3;
+        std::array<int, 3> tops { 120, 120, 94 };
+        for (auto& row : rows)
+        {
+            if (row.column < 0)
+            {
+                row.control->setBounds (sectionPadding, 8, 275, 28);
+                continue;
+            }
+            const auto col = static_cast<std::size_t> (row.column);
+            row.control->setBounds (row.column * (width + gap) + sectionPadding, tops[col], width - 2 * sectionPadding, row.height);
+            tops[col] += row.height + 3;
+        }
+        status.setBounds (303, 6, getWidth() - 315, 32);
+        help.setBounds (sectionPadding, 43, getWidth() - 2 * sectionPadding, 32);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (ui::palette::well);
+        g.fillRoundedRectangle (getLocalBounds().removeFromTop (81).toFloat(), 4.0f);
+        const auto width = (getWidth() - 2 * gap) / 3;
+        for (int col = 0; col < 3; ++col)
+            g.fillRoundedRectangle (juce::Rectangle<int> (col * (width + gap), 84, width, getHeight() - 84).toFloat(), 4.0f);
+        g.setColour (ui::palette::ink);
+        g.setFont (ui::uiFont (14.0f, true));
+        g.drawText ("GrainCut", juce::Rectangle<int> (sectionPadding, 94, width - 24, 22), juce::Justification::centredLeft);
+        g.drawText ("TapeCut", juce::Rectangle<int> (width + gap + sectionPadding, 94, width - 24, 22), juce::Justification::centredLeft);
+    }
+
+private:
+    static juce::String familyName (livecut::engine::FractureProcedure value)
+    {
+        switch (value)
+        {
+            case livecut::engine::FractureProcedure::classic: return "Classic";
+            case livecut::engine::FractureProcedure::grainCut: return "GrainCut";
+            case livecut::engine::FractureProcedure::tapeCut: return "TapeCut";
+        }
+        jassertfalse;
+        return {};
+    }
+
+    void updateEnabled()
+    {
+        for (auto& row : rows)
+        {
+            if (row.column == 0)
+                row.control->setEnabled (family == livecut::engine::FractureProcedure::grainCut);
+            if (row.column == 1)
+                row.control->setEnabled (family == livecut::engine::FractureProcedure::tapeCut);
+        }
+        help.setText (family == livecut::engine::FractureProcedure::tapeCut
+            ? "Tape speed replaces Pattern pitch. Family: next bar; other settings: next block. Frequency Env uses Impact AD."
+            : "Family: next bar; other settings: next block. Frequency Env uses the cut AD timing on the Impact page.", juce::dontSendNotification);
+    }
+
+    struct Row { std::unique_ptr<juce::Component> control; int column, height; };
+    std::vector<Row> rows;
+    juce::Label status, help;
+    livecut::engine::FractureProcedure family = livecut::engine::FractureProcedure::classic;
+    juce::ParameterAttachment familyAttachment;
+};
 } // namespace
 
 class LivecutAudioProcessorEditor::Panel final : public juce::Component
@@ -192,6 +359,7 @@ public:
           attackThreshold (parameter (state, ids::attackThreshold), "Attack threshold"),
           reverseChance (parameter (state, ids::reverseChance), "Reverse chance"),
           impactControls (state),
+          fractureControls (state),
           captures (captureService),
           hostProcessor (processor)
     {
@@ -199,7 +367,7 @@ public:
                  &procedureSwitch, &ruler, &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty,
                  &amp, &pan, &pitch, &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay,
                  &wet, &trim, &captureButton, &saveButton, &captureStatus, &swing, &accent, &hold, &holdStatus,
-                 &patternTab, &recutTab, &impactTab })
+                 &patternTab, &recutTab, &impactTab, &fractureTab })
             addAndMakeVisible (component);
 
         for (auto* component : std::initializer_list<juce::Component*> {
@@ -208,6 +376,12 @@ public:
             addChildComponent (component);
 
         addChildComponent (impactControls);
+        addChildComponent (fractureControls);
+        fractureTab.setComponentID ("fractureTab");
+        fractureTab.setTitle ("Fracture reader and frequency controls");
+        fractureTab.setTooltip ("Show Classic / GrainCut / TapeCut families and Ring / Frequency Shift");
+        fractureTab.onClick = [this] { showPage (Page::fracture); };
+        fractureControls.onFamilyChange = [this] { showProcedure (activeProcedure); };
         impactTab.setComponentID ("impactTab");
         impactTab.setTitle ("Impact effects controls");
         impactTab.setTooltip ("Show Slice Filter, Drive / Wavefold and Transient controls");
@@ -316,11 +490,25 @@ public:
         warpCutControls.setVisible (selectedPage == Page::pattern && activeProcedure == 1);
         sqPusherControls.setVisible (selectedPage == Page::pattern && activeProcedure == 2);
         bounceControls.setVisible (selectedPage == Page::pattern && activeProcedure == 3);
-        pitch.setAlpha (activeProcedure == static_cast<int> (livecut::engine::Procedure::bounce) ? 0.5f : 1.0f);
+        const auto family = fractureControls.requestedFamily();
+        const auto classic = family == livecut::engine::FractureProcedure::classic;
+        const auto tape = family == livecut::engine::FractureProcedure::tapeCut;
+        procedureSwitch.setEnabled (classic);
+        procedureSwitch.setAlpha (classic ? 1.0f : 0.5f);
+        for (auto* controls : { &cutProc11Controls, &warpCutControls, &sqPusherControls, &bounceControls })
+            controls->setEnabled (classic);
+        pitch.setEnabled (! tape);
+        pitch.setAlpha (classic && activeProcedure == static_cast<int> (livecut::engine::Procedure::bounce) ? 0.5f : 1.0f);
+        pitch.setTitle (tape ? "Pitch disabled: TapeCut uses speed" : "Pitch");
+        pitch.getSlider().setTitle (pitch.getTitle());
+        pitch.getSlider().setTooltip (tape ? "TapeCut uses Start / End speed on the Fracture page instead of common Pitch." : "Common cut pitch; TapeCut uses its speed controls instead.");
+        for (auto* child : pitch.getChildren())
+            if (auto* label = dynamic_cast<juce::Label*> (child); label != nullptr && label->getText().startsWith ("Pitch"))
+                label->setText (tape ? "Pitch: use Tape" : "Pitch", juce::dontSendNotification);
         repaint();
     }
 
-    enum class Page { pattern, recut, impact };
+    enum class Page { pattern, recut, impact, fracture };
 
     void showPage (Page page)
     {
@@ -334,11 +522,13 @@ public:
             component->setVisible (page == Page::recut);
         for (auto* component : std::initializer_list<juce::Component*> {
                  &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay })
-            component->setVisible (page != Page::impact);
+            component->setVisible (page == Page::pattern || page == Page::recut);
         impactControls.setVisible (page == Page::impact);
+        fractureControls.setVisible (page == Page::fracture);
         patternTab.setToggleState (page == Page::pattern, juce::dontSendNotification);
         recutTab.setToggleState (page == Page::recut, juce::dontSendNotification);
         impactTab.setToggleState (page == Page::impact, juce::dontSendNotification);
+        fractureTab.setToggleState (page == Page::fracture, juce::dontSendNotification);
         showProcedure (activeProcedure);
     }
 
@@ -378,10 +568,12 @@ public:
         g.fillAll (ui::palette::panel);
 
         g.setColour (ui::palette::ink);
-        g.setFont (ui::uiFont (26.0f, true));
-        g.drawText (juce::String ("Livecut ") + JucePlugin_VersionString, juce::Rectangle<int> (margin, 16, 180, 34), juce::Justification::centredLeft);
+        g.setFont (ui::uiFont (25.0f, true));
+        g.drawText ("Livecut", juce::Rectangle<int> (margin, 7, 100, 31), juce::Justification::centredLeft);
+        g.setFont (ui::uiFont (12.0f));
+        g.drawText (JucePlugin_VersionString, juce::Rectangle<int> (margin, 36, 100, 18), juce::Justification::centredLeft);
 
-        if (selectedPage != Page::impact)
+        if (selectedPage == Page::pattern || selectedPage == Page::recut)
         for (const auto& section : { crusherSection, combSection })
         {
             g.setColour (ui::palette::well);
@@ -415,11 +607,13 @@ public:
             title ("Phrase", phraseSection);
             title ("Cuts", cutsSection);
             const auto& info = procedures[static_cast<std::size_t> (activeProcedure)];
-            title (info.name, procedureSection);
+            const auto family = fractureControls.requestedFamily();
+            const auto classic = family == livecut::engine::FractureProcedure::classic;
+            title (classic ? info.name : family == livecut::engine::FractureProcedure::grainCut ? "GrainCut override" : "TapeCut override", procedureSection);
             g.setColour (ui::palette::inkMuted);
             g.setFont (ui::uiFont (13.0f));
-            g.drawFittedText (info.description, procedureSection.reduced (sectionPadding).withTrimmedTop (24).removeFromTop (34),
-                              juce::Justification::topLeft, 2);
+            g.drawFittedText (classic ? info.description : "Classic procedure controls are inactive. Edit the reader on the Fracture page.",
+                              procedureSection.reduced (sectionPadding).withTrimmedTop (24).removeFromTop (34), juce::Justification::topLeft, 2);
         }
 
         g.setFont (ui::uiFont (12.0f));
@@ -431,9 +625,11 @@ public:
     void resized() override
     {
         procedureSwitch.setBounds (baseWidth - margin - 456, 20, 456, 30);
-        patternTab.setBounds (212, 20, 67, 30);
-        recutTab.setBounds (283, 20, 55, 30);
-        impactTab.setBounds (342, 20, 58, 30);
+        patternTab.setBounds (122, 20, 67, 30);
+        recutTab.setBounds (193, 20, 55, 30);
+        impactTab.setBounds (252, 20, 62, 30);
+        fractureTab.setBounds (318, 20, 82, 30);
+        fractureControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         impactControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         ruler.setBounds (margin, 62, baseWidth - 2 * margin, 88);
 
@@ -511,6 +707,8 @@ public:
         holdStatus.setBounds (margin, 678, baseWidth - 2 * margin, 22);
     }
 
+    void refreshFracture() { fractureControls.refresh (hostProcessor.getDisplayState()); }
+
     void refreshCapture()
     {
         captureButton.setEnabled (! captures.isBusy() && captures.rolling().hasLatest());
@@ -575,10 +773,11 @@ private:
     ui::ChoiceRow processingMode;
     ui::PowerSwitch attackAlign;
     ui::SliderRow attackThreshold, reverseChance;
-    juce::TextButton patternTab { "Pattern" }, recutTab { "Recut" }, impactTab { "Impact" }, applyMode { "Apply while stopped" };
+    juce::TextButton patternTab { "Pattern" }, recutTab { "Recut" }, impactTab { "Impact" }, fractureTab { "Fracture" }, applyMode { "Apply while stopped" };
     juce::Label modeSummary, modeStatus, modeHelp, transformStatus;
     juce::Label holdStatus;
     ImpactPage impactControls;
+    FracturePage fractureControls;
     livecut::CaptureService& captures;
     LivecutAudioProcessor& hostProcessor;
     juce::TextButton captureButton { "Capture last phrase" }, saveButton { "Save WAV..." };
@@ -630,6 +829,7 @@ void LivecutAudioProcessorEditor::refreshDisplay()
 {
     panel->refreshCapture();
     panel->refreshRecut();
+    panel->refreshFracture();
     panel->showHoldStatus (livecutProcessor.holdStatusText());
     panel->ruler.show (livecut::ui::PhraseRuler::Snapshot::of (livecutProcessor.getDisplayState()));
 }

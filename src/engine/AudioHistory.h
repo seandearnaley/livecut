@@ -2,11 +2,13 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -135,6 +137,30 @@ public:
         const auto blend = static_cast<float> (fraction);
         return StereoFrame { first->left + blend * (second->left - first->left),
                              first->right + blend * (second->right - first->right) };
+    }
+
+    struct Window
+    {
+        std::span<const StereoFrame> first, second;
+    };
+
+    // Valid only until the next append/reset/prepare on this single-threaded
+    // history. Validate once, then read a finite FIR window without per-tap
+    // modulo or changing the Classic read/interpolation path.
+    std::optional<Window> readWindow (SourceRegion region, std::int64_t offset, std::size_t count) const noexcept
+    {
+        if (! validRegion (region) || offset < 0 || count == 0
+            || std::cmp_greater (count, region.frameCount)
+            || offset > region.frameCount - static_cast<std::int64_t> (count))
+            return std::nullopt;
+        const auto absolute = region.firstFrame + offset;
+        if (absolute < oldestRetained() || absolute > nextWritten
+            || std::cmp_greater (count, nextWritten - absolute))
+            return std::nullopt;
+        const auto firstIndex = index (absolute);
+        const auto firstCount = std::min (count, frames.size() - firstIndex);
+        return Window { { frames.data() + firstIndex, firstCount },
+                        { frames.data(), count - firstCount } };
     }
 
 private:

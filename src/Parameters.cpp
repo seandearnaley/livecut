@@ -229,6 +229,27 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 number (ids::impactAttackMs, "Impact Envelope Attack", FloatRange (0, 25), 1, decimals (1, "ms"), 6),
                 number (ids::impactDecayMs, "Impact Envelope Decay", FloatRange (5, 1000), 80, decimals (1, "ms"), 6));
 
+    // 0.7 preserves all preceding host indices and appends its frozen family/FX IDs.
+    layout.add (choice (ids::fractureProcedure, "Fracture Family", { "Classic", "GrainCut", "TapeCut" }, 0, 7),
+                number (ids::fractureActivity, "Grain Activity", FloatRange (0, 1), .5f, percent(), 7),
+                number (ids::fractureGrainSizeMs, "Grain Size", FloatRange (10, 160), 40, decimals (1, "ms"), 7),
+                number (ids::fractureGrainDensity, "Grain Density", FloatRange (.5f, 4), 2, decimals (2, "x"), 7),
+                number (ids::fractureGrainPositionSpreadMs, "Grain Position Spread", FloatRange (0, 250), 40, decimals (1, "ms"), 7),
+                number (ids::fractureGrainPitchSpreadCents, "Grain Pitch Spread", FloatRange (0, 1200), 300, decimals (0, "cents"), 7),
+                number (ids::fractureGrainPanSpread, "Grain Pan Spread", FloatRange (0, 1), .3f, percent(), 7),
+                number (ids::fractureTapeStartSpeed, "Tape Start Speed", FloatRange (0, 1), 1, decimals (2, "x"), 7),
+                number (ids::fractureTapeEndSpeed, "Tape End Speed", FloatRange (0, 1), 0, decimals (2, "x"), 7),
+                choice (ids::fractureTapeCurve, "Tape Curve", { "Linear", "Smooth" }, 1, 7),
+                choice (ids::fractureTapeCycle, "Tape Cycle", { "1/2 beat", "1 beat", "2 beats", "4 beats" }, 1, 7),
+                toggle (ids::fractureTapeAlternate, "Tape Alternate", false, 7),
+                toggle (ids::fractureFrequencyEnabled, "Ring / Frequency Shift", false, 7),
+                choice (ids::fractureFrequencyMode, "Frequency Mode", { "Ring", "Frequency Shift" }, 0, 7),
+                number (ids::fractureFrequencyChance, "Frequency Chance", FloatRange (0, 1), 1, percent(), 7),
+                number (ids::fractureFrequencyHz, "Frequency Rate", FloatRange (-2000, 2000), 100, decimals (1, "Hz"), 7),
+                number (ids::fractureFrequencyEnvHz, "Frequency Envelope", FloatRange (-2000, 2000), 0, decimals (1, "Hz"), 7),
+                number (ids::fractureFrequencyRepeatHz, "Frequency Repeat", FloatRange (-2000, 2000), 0, decimals (1, "Hz"), 7),
+                number (ids::fractureFrequencyMix, "Frequency Mix", FloatRange (0, 1), 1, percent(), 7));
+
     return layout;
 }
 
@@ -301,7 +322,26 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       impactTransientTimeMs (state, ids::impactTransientTimeMs),
       impactTransientMix (state, ids::impactTransientMix),
       impactAttackMs (state, ids::impactAttackMs),
-      impactDecayMs (state, ids::impactDecayMs)
+      impactDecayMs (state, ids::impactDecayMs),
+      fractureProcedure (state, ids::fractureProcedure),
+      fractureActivity (state, ids::fractureActivity),
+      fractureGrainSizeMs (state, ids::fractureGrainSizeMs),
+      fractureGrainDensity (state, ids::fractureGrainDensity),
+      fractureGrainPositionSpreadMs (state, ids::fractureGrainPositionSpreadMs),
+      fractureGrainPitchSpreadCents (state, ids::fractureGrainPitchSpreadCents),
+      fractureGrainPanSpread (state, ids::fractureGrainPanSpread),
+      fractureTapeStartSpeed (state, ids::fractureTapeStartSpeed),
+      fractureTapeEndSpeed (state, ids::fractureTapeEndSpeed),
+      fractureTapeCurve (state, ids::fractureTapeCurve),
+      fractureTapeCycle (state, ids::fractureTapeCycle),
+      fractureTapeAlternate (state, ids::fractureTapeAlternate),
+      fractureFrequencyEnabled (state, ids::fractureFrequencyEnabled),
+      fractureFrequencyMode (state, ids::fractureFrequencyMode),
+      fractureFrequencyChance (state, ids::fractureFrequencyChance),
+      fractureFrequencyHz (state, ids::fractureFrequencyHz),
+      fractureFrequencyEnvHz (state, ids::fractureFrequencyEnvHz),
+      fractureFrequencyRepeatHz (state, ids::fractureFrequencyRepeatHz),
+      fractureFrequencyMix (state, ids::fractureFrequencyMix)
 {
 }
 
@@ -385,6 +425,26 @@ Settings SettingsReader::read() const
     settings.impact.transient.mix = impactTransientMix.read();
     settings.impact.attackMs = impactAttackMs.read();
     settings.impact.decayMs = impactDecayMs.read();
+
+    settings.fracture.procedure = static_cast<engine::FractureProcedure> (fractureProcedure.readIndex());
+    settings.fracture.activity = fractureActivity.read();
+    settings.fracture.grain.sizeMs = fractureGrainSizeMs.read();
+    settings.fracture.grain.density = fractureGrainDensity.read();
+    settings.fracture.grain.positionSpreadMs = fractureGrainPositionSpreadMs.read();
+    settings.fracture.grain.pitchSpreadCents = fractureGrainPitchSpreadCents.read();
+    settings.fracture.grain.panSpread = fractureGrainPanSpread.read();
+    settings.fracture.tape.startSpeed = fractureTapeStartSpeed.read();
+    settings.fracture.tape.endSpeed = fractureTapeEndSpeed.read();
+    settings.fracture.tape.curve = static_cast<engine::FractureParameters::Tape::Curve> (fractureTapeCurve.readIndex());
+    settings.fracture.tape.cycle = static_cast<engine::FractureParameters::Tape::Cycle> (fractureTapeCycle.readIndex());
+    settings.fracture.tape.alternate = fractureTapeAlternate.read() > 0.5f;
+    settings.frequency.enabled = fractureFrequencyEnabled.read() > 0.5f;
+    settings.frequency.mode = static_cast<engine::FrequencyParameters::Mode> (fractureFrequencyMode.readIndex());
+    settings.frequency.chance = fractureFrequencyChance.read();
+    settings.frequency.rateHz = fractureFrequencyHz.read();
+    settings.frequency.envelopeHz = fractureFrequencyEnvHz.read();
+    settings.frequency.repeatHz = fractureFrequencyRepeatHz.read();
+    settings.frequency.mix = fractureFrequencyMix.read();
     return settings;
 }
 
@@ -401,6 +461,8 @@ void applySettings (engine::Cutter& cutter, const Settings& settings)
     cutter.setCrusher (settings.crusher);
     cutter.setComb (settings.comb);
     cutter.setImpact (settings.impact);
+    cutter.setFracture (settings.fracture);
+    cutter.setFrequency (settings.frequency);
 }
 
 } // namespace livecut

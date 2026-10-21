@@ -799,3 +799,217 @@ TEST_CASE ("Render the Impact editor for design review", "[.screenshot][impact]"
     stream.truncate();
     REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
 }
+
+TEST_CASE ("Fracture page exposes reader families and frequency controls at the existing size", "[editor][fracture-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "fractureTab"));
+    REQUIRE (tab != nullptr);
+    tab->onClick();
+    CHECK (editor.getWidth() == 880);
+    CHECK (editor.getHeight() == 724);
+    for (const auto* id : { "fractureProcedure", "fractureActivity", "fractureGrainSizeMs", "fractureGrainDensity",
+                           "fractureGrainPositionSpreadMs", "fractureGrainPitchSpreadCents", "fractureGrainPanSpread",
+                           "fractureTapeStartSpeed", "fractureTapeEndSpeed", "fractureTapeCurve", "fractureTapeCycle",
+                           "fractureTapeAlternate", "fractureFrequencyEnabled", "fractureFrequencyMode", "fractureFrequencyChance",
+                           "fractureFrequencyHz", "fractureFrequencyEnvHz", "fractureFrequencyRepeatHz", "fractureFrequencyMix",
+                           "fractureStatus", "fractureHelp" })
+    {
+        INFO (id);
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        CHECK (isShowing (*control, editor));
+        CHECK (control->getTitle().isNotEmpty());
+        const auto area = editor.getLocalArea (control, control->getLocalBounds());
+        CHECK_FALSE (area.isEmpty());
+        CHECK (editor.getLocalBounds().contains (area));
+    }
+    for (const auto* id : { "wet", "outputTrim", "capture", "saveCapture", "swing", "accent", "hold" })
+    {
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        CHECK (isShowing (*control, editor));
+    }
+}
+
+TEST_CASE ("Fracture families disable incompatible controls and preserve common performance", "[editor][fracture-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    editor.addToDesktop (0);
+    auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "fractureTab"));
+    REQUIRE (tab != nullptr);
+    tab->onClick();
+    auto* familyRow = findById (editor, "fractureProcedure");
+    REQUIRE (familyRow != nullptr);
+    auto* family = findControl<juce::ComboBox> (*familyRow);
+    REQUIRE (family != nullptr);
+    CHECK (family->getAccessibilityHandler() != nullptr);
+    family->setSelectedId (3, juce::sendNotificationSync);
+    CHECK (processor.getParameterState().getRawParameterValue ("fractureProcedure")->load() == 2);
+    auto* pitch = findById (editor, "minPitch,maxPitch");
+    REQUIRE (pitch != nullptr);
+    CHECK_FALSE (pitch->isEnabled());
+    CHECK (pitch->getTitle().contains ("TapeCut"));
+    CHECK_FALSE (findById (editor, "procedure")->isEnabled());
+    CHECK_THAT (findById (editor, "procedure")->getAlpha(), WithinAbs (.5, 1.0 / 255.0));
+    CHECK_FALSE (findById (editor, "stutterChance")->isEnabled());
+    CHECK_FALSE (findById (editor, "fractureGrainSizeMs")->isEnabled());
+    CHECK (findById (editor, "fractureTapeStartSpeed")->isEnabled());
+    CHECK (findById (editor, "fractureFrequencyHz")->isEnabled());
+    auto* help = dynamic_cast<juce::Label*> (findById (editor, "fractureHelp"));
+    REQUIRE (help != nullptr);
+    CHECK (help->getText().contains ("replaces Pattern pitch"));
+    CHECK (help->getText().contains ("Impact AD"));
+
+    family->setSelectedId (2, juce::sendNotificationSync);
+    CHECK (pitch->isEnabled());
+    CHECK (findById (editor, "fractureGrainSizeMs")->isEnabled());
+    CHECK_FALSE (findById (editor, "fractureTapeStartSpeed")->isEnabled());
+    for (const auto* id : { "fractureGrainSizeMs", "fractureFrequencyHz" })
+    {
+        auto* row = findById (editor, id);
+        REQUIRE (row != nullptr);
+        auto* slider = findControl<juce::Slider> (*row);
+        REQUIRE (slider != nullptr);
+        CHECK (slider->getAccessibilityHandler() != nullptr);
+        CHECK (slider->getTitle().isNotEmpty());
+        CHECK (slider->getTooltip().isNotEmpty());
+        auto& p = *processor.getParameterState().getParameter (id);
+        const auto target = p.convertFrom0to1 (.7f);
+        slider->setValue (target, juce::sendNotificationSync);
+        CHECK_THAT (processor.getParameterState().getRawParameterValue (id)->load(), WithinAbs (target, .001));
+        p.setValueNotifyingHost (.3f);
+        CHECK_THAT (slider->getValue(), WithinAbs (p.convertFrom0to1 (.3f), .001));
+    }
+    family->setSelectedId (1, juce::sendNotificationSync);
+    CHECK (pitch->isEnabled());
+    CHECK (findById (editor, "procedure")->isEnabled());
+    CHECK_THAT (findById (editor, "procedure")->getAlpha(), WithinAbs (1, 1.0 / 255.0));
+    CHECK (findById (editor, "stutterChance")->isEnabled());
+    auto* pattern = dynamic_cast<juce::TextButton*> (findById (editor, "patternTab"));
+    REQUIRE (pattern != nullptr);
+    pattern->onClick();
+    CHECK (isShowing (*pitch, editor));
+    CHECK_FALSE (isShowing (*familyRow, editor));
+    CHECK (isShowing (*findById (editor, "crusher"), editor));
+}
+
+TEST_CASE ("Fracture controls and header tabs do not overlap", "[editor][fracture-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "fractureTab"));
+    REQUIRE (tab != nullptr);
+    tab->onClick();
+    std::vector<juce::Rectangle<int>> bounds;
+    for (const auto* id : { "patternTab", "recutTab", "impactTab", "fractureTab", "procedure",
+                           "fractureProcedure", "fractureActivity", "fractureGrainSizeMs", "fractureGrainDensity",
+                           "fractureGrainPositionSpreadMs", "fractureGrainPitchSpreadCents", "fractureGrainPanSpread",
+                           "fractureTapeStartSpeed", "fractureTapeEndSpeed", "fractureTapeCurve", "fractureTapeCycle",
+                           "fractureTapeAlternate", "fractureFrequencyEnabled", "fractureFrequencyMode", "fractureFrequencyChance",
+                           "fractureFrequencyHz", "fractureFrequencyEnvHz", "fractureFrequencyRepeatHz", "fractureFrequencyMix",
+                           "fractureStatus", "fractureHelp", "wet", "outputTrim", "capture", "saveCapture", "swing", "accent", "hold" })
+    {
+        INFO (id);
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        const auto area = editor.getLocalArea (control, control->getLocalBounds());
+        for (const auto& previous : bounds)
+            CHECK_FALSE (area.intersects (previous));
+        bounds.push_back (area);
+    }
+}
+
+TEST_CASE ("Fracture source status distinguishes waiting failures and host conditions", "[editor][fracture-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    // This idle fixture owns the processor; publish diagnostic snapshots without an audio thread.
+    auto& display = const_cast<livecut::DisplayState&> (processor.getDisplayState());
+    auto* status = dynamic_cast<juce::Label*> (findById (editor, "fractureStatus"));
+    REQUIRE (status != nullptr);
+    auto& family = *processor.getParameterState().getParameter ("fractureProcedure");
+    family.setValueNotifyingHost (family.convertTo0to1 (1));
+    display.status.store (livecut::DisplayState::Status::cutting);
+    display.fractureFamily.store (livecut::engine::FractureProcedure::grainCut);
+    struct Expected { livecut::engine::FractureState state; const char* text; };
+    const std::array cases {
+        Expected { livecut::engine::FractureState::waiting, "Waiting" },
+        Expected { livecut::engine::FractureState::sourceLost, "Source lost" },
+        Expected { livecut::engine::FractureState::contextUnavailable, "context unavailable" },
+        Expected { livecut::engine::FractureState::capacityError, "capacity error" },
+        Expected { livecut::engine::FractureState::transformBudgetExhausted, "budget exhausted" },
+        Expected { livecut::engine::FractureState::ended, "Cut ended" }
+    };
+    for (const auto& spec : cases)
+    {
+        display.fractureState.store (spec.state);
+        editor.refreshDisplay();
+        CHECK (status->getText().contains (spec.text));
+    }
+    display.fractureState.store (livecut::engine::FractureState::playing);
+    display.fractureVoices.store (4);
+    editor.refreshDisplay();
+    CHECK (status->getText().contains ("voices 4"));
+    family.setValueNotifyingHost (family.convertTo0to1 (2));
+    editor.refreshDisplay();
+    CHECK (status->getText().contains ("Pending next bar: TapeCut"));
+    display.fractureFamily.store (livecut::engine::FractureProcedure::tapeCut);
+    display.fractureTapeSpeed.store (.35);
+    editor.refreshDisplay();
+    CHECK (status->getText().contains ("speed 0.35x"));
+    display.status.store (livecut::DisplayState::Status::waitingForHost);
+    display.fractureState.store (livecut::engine::FractureState::waiting);
+    editor.refreshDisplay();
+    CHECK (status->getText().containsIgnoreCase ("Press play"));
+    CHECK_FALSE (status->getText().contains ("Grain history"));
+    display.status.store (livecut::DisplayState::Status::streamError);
+    editor.refreshDisplay();
+    CHECK (status->getText().containsIgnoreCase ("stream error"));
+}
+
+TEST_CASE ("Render the Fracture editor for design review", "[.screenshot][fracture-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "fractureTab"));
+    REQUIRE (tab != nullptr);
+    tab->onClick();
+    auto& state = processor.getParameterState();
+    auto& family = *state.getParameter ("fractureProcedure");
+    state.getParameter ("fractureFrequencyEnabled")->setValueNotifyingHost (1);
+    // Render controlled UI states; these images are not a DSP/audio validation.
+    auto& display = const_cast<livecut::DisplayState&> (processor.getDisplayState());
+    display.status.store (livecut::DisplayState::Status::cutting);
+    display.phraseBars.store (4);
+    const auto save = [&] (const char* name)
+    {
+        editor.refreshDisplay();
+        const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
+        juce::FileOutputStream stream (juce::File::getCurrentWorkingDirectory().getChildFile (name));
+        REQUIRE (stream.openedOk());
+        stream.setPosition (0);
+        stream.truncate();
+        REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
+    };
+    family.setValueNotifyingHost (family.convertTo0to1 (1));
+    display.fractureFamily.store (livecut::engine::FractureProcedure::grainCut);
+    display.fractureState.store (livecut::engine::FractureState::waiting);
+    save ("editor-fracture-grain-waiting.png");
+    family.setValueNotifyingHost (family.convertTo0to1 (2));
+    display.fractureFamily.store (livecut::engine::FractureProcedure::tapeCut);
+    display.fractureState.store (livecut::engine::FractureState::playing);
+    display.fractureTapeSpeed.store (.5);
+    save ("editor-fracture-tape.png");
+    auto* pattern = dynamic_cast<juce::TextButton*> (findById (editor, "patternTab"));
+    REQUIRE (pattern != nullptr);
+    pattern->onClick();
+    save ("editor-fracture-tape-pattern.png");
+}

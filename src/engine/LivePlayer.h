@@ -40,6 +40,7 @@ public:
         bool pitched = false;
         double rate = 1.0;
         float leftToLeft = 1.0f, leftToRight = 0.0f, rightToLeft = 0.0f, rightToRight = 1.0f;
+        Cut requested;
     };
 
     // Declares the classic source extent; retains eight such extents plus two guards.
@@ -59,9 +60,14 @@ public:
     SourceRegion sourceForNextFrame() const;
     bool ingestFrame (float left, float right);
     void renderFrame (float& left, float& right, bool advanceBySamples = true);
+    void advanceFrame (bool advanceBySamples = true);
+    int currentCutAge() const { return position; }
     void resetSource();
     void resetRendering();
     std::optional<StereoFrame> readSourceFrame (double relativeFrame) const;
+    std::optional<StereoFrame> readSourceFrame (SourceRegion region, double relativeFrame) const;
+    std::optional<AudioHistory::Window> readSourceWindow (SourceRegion region, std::int64_t offset, std::size_t count) const
+    { return history.readWindow (region, offset, count); }
     std::optional<StereoFrame> rawFrame (std::int64_t frame) const
     {
         return history.read ({ history.retainedRegion().epoch, frame, 1 }, 0);

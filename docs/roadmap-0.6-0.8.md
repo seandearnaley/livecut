@@ -32,6 +32,9 @@ restart convergence. Review the immutable patch independently before release.
 
 ## 0.7 Fracture
 
+The implemented controls, startup rules and processor limitations are documented
+in the [0.7 behavior contract](releases/0.7.0.md).
+
 GrainCut and TapeCut need explicit new playback modes, with the classic reader
 left unchanged. The procedures choose musical blocks; the new bounded readers
 implement the actual grains and continuous tape trajectories. Shorter classic

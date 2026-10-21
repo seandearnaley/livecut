@@ -23,7 +23,8 @@ constexpr std::array allIds {
     ids::combFeedback, ids::minDelay, ids::maxDelay,
     ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance, ids::wet, ids::outputTrim, ids::swing, ids::accent, ids::hold,
     ids::mode, ids::attackAlign, ids::attackThreshold, ids::reverseChance,
-    ids::impactFilterEnabled, ids::impactFilterType, ids::impactFilterChance, ids::impactFilterCutoff, ids::impactFilterQ, ids::impactFilterEnvOctaves, ids::impactFilterRepeatOctaves, ids::impactFilterMix, ids::impactDriveEnabled, ids::impactDriveMode, ids::impactDriveChance, ids::impactDriveDb, ids::impactDriveEnvDb, ids::impactDriveRepeatDb, ids::impactDriveMix, ids::impactTransientEnabled, ids::impactTransientChance, ids::impactTransientAttackDb, ids::impactTransientSustainDb, ids::impactTransientTimeMs, ids::impactTransientMix, ids::impactAttackMs, ids::impactDecayMs
+    ids::impactFilterEnabled, ids::impactFilterType, ids::impactFilterChance, ids::impactFilterCutoff, ids::impactFilterQ, ids::impactFilterEnvOctaves, ids::impactFilterRepeatOctaves, ids::impactFilterMix, ids::impactDriveEnabled, ids::impactDriveMode, ids::impactDriveChance, ids::impactDriveDb, ids::impactDriveEnvDb, ids::impactDriveRepeatDb, ids::impactDriveMix, ids::impactTransientEnabled, ids::impactTransientChance, ids::impactTransientAttackDb, ids::impactTransientSustainDb, ids::impactTransientTimeMs, ids::impactTransientMix, ids::impactAttackMs, ids::impactDecayMs,
+    ids::fractureProcedure, ids::fractureActivity, ids::fractureGrainSizeMs, ids::fractureGrainDensity, ids::fractureGrainPositionSpreadMs, ids::fractureGrainPitchSpreadCents, ids::fractureGrainPanSpread, ids::fractureTapeStartSpeed, ids::fractureTapeEndSpeed, ids::fractureTapeCurve, ids::fractureTapeCycle, ids::fractureTapeAlternate, ids::fractureFrequencyEnabled, ids::fractureFrequencyMode, ids::fractureFrequencyChance, ids::fractureFrequencyHz, ids::fractureFrequencyEnvHz, ids::fractureFrequencyRepeatHz, ids::fractureFrequencyMix
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -270,7 +271,7 @@ TEST_CASE ("Parameters added for Bounce carry version hint 2", "[parameters]")
         const auto isMixer = name == ids::wet || name == ids::outputTrim;
         const auto isPerform = name == ids::swing || name == ids::accent || name == ids::hold;
         const auto isRecut = name == ids::mode || name == ids::attackAlign || name == ids::attackThreshold || name == ids::reverseChance;
-        CHECK (parameter (state, id).getVersionHint() == (name.startsWith ("impact") ? 6 : isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
+        CHECK (parameter (state, id).getVersionHint() == (name.startsWith ("fracture") ? 7 : name.startsWith ("impact") ? 6 : isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
     }
 }
 
@@ -466,4 +467,107 @@ TEST_CASE ("Impact settings map host values and reject malformed input", "[param
     CHECK_THAT (safe.attackMs, WithinAbs (0, .001));
     CHECK (parameter (state, ids::impactDriveMix).getText (.75f, 32) == "75%");
     CHECK_THAT (parameter (state, ids::impactFilterChance).getValueForText ("25%"), WithinAbs (.25, .001));
+}
+
+TEST_CASE ("Fracture controls append the frozen 19 host parameters", "[parameters][fracture-ui]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    struct Expected { const char* id; float low, high, initial; };
+    constexpr std::array<Expected, 19> expected {{
+        { "fractureProcedure", 0, 2, 0 }, { "fractureActivity", 0, 1, .5f },
+        { "fractureGrainSizeMs", 10, 160, 40 }, { "fractureGrainDensity", .5f, 4, 2 },
+        { "fractureGrainPositionSpreadMs", 0, 250, 40 }, { "fractureGrainPitchSpreadCents", 0, 1200, 300 },
+        { "fractureGrainPanSpread", 0, 1, .3f }, { "fractureTapeStartSpeed", 0, 1, 1 },
+        { "fractureTapeEndSpeed", 0, 1, 0 }, { "fractureTapeCurve", 0, 1, 1 },
+        { "fractureTapeCycle", 0, 3, 1 }, { "fractureTapeAlternate", 0, 1, 0 },
+        { "fractureFrequencyEnabled", 0, 1, 0 }, { "fractureFrequencyMode", 0, 1, 0 },
+        { "fractureFrequencyChance", 0, 1, 1 }, { "fractureFrequencyHz", -2000, 2000, 100 },
+        { "fractureFrequencyEnvHz", -2000, 2000, 0 }, { "fractureFrequencyRepeatHz", -2000, 2000, 0 },
+        { "fractureFrequencyMix", 0, 1, 1 }
+    }};
+    for (std::size_t i = 0; i < expected.size(); ++i)
+    {
+        const auto& spec = expected[i];
+        INFO (spec.id);
+        auto& p = parameter (state, spec.id);
+        CHECK (p.getParameterIndex() == 69 + static_cast<int> (i));
+        CHECK (p.getVersionHint() == 7);
+        CHECK_THAT (p.getNormalisableRange().start, WithinAbs (spec.low, .001));
+        CHECK_THAT (p.getNormalisableRange().end, WithinAbs (spec.high, .001));
+        CHECK_THAT (defaultValue (state, spec.id), WithinAbs (spec.initial, .001));
+    }
+}
+
+TEST_CASE ("Fracture settings map all controls without changing Classic automation", "[parameters][fracture-ui]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    const auto original = reader.read();
+    CHECK (original.fracture.procedure == engine::FractureProcedure::classic);
+    CHECK_FALSE (original.frequency.enabled);
+    CHECK (parameter (state, ids::procedure).getNumSteps() == 4);
+    for (int i = 0; i < 4; ++i)
+    {
+        setNormalised (state, ids::procedure, static_cast<float> (i) / 3.0f);
+        CHECK (static_cast<int> (reader.read().procedure) == i);
+    }
+    setValue (state, ids::fractureProcedure, 2);
+    setValue (state, ids::fractureActivity, .75f);
+    setValue (state, ids::fractureGrainSizeMs, 90);
+    setValue (state, ids::fractureGrainDensity, 3);
+    setValue (state, ids::fractureGrainPositionSpreadMs, 180);
+    setValue (state, ids::fractureGrainPitchSpreadCents, 700);
+    setValue (state, ids::fractureGrainPanSpread, .65f);
+    setValue (state, ids::fractureTapeStartSpeed, .8f);
+    setValue (state, ids::fractureTapeEndSpeed, .2f);
+    setValue (state, ids::fractureTapeCurve, 0);
+    setValue (state, ids::fractureTapeCycle, 3);
+    setValue (state, ids::fractureTapeAlternate, 1);
+    setValue (state, ids::fractureFrequencyEnabled, 1);
+    setValue (state, ids::fractureFrequencyMode, 1);
+    setValue (state, ids::fractureFrequencyChance, .25f);
+    setValue (state, ids::fractureFrequencyHz, -333);
+    setValue (state, ids::fractureFrequencyEnvHz, 888);
+    setValue (state, ids::fractureFrequencyRepeatHz, -555);
+    setValue (state, ids::fractureFrequencyMix, .4f);
+    const auto settings = reader.read();
+    CHECK (settings.fracture.procedure == engine::FractureProcedure::tapeCut);
+    CHECK_THAT (settings.fracture.activity, WithinAbs (.75, .001));
+    CHECK_THAT (settings.fracture.grain.sizeMs, WithinAbs (90, .001));
+    CHECK_THAT (settings.fracture.grain.density, WithinAbs (3, .001));
+    CHECK_THAT (settings.fracture.grain.positionSpreadMs, WithinAbs (180, .001));
+    CHECK_THAT (settings.fracture.grain.pitchSpreadCents, WithinAbs (700, .001));
+    CHECK_THAT (settings.fracture.grain.panSpread, WithinAbs (.65, .001));
+    CHECK_THAT (settings.fracture.tape.startSpeed, WithinAbs (.8, .001));
+    CHECK_THAT (settings.fracture.tape.endSpeed, WithinAbs (.2, .001));
+    CHECK (settings.fracture.tape.curve == engine::FractureParameters::Tape::Curve::linear);
+    CHECK (settings.fracture.tape.cycle == engine::FractureParameters::Tape::Cycle::fourBeats);
+    CHECK (settings.fracture.tape.alternate);
+    CHECK (settings.frequency.enabled);
+    CHECK (settings.frequency.mode == engine::FrequencyParameters::Mode::frequencyShift);
+    CHECK_THAT (settings.frequency.chance, WithinAbs (.25, .001));
+    CHECK_THAT (settings.frequency.rateHz, WithinAbs (-333, .001));
+    CHECK_THAT (settings.frequency.envelopeHz, WithinAbs (888, .001));
+    CHECK_THAT (settings.frequency.repeatHz, WithinAbs (-555, .001));
+    CHECK_THAT (settings.frequency.mix, WithinAbs (.4, .001));
+
+    state.getRawParameterValue (ids::fractureProcedure)->store (99);
+    state.getRawParameterValue (ids::fractureTapeCurve)->store (-99);
+    state.getRawParameterValue (ids::fractureTapeCycle)->store (std::numeric_limits<float>::quiet_NaN());
+    state.getRawParameterValue (ids::fractureGrainSizeMs)->store (std::numeric_limits<float>::infinity());
+    state.getRawParameterValue (ids::fractureTapeStartSpeed)->store (-3);
+    state.getRawParameterValue (ids::fractureFrequencyMode)->store (99);
+    state.getRawParameterValue (ids::fractureFrequencyEnvHz)->store (99999);
+    const auto safe = reader.read();
+    CHECK (safe.fracture.procedure == engine::FractureProcedure::tapeCut);
+    CHECK (safe.fracture.tape.curve == engine::FractureParameters::Tape::Curve::linear);
+    CHECK (safe.fracture.tape.cycle == engine::FractureParameters::Tape::Cycle::oneBeat);
+    CHECK_THAT (safe.fracture.grain.sizeMs, WithinAbs (40, .001));
+    CHECK_THAT (safe.fracture.tape.startSpeed, WithinAbs (0, .001));
+    CHECK (safe.frequency.mode == engine::FrequencyParameters::Mode::frequencyShift);
+    CHECK_THAT (safe.frequency.envelopeHz, WithinAbs (2000, .001));
+    CHECK (parameter (state, ids::fractureFrequencyMix).getText (.75f, 32) == "75%");
+    CHECK (parameter (state, ids::fractureTapeStartSpeed).getLabel() == "x");
 }
