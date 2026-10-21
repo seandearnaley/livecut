@@ -18,6 +18,7 @@ add_subdirectory(libs/JUCE)
 
 # The cutting engine is plain C++ with no JUCE dependency, so it can be tested in isolation.
 add_library(LivecutEngine STATIC
+    src/engine/AudioHistory.h
     src/engine/Bounce.cpp
     src/engine/CutProc11.cpp
     src/engine/Cutter.cpp
@@ -130,6 +131,7 @@ if(LIVECUT_BUILD_TESTS)
 
     add_executable(LivecutEngineTests
         tests/engine/AllocationCounter.cpp
+        tests/engine/AudioHistoryTests.cpp
         tests/engine/BounceTests.cpp
         tests/engine/CutProc11Tests.cpp
         tests/engine/CutterTests.cpp
