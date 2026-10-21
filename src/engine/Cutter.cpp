@@ -43,6 +43,7 @@ void Cutter::prepare (double newSampleRate, std::int64_t latencyFrames)
     livePlayer.prepare (static_cast<int> (std::ceil (maxBarSeconds * sampleRate)), retained);
     bitCrusher.prepare (sampleRate);
     combFilter.prepare (sampleRate);
+    impactEffects.prepare (sampleRate);
     setFadeMilliseconds (fadeMilliseconds);
     reset();
 }
@@ -71,6 +72,11 @@ void Cutter::setCrusher (const CrusherParameters& parameters)
 void Cutter::setComb (const CombParameters& parameters)
 {
     combParams = parameters;
+}
+
+void Cutter::setImpact (const ImpactParameters& parameters)
+{
+    impactParams = parameters;
 }
 
 void Cutter::setSeed (std::uint32_t newSeed)
@@ -121,6 +127,8 @@ void Cutter::resetRendering()
     hasActivePlan = false;
     processingError = Error::none;
     livePlayer.resetRendering();
+    impactEffects.reset();
+    impactCut.reset();
     renderContextActive = false;
 }
 
@@ -311,6 +319,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
         else
         {
             selectTransform (frame);
+            startImpactCut();
             livePlayer.renderFrame (left, right);
         }
         if (livePlayer.hasSourceError())
@@ -340,6 +349,8 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             left = combedLeft;
             right = combedRight;
         }
+
+        impactEffects.process (left, right);
 
         if (livePlayer.currentCut() != effectsCut)
             startEffectsCut();
@@ -424,6 +435,7 @@ void Cutter::startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timi
 
     // Reseeding on every phrase makes the cuts depend only on the seed and the position.
     random.reseed (phraseSeed (seed, bar));
+    phraseImpactSeed = seed;
     phraseBar = bar;
     phraseBars = procedureFor (procedure).choosePhraseBars (random, params);
     cutOrdinal = 0;
@@ -495,6 +507,8 @@ void Cutter::planBlock (const Timing& timing)
     const auto endMs = random.uniform (combParams.minDelayMs, combParams.maxDelayMs);
     plan.effects = { startBits, endBits, startHz, endHz, startMs, endMs };
     plan.comb = combParams;
+    plan.impact = impactParams;
+    plan.impactSeed = phraseImpactSeed;
     ++queued;
     maximumQueued = std::max (maximumQueued, queued);
 }
@@ -514,6 +528,8 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         const auto& fx = activePlan.effects;
         bitCrusher.setBlock (fx[0], fx[1], fx[2], fx[3]);
         combFilter.setBlock (activePlan.comb, fx[4], fx[5]);
+        impactEffects.setParameters (activePlan.impact);
+        impactCut.reset();
         startEffectsCut();
     }
 }
@@ -544,6 +560,7 @@ void Cutter::renderSwung (float& left, float& right, std::int64_t bar, double be
         livePlayer.retimeMusicalCut (static_cast<int> (std::lround (toEnd / beatsPerSample)), static_cast<int> (std::lround (toGate / beatsPerSample)), renderedExclusiveEnd);
     }
     selectTransform (renderedExclusiveEnd - 1);
+    startImpactCut();
     livePlayer.renderFrame (left, right, false);
 }
 
@@ -649,6 +666,21 @@ void Cutter::startEffectsCut()
         bitCrusher.startCut (effectsCut, livePlayer.cuts().size());
         combFilter.startCut (effectsCut, livePlayer.cuts().size());
     }
+}
+
+void Cutter::startImpactCut()
+{
+    const auto index = livePlayer.currentCut();
+    if (index >= livePlayer.cuts().size() || (impactCut && *impactCut == index))
+        return;
+    impactCut = index;
+    const auto& cut = livePlayer.cuts()[index];
+    // Classic effects may prepare the next cut on the previous sample. Impact
+    // instead triggers here, after swing/tempo have selected the actual cut and
+    // before its first rendered sample. Its identity never uses buffer offsets.
+    impactEffects.startCut ({ activePlan.impactSeed, activePlan.phraseBar,
+                              activePlan.start, cut.logicalStart, index,
+                              livePlayer.cuts().size() });
 }
 
 } // namespace livecut::engine

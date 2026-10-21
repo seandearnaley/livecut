@@ -512,7 +512,7 @@ void LivecutAudioProcessor::changeProgramName (int, const juce::String&) {}
 void LivecutAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = parameters.copyState();
-    state.setProperty ("schemaVersion", 5, nullptr);
+    state.setProperty ("schemaVersion", 6, nullptr);
     state.setProperty ("algorithmVersion", 2, nullptr);
     if (const auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);

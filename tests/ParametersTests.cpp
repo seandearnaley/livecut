@@ -22,7 +22,8 @@ constexpr std::array allIds {
     ids::crusher, ids::minBits, ids::maxBits, ids::minRate, ids::maxRate, ids::comb, ids::combType,
     ids::combFeedback, ids::minDelay, ids::maxDelay,
     ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance, ids::wet, ids::outputTrim, ids::swing, ids::accent, ids::hold,
-    ids::mode, ids::attackAlign, ids::attackThreshold, ids::reverseChance
+    ids::mode, ids::attackAlign, ids::attackThreshold, ids::reverseChance,
+    ids::impactFilterEnabled, ids::impactFilterType, ids::impactFilterChance, ids::impactFilterCutoff, ids::impactFilterQ, ids::impactFilterEnvOctaves, ids::impactFilterRepeatOctaves, ids::impactFilterMix, ids::impactDriveEnabled, ids::impactDriveMode, ids::impactDriveChance, ids::impactDriveDb, ids::impactDriveEnvDb, ids::impactDriveRepeatDb, ids::impactDriveMix, ids::impactTransientEnabled, ids::impactTransientChance, ids::impactTransientAttackDb, ids::impactTransientSustainDb, ids::impactTransientTimeMs, ids::impactTransientMix, ids::impactAttackMs, ids::impactDecayMs
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -55,8 +56,12 @@ TEST_CASE ("Every parameter has a stable ID", "[parameters]")
     LivecutAudioProcessor processor;
     auto& state = processor.getParameterState();
 
-    for (const auto* id : allIds)
-        CHECK (state.getParameter (id) != nullptr);
+    for (std::size_t index = 0; index < allIds.size(); ++index)
+    {
+        auto* p = state.getParameter (allIds[index]);
+        REQUIRE (p != nullptr);
+        CHECK (p->getParameterIndex() == static_cast<int> (index));
+    }
 
     CHECK (processor.getParameters().size() == static_cast<int> (allIds.size()));
 }
@@ -265,7 +270,7 @@ TEST_CASE ("Parameters added for Bounce carry version hint 2", "[parameters]")
         const auto isMixer = name == ids::wet || name == ids::outputTrim;
         const auto isPerform = name == ids::swing || name == ids::accent || name == ids::hold;
         const auto isRecut = name == ids::mode || name == ids::attackAlign || name == ids::attackThreshold || name == ids::reverseChance;
-        CHECK (parameter (state, id).getVersionHint() == (isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
+        CHECK (parameter (state, id).getVersionHint() == (name.startsWith ("impact") ? 6 : isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
     }
 }
 
@@ -352,4 +357,113 @@ TEST_CASE ("Perform appends neutral groove and Hold parameters", "[parameters][p
     CHECK_THAT (state.getParameter ("swing")->convertFrom0to1 (state.getParameter ("swing")->getDefaultValue()), WithinAbs (50.0, 0.0));
     CHECK_THAT (state.getParameter ("accent")->convertFrom0to1 (state.getParameter ("accent")->getDefaultValue()), WithinAbs (0.0, 0.0));
     CHECK (state.getParameter ("hold")->isBoolean());
+}
+
+TEST_CASE ("Impact parameters expose bounded musical controls and disabled defaults", "[parameters][impact]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    struct Expected { const char* id; float low, high, initial; };
+    constexpr std::array<Expected, 23> expected {{
+        Expected { "impactFilterEnabled", 0, 1, 0 }, { "impactFilterType", 0, 2, 0 },
+        { "impactFilterChance", 0, 1, 1 }, { "impactFilterCutoff", 30, 18000, 12000 },
+        { "impactFilterQ", .5f, 8, .707f }, { "impactFilterEnvOctaves", -6, 6, 0 },
+        { "impactFilterRepeatOctaves", -4, 4, 0 }, { "impactFilterMix", 0, 1, 1 },
+        { "impactDriveEnabled", 0, 1, 0 }, { "impactDriveMode", 0, 1, 0 },
+        { "impactDriveChance", 0, 1, 1 }, { "impactDriveDb", 0, 30, 6 },
+        { "impactDriveEnvDb", -24, 24, 0 }, { "impactDriveRepeatDb", -24, 24, 0 },
+        { "impactDriveMix", 0, 1, 1 }, { "impactTransientEnabled", 0, 1, 0 },
+        { "impactTransientChance", 0, 1, 1 }, { "impactTransientAttackDb", -18, 18, 0 },
+        { "impactTransientSustainDb", -18, 18, 0 }, { "impactTransientTimeMs", 10, 200, 40 },
+        { "impactTransientMix", 0, 1, 1 }, { "impactAttackMs", 0, 25, 1 },
+        { "impactDecayMs", 5, 1000, 80 }
+    }};
+    for (const auto& spec : expected)
+    {
+        INFO (spec.id);
+        auto& p = parameter (state, spec.id);
+        CHECK (p.getVersionHint() == 6);
+        CHECK_THAT (p.getNormalisableRange().start, WithinAbs (spec.low, .001));
+        CHECK_THAT (p.getNormalisableRange().end, WithinAbs (spec.high, .001));
+        CHECK_THAT (defaultValue (state, spec.id), WithinAbs (spec.initial, .001));
+    }
+}
+
+TEST_CASE ("Impact settings map host values and reject malformed input", "[parameters][impact]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    const auto defaults = reader.read().impact;
+    CHECK_FALSE (defaults.filter.enabled);
+    CHECK_FALSE (defaults.drive.enabled);
+    CHECK_FALSE (defaults.transient.enabled);
+    CHECK_THAT (defaults.attackMs, WithinAbs (1, .001));
+    CHECK_THAT (defaults.decayMs, WithinAbs (80, .001));
+
+    setValue (state, ids::impactFilterEnabled, 1);
+    setValue (state, ids::impactFilterType, 2);
+    setValue (state, ids::impactFilterChance, .25f);
+    setValue (state, ids::impactFilterCutoff, 450);
+    setValue (state, ids::impactFilterQ, 2);
+    setValue (state, ids::impactFilterEnvOctaves, -3);
+    setValue (state, ids::impactFilterRepeatOctaves, 2);
+    setValue (state, ids::impactFilterMix, .5f);
+    setValue (state, ids::impactDriveEnabled, 1);
+    setValue (state, ids::impactDriveMode, 1);
+    setValue (state, ids::impactDriveChance, .75f);
+    setValue (state, ids::impactDriveDb, 18);
+    setValue (state, ids::impactDriveEnvDb, -12);
+    setValue (state, ids::impactDriveRepeatDb, 10);
+    setValue (state, ids::impactDriveMix, .4f);
+    setValue (state, ids::impactTransientEnabled, 1);
+    setValue (state, ids::impactTransientChance, .6f);
+    setValue (state, ids::impactTransientAttackDb, 9);
+    setValue (state, ids::impactTransientSustainDb, -7);
+    setValue (state, ids::impactTransientTimeMs, 123);
+    setValue (state, ids::impactTransientMix, .3f);
+    setValue (state, ids::impactAttackMs, 15);
+    setValue (state, ids::impactDecayMs, 400);
+    const auto impact = reader.read().impact;
+    CHECK (impact.filter.enabled);
+    CHECK (impact.filter.type == engine::ImpactParameters::Filter::Type::highPass);
+    CHECK_THAT (impact.filter.chance, WithinAbs (.25, .001));
+    CHECK_THAT (impact.filter.cutoffHz, WithinAbs (450, .001));
+    CHECK_THAT (impact.filter.q, WithinAbs (2, .001));
+    CHECK_THAT (impact.filter.envelopeOctaves, WithinAbs (-3, .001));
+    CHECK_THAT (impact.filter.repeatOctaves, WithinAbs (2, .001));
+    CHECK_THAT (impact.filter.mix, WithinAbs (.5, .001));
+    CHECK (impact.drive.enabled);
+    CHECK (impact.drive.mode == engine::ImpactParameters::Drive::Mode::wavefold);
+    CHECK_THAT (impact.drive.chance, WithinAbs (.75, .001));
+    CHECK_THAT (impact.drive.driveDb, WithinAbs (18, .001));
+    CHECK_THAT (impact.drive.envelopeDb, WithinAbs (-12, .001));
+    CHECK_THAT (impact.drive.repeatDb, WithinAbs (10, .001));
+    CHECK_THAT (impact.drive.mix, WithinAbs (.4, .001));
+    CHECK (impact.transient.enabled);
+    CHECK_THAT (impact.transient.chance, WithinAbs (.6, .001));
+    CHECK_THAT (impact.transient.attackDb, WithinAbs (9, .001));
+    CHECK_THAT (impact.transient.sustainDb, WithinAbs (-7, .001));
+    CHECK_THAT (impact.transient.timeMs, WithinAbs (123, .001));
+    CHECK_THAT (impact.transient.mix, WithinAbs (.3, .001));
+    CHECK_THAT (impact.attackMs, WithinAbs (15, .001));
+    CHECK_THAT (impact.decayMs, WithinAbs (400, .001));
+
+    state.getRawParameterValue (ids::impactFilterType)->store (99);
+    state.getRawParameterValue (ids::impactDriveMode)->store (-9);
+    state.getRawParameterValue (ids::impactFilterCutoff)->store (std::numeric_limits<float>::quiet_NaN());
+    state.getRawParameterValue (ids::impactFilterQ)->store (100);
+    state.getRawParameterValue (ids::impactDriveDb)->store (std::numeric_limits<float>::infinity());
+    state.getRawParameterValue (ids::impactTransientTimeMs)->store (-20);
+    state.getRawParameterValue (ids::impactAttackMs)->store (-5);
+    const auto safe = reader.read().impact;
+    CHECK (safe.filter.type == engine::ImpactParameters::Filter::Type::highPass);
+    CHECK (safe.drive.mode == engine::ImpactParameters::Drive::Mode::drive);
+    CHECK_THAT (safe.filter.cutoffHz, WithinAbs (12000, .001));
+    CHECK_THAT (safe.filter.q, WithinAbs (8, .001));
+    CHECK_THAT (safe.drive.driveDb, WithinAbs (6, .001));
+    CHECK_THAT (safe.transient.timeMs, WithinAbs (10, .001));
+    CHECK_THAT (safe.attackMs, WithinAbs (0, .001));
+    CHECK (parameter (state, ids::impactDriveMix).getText (.75f, 32) == "75%");
+    CHECK_THAT (parameter (state, ids::impactFilterChance).getValueForText ("25%"), WithinAbs (.25, .001));
 }

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "engine/Cutter.h"
+#include "engine/ImpactEffects.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -62,6 +63,29 @@ inline constexpr auto mode = "mode";
 inline constexpr auto attackAlign = "attackAlign";
 inline constexpr auto attackThreshold = "attackThreshold";
 inline constexpr auto reverseChance = "reverseChance";
+inline constexpr auto impactFilterEnabled = "impactFilterEnabled";
+inline constexpr auto impactFilterType = "impactFilterType";
+inline constexpr auto impactFilterChance = "impactFilterChance";
+inline constexpr auto impactFilterCutoff = "impactFilterCutoff";
+inline constexpr auto impactFilterQ = "impactFilterQ";
+inline constexpr auto impactFilterEnvOctaves = "impactFilterEnvOctaves";
+inline constexpr auto impactFilterRepeatOctaves = "impactFilterRepeatOctaves";
+inline constexpr auto impactFilterMix = "impactFilterMix";
+inline constexpr auto impactDriveEnabled = "impactDriveEnabled";
+inline constexpr auto impactDriveMode = "impactDriveMode";
+inline constexpr auto impactDriveChance = "impactDriveChance";
+inline constexpr auto impactDriveDb = "impactDriveDb";
+inline constexpr auto impactDriveEnvDb = "impactDriveEnvDb";
+inline constexpr auto impactDriveRepeatDb = "impactDriveRepeatDb";
+inline constexpr auto impactDriveMix = "impactDriveMix";
+inline constexpr auto impactTransientEnabled = "impactTransientEnabled";
+inline constexpr auto impactTransientChance = "impactTransientChance";
+inline constexpr auto impactTransientAttackDb = "impactTransientAttackDb";
+inline constexpr auto impactTransientSustainDb = "impactTransientSustainDb";
+inline constexpr auto impactTransientTimeMs = "impactTransientTimeMs";
+inline constexpr auto impactTransientMix = "impactTransientMix";
+inline constexpr auto impactAttackMs = "impactAttackMs";
+inline constexpr auto impactDecayMs = "impactDecayMs";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
@@ -88,6 +112,7 @@ struct Settings
     engine::CutParameters cut;
     engine::CrusherParameters crusher;
     engine::CombParameters comb;
+    engine::ImpactParameters impact;
 };
 
 // Reads every parameter's current value. It caches each parameter's atomic
@@ -157,6 +182,30 @@ private:
     Source swing;
     Source accent;
     Source hold, mode, attackAlign, attackThreshold, reverseChance;
+    Source impactFilterEnabled;
+    Source impactFilterType;
+    Source impactFilterChance;
+    Source impactFilterCutoff;
+    Source impactFilterQ;
+    Source impactFilterEnvOctaves;
+    Source impactFilterRepeatOctaves;
+    Source impactFilterMix;
+    Source impactDriveEnabled;
+    Source impactDriveMode;
+    Source impactDriveChance;
+    Source impactDriveDb;
+    Source impactDriveEnvDb;
+    Source impactDriveRepeatDb;
+    Source impactDriveMix;
+    Source impactTransientEnabled;
+    Source impactTransientChance;
+    Source impactTransientAttackDb;
+    Source impactTransientSustainDb;
+    Source impactTransientTimeMs;
+    Source impactTransientMix;
+    Source impactAttackMs;
+    Source impactDecayMs;
+
 };
 
 void applySettings (engine::Cutter& cutter, const Settings& settings);
