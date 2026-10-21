@@ -33,6 +33,9 @@ struct DisplayState
     std::atomic<double> blockStart { 0.0 }; // units into the phrase
     std::atomic<double> blockEnd { 0.0 };
     std::atomic<double> position { 0.0 };
+    enum class TransformReason { off, awaitingCut, searchPending, noAttack, sourceIncomplete, tooLong, sourceLost };
+    std::atomic<TransformReason> transformReason { TransformReason::off };
+    std::atomic<std::uint64_t> transformEligible { 0 }, attackApplied { 0 }, reverseApplied { 0 }, transformIneligible { 0 };
 
     static_assert (std::atomic<Status>::is_always_lock_free);
     static_assert (std::atomic<double>::is_always_lock_free);

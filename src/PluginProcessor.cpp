@@ -13,39 +13,227 @@ LivecutAudioProcessor::LivecutAudioProcessor()
       parameters (*this, nullptr, "Livecut", livecut::createParameterLayout()),
       settingsReader (parameters)
 {
+    startTimer (100);
 }
+
+LivecutAudioProcessor::~LivecutAudioProcessor() { stopTimer(); }
 
 void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
 {
-    stream.reset();
+    std::unique_ptr<livecut::StreamResources> retired;
+    std::uint64_t operation;
+    {
+        const juce::ScopedLock guard (getCallbackLock());
+        suspendProcessing (true);
+        operation = ++configurationGeneration;
+        haveAudioObservation = false;
+        retired = std::move (stream);
+        processingSampleRate = sampleRate;
+        preparationFailed = false;
+        publishedModeState = ModeState::unprepared;
+    }
+    retired.reset(); // no heavy destruction under our callback guard
     try
     {
         const auto settings = settingsReader.read();
         auto prepared = std::make_unique<livecut::StreamResources> (sampleRate, settings.requestedMode);
-        mixer.prepare (sampleRate, settings.wet, settings.outputTrimDb);
-        capture.rolling().prepare (sampleRate);
-        wetHold.prepare (sampleRate);
-        wetHold.request (settings.hold);
-        processingSampleRate = sampleRate;
-        processingRunning = false;
-        stream = std::move (prepared);
-        setLatencySamples (stream->latency);
-        display.status = livecut::DisplayState::Status::waitingForHost;
+        livecut::engine::WetHold preparedHold;
+        preparedHold.prepare (sampleRate);
+        preparedHold.request (settings.hold);
+        auto preparedCapture = livecut::PhraseCapture::prepareStorage (sampleRate);
+        livecut::PhraseCapture::Prepared retiredCapture;
+        {
+            const juce::ScopedLock guard (getCallbackLock());
+            if (configurationGeneration != operation)
+                return;
+            std::swap (wetHold, preparedHold);
+            retiredCapture = capture.rolling().installPrepared (std::move (preparedCapture));
+            mixer.prepare (sampleRate, settings.wet, settings.outputTrimDb);
+            processingRunning = false;
+            stream = std::move (prepared);
+            ++configurationGeneration;
+            display.hold = wetHold.state();
+            display.status = livecut::DisplayState::Status::waitingForHost;
+        }
     }
     catch (const std::exception&)
     {
+        const juce::ScopedLock guard (getCallbackLock());
+        if (configurationGeneration != operation)
+            return;
+        preparationFailed = true;
         capture.rolling().interrupt();
         wetHold.interrupt();
+        display.hold = wetHold.state();
         display.status = livecut::DisplayState::Status::preparationError;
+        publishedModeState = ModeState::error;
     }
+    reconcileLatency();
 }
 
 void LivecutAudioProcessor::releaseResources()
 {
-    capture.rolling().interrupt();
-    wetHold.interrupt();
-    stream.reset();
-    display.hold = wetHold.state();
+    std::unique_ptr<livecut::StreamResources> retired;
+    {
+        const juce::ScopedLock guard (getCallbackLock());
+        suspendProcessing (true);
+        ++configurationGeneration;
+        retired = std::move (stream);
+        capture.rolling().interrupt();
+        wetHold.interrupt();
+        display.hold = wetHold.state();
+        lastAudioRunning = false;
+        haveAudioObservation = true;
+        preparationFailed = false;
+        publishedModeState = ModeState::unprepared;
+    }
+    retired.reset();
+    reconcileLatency();
+}
+
+void LivecutAudioProcessor::reconcileLatency()
+{
+    // Claim setter ownership under the guard, then call listeners off-guard.
+    // Reentrant/concurrent lifecycle calls return pending instead of invoking
+    // another setter while the owner is inside a host notification.
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        std::uint64_t generation;
+        int desired;
+        {
+            const juce::ScopedLock guard (getCallbackLock());
+            if (latencyUpdateInProgress)
+            {
+                applyPending = true;
+                publishedModeState = ModeState::pendingHostChange;
+                return;
+            }
+            latencyUpdateInProgress = true;
+            generation = configurationGeneration;
+            desired = stream != nullptr ? stream->latency : 0;
+        }
+        if (getLatencySamples() != desired)
+            setLatencySamples (desired);
+        {
+            const juce::ScopedLock guard (getCallbackLock());
+            latencyUpdateInProgress = false;
+            if (generation != configurationGeneration)
+                continue;
+            if (getLatencySamples() != desired)
+                continue;
+            publishedLatency.store (desired, std::memory_order_release);
+            if (stream != nullptr)
+            {
+                publishedMode.store (stream->mode, std::memory_order_release);
+                publishedModeState = ModeState::active;
+                applyPending = settingsReader.read().requestedMode != stream->mode;
+            }
+            else
+            {
+                publishedModeState = preparationFailed ? ModeState::error : ModeState::unprepared;
+                applyPending = false;
+            }
+            suspendProcessing (false); // null resources deliberately produce gated output
+            return;
+        }
+    }
+    applyPending = true;
+    publishedModeState = ModeState::pendingHostChange;
+}
+
+void LivecutAudioProcessor::applyRequestedMode()
+{
+    applyPending = true;
+    const auto* messages = juce::MessageManager::getInstanceWithoutCreating();
+    if (messages != nullptr && messages->isThisTheMessageThread())
+        tryApplyMode();
+}
+
+void LivecutAudioProcessor::timerCallback()
+{
+    if (applyPending.load (std::memory_order_acquire))
+        tryApplyMode();
+}
+
+void LivecutAudioProcessor::tryApplyMode()
+{
+    const auto requested = settingsReader.read();
+    double rate;
+    std::uint64_t generation;
+    bool latencyOnly = false;
+    {
+        const juce::ScopedLock guard (getCallbackLock());
+        if (latencyUpdateInProgress)
+            return; // the current publisher reconciles the newest configuration
+        if (stream == nullptr)
+        {
+            publishedModeState = preparationFailed ? ModeState::error : ModeState::unprepared;
+            return;
+        }
+        if (stream->mode == requested.requestedMode)
+            latencyOnly = true; // always reconcile publication/suspension, not just the numeric delay
+        if (! latencyOnly && ! haveAudioObservation.load (std::memory_order_acquire))
+        {
+            publishedModeState = ModeState::pendingObservation;
+            return;
+        }
+        if (! latencyOnly && lastAudioRunning.load (std::memory_order_acquire))
+        {
+            publishedModeState = ModeState::pendingPlaying;
+            return;
+        }
+        generation = configurationGeneration;
+        rate = processingSampleRate;
+    }
+    if (latencyOnly)
+    {
+        reconcileLatency();
+        return;
+    }
+    std::unique_ptr<livecut::StreamResources> prepared;
+    try { prepared = std::make_unique<livecut::StreamResources> (rate, requested.requestedMode); }
+    catch (const std::exception&)
+    {
+        publishedModeState = ModeState::error;
+        applyPending = false;
+        return;
+    }
+    std::unique_ptr<livecut::StreamResources> retired;
+    {
+        const juce::ScopedLock guard (getCallbackLock());
+        if (generation != configurationGeneration || rate != processingSampleRate
+            || requested.requestedMode != settingsReader.read().requestedMode)
+        {
+            publishedModeState = ModeState::pendingHostChange;
+            return; // stale prebuild freed after this guard
+        }
+        if (lastAudioRunning.load (std::memory_order_acquire))
+        {
+            publishedModeState = ModeState::pendingPlaying;
+            return;
+        }
+        suspendProcessing (true);
+        retired = std::move (stream);
+        stream = std::move (prepared);
+        ++configurationGeneration;
+        haveAudioObservation = false;
+        capture.rolling().interrupt();
+        wetHold.interrupt();
+        wetHold.request (requested.hold);
+        mixer.prepare (rate, requested.wet, requested.outputTrimDb);
+        processingRunning = false;
+        display.hold = wetHold.state();
+    }
+    retired.reset();
+    reconcileLatency();
+}
+
+void LivecutAudioProcessor::observeTransport()
+{
+    const auto* head = getPlayHead();
+    const auto info = head != nullptr ? head->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo> {};
+    lastAudioRunning.store (info && info->getIsPlaying(), std::memory_order_release);
+    haveAudioObservation.store (true, std::memory_order_release);
 }
 
 bool LivecutAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -64,22 +252,32 @@ void LivecutAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buff
 {
     // Keep Live's original host bypass contract. Studio always advances its
     // physical/analysis/render clocks, selecting unity delayed raw at the end.
-    if (stream != nullptr && stream->mode == livecut::ProcessingMode::studio)
+    if (isSuspended() || stream == nullptr)
+    {
+        buffer.clear();
+        return;
+    }
+    if (stream->mode == livecut::ProcessingMode::studio)
         process (buffer, true);
+    else if (buffer.getNumSamples() > 0)
+        observeTransport();
 }
 
 void LivecutAudioProcessor::process (juce::AudioBuffer<float>& buffer, bool bypass)
 {
     juce::ScopedNoDenormals noDenormals;
-    if (stream == nullptr)
+    if (isSuspended() || stream == nullptr)
     {
         buffer.clear();
-        display.status = livecut::DisplayState::Status::preparationError;
+        if (stream == nullptr)
+            display.status = livecut::DisplayState::Status::preparationError;
         return;
     }
     auto& resources = *stream;
     if (resources.fault)
     {
+        if (buffer.getNumSamples() > 0)
+            observeTransport();
         buffer.clear();
         display.status = livecut::DisplayState::Status::streamError;
         return;
@@ -93,6 +291,8 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float>& buffer, bool bypa
     input.resetHold = resetHoldRequested.exchange (false, std::memory_order_acq_rel);
     const auto* head = getPlayHead();
     const auto info = head != nullptr ? head->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo> {};
+    lastAudioRunning.store (info && info->getIsPlaying(), std::memory_order_release);
+    haveAudioObservation.store (true, std::memory_order_release);
     const auto sync = info ? livecut::hostSync (*info) : std::nullopt;
     if (sync)
     {
@@ -297,6 +497,7 @@ void LivecutAudioProcessor::setStateInformation (const void* data, int sizeInByt
     }
     parameters.replaceState (restored);
     resetHoldRequested.store (true, std::memory_order_release);
+    applyPending.store (true, std::memory_order_release);
 }
 
 juce::String LivecutAudioProcessor::holdStatusText() const
@@ -317,4 +518,43 @@ juce::String LivecutAudioProcessor::holdStatusText() const
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new LivecutAudioProcessor();
+}
+
+juce::String LivecutAudioProcessor::modeStatusText() const
+{
+    const auto requested = settingsReader.read().requestedMode;
+    const auto name = [] (livecut::ProcessingMode mode) { return mode == livecut::ProcessingMode::live ? "Live" : "Studio"; };
+    switch (modeState())
+    {
+        case ModeState::unprepared: return "Awaiting audio preparation";
+        case ModeState::error: return "Cannot configure audio; check sample rate and available memory, then prepare again";
+        case ModeState::pendingObservation: return "Apply pending: waiting for a stopped audio callback";
+        case ModeState::pendingPlaying: return "Apply pending: stop host playback first";
+        case ModeState::pendingHostChange: return "Apply pending: host audio configuration is changing";
+        case ModeState::active: break;
+    }
+    const auto active = activeMode();
+    if (requested != active)
+        return juce::String ("Pending ") + name (requested) + "; active " + name (active) + ". Apply while stopped.";
+    return juce::String (name (active)) + " active; " + juce::String (publishedLatency.load()) + " samples latency. Host compensation is host-controlled.";
+}
+
+juce::String LivecutAudioProcessor::transformStatusText() const
+{
+    using Reason = livecut::DisplayState::TransformReason;
+    juce::String reason;
+    switch (display.transformReason.load (std::memory_order_relaxed))
+    {
+        case Reason::off: reason = "Attack Align and Reverse are off"; break;
+        case Reason::awaitingCut: reason = "Waiting for the next cut"; break;
+        case Reason::searchPending: reason = "Attack search is still analysing; this cut keeps its planned source"; break;
+        case Reason::noAttack: reason = "No qualifying attack; this cut keeps its planned source"; break;
+        case Reason::sourceIncomplete: reason = "Complete source audio has not arrived for this cut"; break;
+        case Reason::tooLong: reason = "This cut needs more source audio than the available budget"; break;
+        case Reason::sourceLost: reason = "Selected source was lost; wet audio is gated"; break;
+    }
+    return reason + "\nEligible " + juce::String (display.transformEligible.load())
+         + " | Attack aligned " + juce::String (display.attackApplied.load())
+         + " | Reversed " + juce::String (display.reverseApplied.load())
+         + " | Ineligible " + juce::String (display.transformIneligible.load());
 }

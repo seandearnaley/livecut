@@ -12,10 +12,18 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
-class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut::engine::Cutter::Observer
+class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut::engine::Cutter::Observer, private juce::Timer
 {
 public:
     LivecutAudioProcessor();
+    ~LivecutAudioProcessor() override;
+    enum class ModeState { unprepared, active, pendingObservation, pendingPlaying, pendingHostChange, error };
+    void applyRequestedMode();
+    livecut::ProcessingMode activeMode() const { return publishedMode.load (std::memory_order_acquire); }
+    ModeState modeState() const { return publishedModeState.load (std::memory_order_acquire); }
+    int reportedLatencySamples() const { return publishedLatency.load (std::memory_order_acquire); }
+    juce::String modeStatusText() const;
+    juce::String transformStatusText() const;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
@@ -49,6 +57,10 @@ public:
     juce::String holdStatusText() const;
 
 private:
+    void timerCallback() override;
+    void tryApplyMode();
+    void reconcileLatency();
+    void observeTransport();
     void process (juce::AudioBuffer<float>&, bool bypass);
     void publishDisplay();
     void discontinuity (int) override { capture.rolling().interrupt(); wetHold.interrupt(); }
@@ -68,6 +80,12 @@ private:
     std::atomic<bool> resetHoldRequested { false };
     std::uint64_t transportEpochCounter = 1;
     bool processingRunning = false;
+    std::atomic<livecut::ProcessingMode> publishedMode { livecut::ProcessingMode::live };
+    std::atomic<ModeState> publishedModeState { ModeState::unprepared };
+    std::atomic<bool> lastAudioRunning { false }, haveAudioObservation { false }, applyPending { false };
+    std::atomic<int> publishedLatency { 0 };
+    std::uint64_t configurationGeneration = 0; // callback-guard protected
+    bool latencyUpdateInProgress = false, preparationFailed = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivecutAudioProcessor)
 };
