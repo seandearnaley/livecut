@@ -24,6 +24,7 @@ add_library(LivecutEngine STATIC
     src/engine/SwingGrid.h
     src/engine/DelayTimeline.h
     src/engine/OnsetDetector.h
+    src/engine/TransformSpan.h
     src/engine/Bounce.cpp
     src/engine/CutProc11.cpp
     src/engine/Cutter.cpp
@@ -139,6 +140,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/legacy/LegacyPlayer.cpp
         tests/engine/LegacyEquivalenceTests.cpp
         tests/engine/PerformTests.cpp
+        tests/engine/TransformSpanTests.cpp
         tests/engine/AllocationCounter.cpp
         tests/engine/AudioHistoryTests.cpp
         tests/engine/SwingGridTests.cpp
