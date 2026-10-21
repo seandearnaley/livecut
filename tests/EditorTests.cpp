@@ -233,6 +233,7 @@ TEST_CASE ("The status line says how to start cutting", "[editor]")
     LivecutAudioProcessor processor;
     processor.prepareToPlay (48000.0, 512);
     juce::AudioBuffer<float> buffer (2, 512);
+    buffer.clear();
     juce::MidiBuffer midi;
     processor.processBlock (buffer, midi);
 
@@ -274,6 +275,7 @@ TEST_CASE ("Render the editor for design review", "[.screenshot]")
     processor.prepareToPlay (48000.0, 512);
 
     juce::AudioBuffer<float> buffer (2, 512);
+    buffer.clear();
     juce::MidiBuffer midi;
     double ppq = 0.0;
 
@@ -310,6 +312,11 @@ TEST_CASE ("Render the editor for design review", "[.screenshot]")
     set (livecut::ids::mode, 1.0f);
     set (livecut::ids::attackAlign, 1.0f);
     set (livecut::ids::reverseChance, 0.5f);
+    set (livecut::ids::procedure, 1.0f);
+    set (livecut::ids::subdivision, 6.0f);
+    set (livecut::ids::straightChance, 1.0f);
+    set (livecut::ids::minPhraseBars, 1.0f);
+    set (livecut::ids::maxPhraseBars, 1.0f);
     auto* recut = dynamic_cast<juce::TextButton*> (findById (editor, "recutTab"));
     REQUIRE (recut != nullptr);
     recut->onClick();
@@ -318,13 +325,16 @@ TEST_CASE ("Render the editor for design review", "[.screenshot]")
     processor.applyRequestedMode();
     REQUIRE (processor.activeMode() == livecut::ProcessingMode::studio);
     playHead.info.setIsPlaying (true);
+    playHead.info.setBpm (120.0);
+    ppq = 0.0;
     for (int block = 0; block < 160; ++block)
     {
         for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
         {
             const auto frame = block * buffer.getNumSamples() + sample;
-            const auto position = frame % 6000;
-            const auto value = position < 480 ? 0.7f * std::exp (-static_cast<float> (position) / 100.0f) : 0.0f;
+            const auto position = frame % 3000;
+            const auto value = position >= 96 && position < 576
+                ? 0.7f * std::exp (-static_cast<float> (position - 96) / 100.0f) : 0.0f;
             buffer.setSample (0, sample, value);
             buffer.setSample (1, sample, -value);
         }
@@ -332,15 +342,32 @@ TEST_CASE ("Render the editor for design review", "[.screenshot]")
         playHead.info.setPpqPositionOfLastBarStart (std::floor (ppq / 4.0) * 4.0);
         playHead.info.setBarCount (static_cast<int64_t> (ppq / 4.0));
         processor.processBlock (buffer, midi);
-        ppq += 512.0 * 174.0 / 60.0 / 48000.0;
+        ppq += 512.0 * 120.0 / 60.0 / 48000.0;
         if (block == 0)
         {
             editor.refreshDisplay();
             saveImage ("editor-recut-filling.png");
         }
     }
+    REQUIRE (processor.getDisplayState().attackApplied.load() > 0);
+    REQUIRE (processor.getDisplayState().reverseApplied.load() > 0);
     editor.refreshDisplay();
     saveImage ("editor-recut.png");
+    const auto skippedBefore = processor.getDisplayState().transformIneligible.load();
+    for (int block = 0; block < 220; ++block)
+    {
+        for (int channel = 0; channel < 2; ++channel)
+            juce::FloatVectorOperations::fill (buffer.getWritePointer (channel), .2f, buffer.getNumSamples());
+        playHead.info.setPpqPosition (ppq);
+        playHead.info.setPpqPositionOfLastBarStart (std::floor (ppq / 4.0) * 4.0);
+        playHead.info.setBarCount (static_cast<int64_t> (ppq / 4.0));
+        processor.processBlock (buffer, midi);
+        ppq += 512.0 * 120.0 / 60.0 / 48000.0;
+    }
+    REQUIRE (processor.getDisplayState().transformIneligible.load() > skippedBefore);
+    REQUIRE (processor.getDisplayState().transformReason.load() == livecut::DisplayState::TransformReason::noAttack);
+    editor.refreshDisplay();
+    saveImage ("editor-recut-ineligible.png");
 }
 
 TEST_CASE ("The editor exposes capture save and capture status", "[editor][capture]")

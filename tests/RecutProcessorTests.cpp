@@ -789,3 +789,36 @@ TEST_CASE ("Studio transforms feed one delayed mixer and final-output capture wi
     CHECK (std::memcmp (captured.channel (1).data(), heard[1].data() + 4000, 16000 * sizeof (float)) == 0);
     CHECK (allocations == 0);
 }
+
+TEST_CASE ("Studio's exact dry and bypass latency scales to supported production sample rates", "[processor][recut][production-rate]")
+{
+    const auto rate = GENERATE (44100.0, 48000.0, 96000.0, 192000.0);
+    const auto bypass = GENERATE (false, true);
+    LivecutAudioProcessor processor;
+    setRecut (processor, "mode", 1.0f);
+    setRecut (processor, "wet", bypass ? 1.0f : 0.0f);
+    processor.prepareToPlay (rate, 137);
+    const auto latency = static_cast<int> (std::lround (.5 * rate));
+    REQUIRE (processor.reportedLatencySamples() == latency);
+    juce::MidiBuffer midi;
+    bool exact = true;
+    for (int done = 0; done < latency + 150; done += 137)
+    {
+        const auto frames = std::min (137, latency + 150 - done);
+        juce::AudioBuffer<float> buffer (2, frames);
+        buffer.clear();
+        if (done == 0)
+        {
+            buffer.setSample (0, 17, .75f);
+            buffer.setSample (1, 17, -.25f);
+        }
+        if (bypass)
+            processor.processBlockBypassed (buffer, midi);
+        else
+            processor.processBlock (buffer, midi);
+        for (int i = 0; i < frames; ++i)
+            exact &= buffer.getSample (0, i) == (done + i == latency + 17 ? .75f : 0.0f)
+                  && buffer.getSample (1, i) == (done + i == latency + 17 ? -.25f : 0.0f);
+    }
+    CHECK (exact);
+}
