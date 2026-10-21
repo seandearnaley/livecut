@@ -32,10 +32,13 @@ Cutter::Cutter()
     cuts.reserve (maxCutsPerBlock);
 }
 
-void Cutter::prepare (double newSampleRate)
+void Cutter::prepare (double newSampleRate, std::int64_t latencyFrames)
 {
     sampleRate = newSampleRate;
-    livePlayer.prepare (static_cast<int> (std::ceil (maxBarSeconds * sampleRate)));
+    const auto retained = static_cast<std::size_t> (std::ceil (64.0 * sampleRate)) + static_cast<std::size_t> (latencyFrames)
+                        + static_cast<std::size_t> (std::ceil (.020 * sampleRate))
+                        + static_cast<std::size_t> (std::ceil (.002 * sampleRate)) + 2;
+    livePlayer.prepare (static_cast<int> (std::ceil (maxBarSeconds * sampleRate)), retained);
     bitCrusher.prepare (sampleRate);
     combFilter.prepare (sampleRate);
     setFadeMilliseconds (fadeMilliseconds);

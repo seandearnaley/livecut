@@ -51,13 +51,13 @@ int playableSamples (int length, double rate, int recorded, int capacity)
     return low;
 }
 
-void LivePlayer::prepare (int newCapacity)
+void LivePlayer::prepare (int newCapacity, std::size_t retainedFrames)
 {
     capacity = newCapacity;
     // A block may repeat its first eight seconds for the entire eight-bar
     // phrase. Every supported bar <=8s, so 8*sourceExtent plus two interpolation
     // guards retains its origin until its last output frame, even with swing.
-    if (! history.prepare (8 * static_cast<std::size_t> (capacity) + 2))
+    if (! history.prepare (retainedFrames != 0 ? retainedFrames : 8 * static_cast<std::size_t> (capacity) + 2))
         throw std::runtime_error ("Cannot prepare source history");
     sourceError = false;
     playing.clear();

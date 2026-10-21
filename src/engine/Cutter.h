@@ -48,7 +48,7 @@ public:
     Cutter();
 
     // Allocates everything the cutter needs. Call before processing, never on the audio thread.
-    void prepare (double sampleRate);
+    void prepare (double sampleRate, std::int64_t latencyFrames = 0);
 
     // Structural changes land on the next bar line.
     void setProcedure (Procedure procedure);

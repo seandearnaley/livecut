@@ -20,7 +20,10 @@ struct DisplayState
         startingSoon,   // playing, waiting for the next unit to start cutting
         cutting,
         planOverflow,
-        sourceUnavailable
+        sourceUnavailable,
+        filling,
+        preparationError,
+        streamError
     };
 
     std::atomic<Status> status { Status::waitingForHost };

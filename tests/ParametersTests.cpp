@@ -21,7 +21,8 @@ constexpr std::array allIds {
     ids::straightChance, ids::regularChance, ids::ritardChance, ids::accel, ids::activity,
     ids::crusher, ids::minBits, ids::maxBits, ids::minRate, ids::maxRate, ids::comb, ids::combType,
     ids::combFeedback, ids::minDelay, ids::maxDelay,
-    ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance, ids::wet, ids::outputTrim, ids::swing, ids::accent, ids::hold
+    ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance, ids::wet, ids::outputTrim, ids::swing, ids::accent, ids::hold,
+    ids::mode, ids::attackAlign, ids::attackThreshold, ids::reverseChance
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -263,7 +264,8 @@ TEST_CASE ("Parameters added for Bounce carry version hint 2", "[parameters]")
                            || name == ids::climb || name == ids::halftimeChance;
         const auto isMixer = name == ids::wet || name == ids::outputTrim;
         const auto isPerform = name == ids::swing || name == ids::accent || name == ids::hold;
-        CHECK (parameter (state, id).getVersionHint() == (isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
+        const auto isRecut = name == ids::mode || name == ids::attackAlign || name == ids::attackThreshold || name == ids::reverseChance;
+        CHECK (parameter (state, id).getVersionHint() == (isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
     }
 }
 

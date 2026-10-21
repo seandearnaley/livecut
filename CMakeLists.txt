@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures to build")
 
-project(Livecut VERSION 0.4.0 LANGUAGES C CXX)
+project(Livecut VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -72,6 +72,7 @@ target_sources(LivecutCode
     INTERFACE
         src/CaptureService.cpp
         src/CaptureService.h
+        src/StreamResources.h
         src/OutputMixer.h
         src/PhraseCapture.cpp
         src/PhraseCapture.h
@@ -122,7 +123,8 @@ if(LIVECUT_BUILD_TESTS)
         tests/EditorTests.cpp
         tests/HostSyncTests.cpp
         tests/ParametersTests.cpp
-        tests/PluginProcessorTests.cpp)
+        tests/PluginProcessorTests.cpp
+        tests/RecutProcessorTests.cpp)
     livecut_build_for_host_only(LivecutTests)
     # The JucePlugin_* definitions only exist on the plugin target, so copy them.
     target_compile_definitions(LivecutTests PRIVATE $<TARGET_PROPERTY:Livecut,COMPILE_DEFINITIONS>)

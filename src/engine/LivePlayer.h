@@ -40,7 +40,7 @@ public:
     };
 
     // Declares the classic source extent; retains eight such extents plus two guards.
-    void prepare (int capacity);
+    void prepare (int capacity, std::size_t retainedFrames = 0);
 
     void setFadeSamples (int samples);
 
