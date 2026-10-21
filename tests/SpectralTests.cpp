@@ -2,6 +2,7 @@
 #include "engine/AllocationCounter.h"
 #include "spectral/SpectralStage.h"
 #include <algorithm>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <chrono>
@@ -317,14 +318,19 @@ void cancellationAndReentry ()
         good (replacement.process (packet (n)));
     replacement.endCallback ();
     const auto waits = replacement.offlineWaits ();
-    replacement.beginCallback (Execution::realtime);
+    std::array<Result, 64> realtimeResults;
+    std::size_t callbackAllocations = 0;
     {
         livecut::engine::testing::AllocationCounter allocations;
-        for (int n = 16000; n < 16064; ++n)
-            good (replacement.process (packet (n)));
+        replacement.beginCallback (Execution::realtime);
+        for (std::size_t i = 0; i < realtimeResults.size (); ++i)
+            realtimeResults[i] = replacement.process (packet (16000 + static_cast<int> (i)));
         replacement.endCallback ();
-        require (allocations.count () == 0, "replacement realtime callback cannot allocate");
+        callbackAllocations = allocations.count ();
     }
+    for (const auto &result : realtimeResults)
+        good (result);
+    require (callbackAllocations == 0, "replacement realtime callback cannot allocate");
     require (replacement.offlineWaits () == waits, "offline-to-realtime callback cannot wait");
     replacement.beginCallback (Execution::offline);
     for (int n = 16064; n < 20000; ++n)
