@@ -19,6 +19,12 @@ namespace
 // A host position this many beats away from where the previous buffer ended
 // is a jump: a loop, a relocation or a restart.
 constexpr double jumpToleranceBeats = 1.0e-3;
+
+bool hasSwingWarp (double swing, double beatsPerBar)
+{
+    // SwingGrid only warps complete pairs of eighths (one quarter note).
+    return swing > 50.0 && beatsPerBar >= 1.0;
+}
 } // namespace
 
 Cutter::Cutter()
@@ -135,16 +141,17 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
             reset();
     }
 
-    // A queued swung onset belongs to its original meter. Neutral mode keeps
-    // the 0.3 path; swung mode explicitly restarts in the new meter.
-    if (meterChanged && swing > 50.0)
+    // A queued swung onset belongs to its original meter, including when the
+    // new bar has no complete eighth pair. Identity-to-identity changes keep
+    // the 0.3 path.
+    if (meterChanged && (hasSwingWarp (swing, previousBeatsPerBar) || hasSwingWarp (swing, timing.beatsPerBar)))
         resetRendering();
 
     if (observer != nullptr && (! havePosition || meterChanged))
         observer->discontinuity (0);
     previousBeatsPerBar = timing.beatsPerBar;
 
-    if (cutting && swing <= 50.0)
+    if (cutting && ! hasSwingWarp (swing, timing.beatsPerBar))
     {
         livePlayer.setSamplesPerUnit (samplesPerUnit (timing));
 
@@ -236,7 +243,7 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
         activatePlans (bar, beats, halfSampleBeats, timing);
         if (cutting && hasActivePlan && processingError == Error::none)
         {
-            if (swing > 50.0)
+            if (hasSwingWarp (swing, timing.beatsPerBar))
                 renderSwung (left[i], right[i], bar, beats, beatsPerSample, timing);
             else
                 livePlayer.renderFrame (left[i], right[i]);

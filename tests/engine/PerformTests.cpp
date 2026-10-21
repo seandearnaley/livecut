@@ -8,6 +8,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <vector>
 
@@ -251,18 +252,93 @@ TEST_CASE ("Swing activates block and internal cut endpoints at mapped musical p
 
 TEST_CASE ("A meter change clears queued swung onsets and resumes in the new meter", "[perform][swing]")
 {
+    const auto meters = GENERATE (std::pair { 4.0, 1.5 }, std::pair { 4.0, 0.5 }, std::pair { 0.5, 4.0 });
+    CAPTURE (meters.first, meters.second);
     Cutter cutter;
     cutter.prepare (1000.0);
     cutter.setProcedure (Procedure::warpCut);
     cutter.setUnitsPerBar (32);
     cutter.setSwing (75.0);
+    const auto initialFrames = meters.first == 4.0 ? 900 : 200;
     std::vector<float> left (900, 0.5f), right (900, -0.5f);
-    cutter.process (left.data(), right.data(), 900, { 120.0, 4.0 }, { 0, 0.0 });
-    cutter.process (left.data(), right.data(), 1, { 120.0, 1.5 }, { 1, 0.3 });
+    cutter.process (left.data(), right.data(), initialFrames, { 120.0, meters.first }, { 0, 0.0 });
+    const auto beats = initialFrames * 0.002;
+    const auto bar = static_cast<std::int64_t> (std::floor (beats / meters.second));
+    const auto into = beats - static_cast<double> (bar) * meters.second;
+    cutter.process (left.data(), right.data(), 1, { 120.0, meters.second }, { bar, into });
     CHECK_FALSE (cutter.isCutting());
-    cutter.process (left.data(), right.data(), 100, { 120.0, 1.5 }, { 1, 0.302 });
+    // In the new 4/4 meter the next logical eighth starts at physical .75.
+    const auto resumeFrames = meters.second == 4.0 ? 250 : 100;
+    cutter.process (left.data(), right.data(), resumeFrames, { 120.0, meters.second }, { bar, into + 0.002 });
     REQUIRE (cutter.isCutting());
-    CHECK (cutter.phraseStartBar() == 1);
-    CHECK (cutter.activeSourceRegion().firstFrame >= 900);
+    CHECK (cutter.phraseStartBar() == bar);
+    CHECK (cutter.activeSourceRegion().firstFrame >= initialFrames);
     CHECK (cutter.error() == Cutter::Error::none);
+}
+
+TEST_CASE ("Sub-quarter meters keep the straight player path at every Swing setting", "[perform][swing][subquarter]")
+{
+    const auto procedure = GENERATE (Procedure::cutProc11, Procedure::warpCut, Procedure::sqPusher, Procedure::bounce);
+    const auto bufferSize = GENERATE (137, 512);
+    const auto meters = GENERATE (std::pair { 0.5, 0.5 }, std::pair { 0.75, 0.75 },
+                                 std::pair { 0.5, 0.75 }, std::pair { 0.75, 0.5 });
+    constexpr int rate = 48000;
+    Cutter straight, swung;
+    CutParameters parameters;
+    parameters.minPhraseBars = parameters.maxPhraseBars = 2;
+    parameters.minCents = -900.0f;
+    parameters.maxCents = 700.0f;
+    parameters.minPan = -0.7f;
+    parameters.maxPan = 0.6f;
+    parameters.minAmp = 0.3f;
+    parameters.maxAmp = 0.9f;
+    CrusherParameters crusher { true, 6.0f, 14.0f, 1700.0, 6000.0 };
+    CombParameters comb { true, CombParameters::Type::feedBack, 0.4f, 2.0f, 17.0f };
+    for (auto* cutter : { &straight, &swung })
+    {
+        cutter->prepare (rate);
+        cutter->setProcedure (procedure);
+        cutter->setUnitsPerBar (32);
+        cutter->setParameters (parameters);
+        cutter->setFadeMilliseconds (4.0);
+        cutter->setCrusher (crusher);
+        cutter->setComb (comb);
+    }
+    swung.setSwing (75.0);
+    std::vector<float> left (static_cast<std::size_t> (bufferSize)), right (left.size()),
+                       swungLeft (left.size()), swungRight (left.size());
+    std::int64_t bar = 0;
+    double beats = 0.0;
+    int firstMismatch = -1;
+    for (int done = 0; done < 2 * rate;)
+    {
+        // Split exactly at the tempo/meter changes, with all other host buffers
+        // retaining their irregular size. Position stays continuous in each meter.
+        const auto nextChange = done < 17000 ? 17000 : done < rate ? rate : 2 * rate;
+        const auto frames = std::min (bufferSize, nextChange - done);
+        const auto bpm = done < 17000 ? 120.0 : 83.0;
+        const auto meter = done < rate ? meters.first : meters.second;
+        for (int frame = 0; frame < frames; ++frame)
+        {
+            left[static_cast<std::size_t> (frame)] = std::sin (static_cast<float> (done + frame) * 0.013f);
+            right[static_cast<std::size_t> (frame)] = std::cos (static_cast<float> (done + frame) * 0.017f);
+        }
+        swungLeft = left;
+        swungRight = right;
+        straight.process (left.data(), right.data(), frames, { bpm, meter }, { bar, beats });
+        swung.process (swungLeft.data(), swungRight.data(), frames, { bpm, meter }, { bar, beats });
+        const auto bytes = static_cast<std::size_t> (frames) * sizeof (float);
+        if (firstMismatch < 0 && (std::memcmp (left.data(), swungLeft.data(), bytes) != 0
+                              || std::memcmp (right.data(), swungRight.data(), bytes) != 0))
+            firstMismatch = done;
+        beats += frames * bpm / 60.0 / rate;
+        const auto barsOver = std::floor (beats / meter);
+        bar += static_cast<std::int64_t> (barsOver);
+        beats -= barsOver * meter;
+        done += frames;
+    }
+    CAPTURE (procedure, bufferSize, meters.first, meters.second);
+    CHECK (firstMismatch == -1);
+    CHECK (straight.error() == Cutter::Error::none);
+    CHECK (swung.error() == Cutter::Error::none);
 }
