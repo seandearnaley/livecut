@@ -51,7 +51,8 @@ struct Column
 class LivecutAudioProcessorEditor::Panel final : public juce::Component
 {
 public:
-    explicit Panel (juce::AudioProcessorValueTreeState& state, livecut::CaptureService& captureService)
+    explicit Panel (juce::AudioProcessorValueTreeState& state, livecut::CaptureService& captureService,
+                    LivecutAudioProcessor& processor)
         : procedureSwitch (choice (state, ids::procedure)),
           subdivision (choice (state, ids::subdivision), "Subdivision"),
           phraseBars (parameter (state, ids::minPhraseBars), parameter (state, ids::maxPhraseBars), "Bars"),
@@ -86,13 +87,71 @@ public:
           swing (parameter (state, ids::swing), "Swing"),
           accent (parameter (state, ids::accent), "Accent"),
           hold (parameter (state, ids::hold), "Audio Hold"),
-          captures (captureService)
+          processingMode (choice (state, ids::mode), "Requested"),
+          attackAlign (parameter (state, ids::attackAlign), "Attack align"),
+          attackThreshold (parameter (state, ids::attackThreshold), "Attack threshold"),
+          reverseChance (parameter (state, ids::reverseChance), "Reverse chance"),
+          captures (captureService),
+          hostProcessor (processor)
     {
         for (auto* component : std::initializer_list<juce::Component*> {
                  &procedureSwitch, &ruler, &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty,
                  &amp, &pan, &pitch, &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay,
-                 &wet, &trim, &captureButton, &saveButton, &captureStatus, &swing, &accent, &hold, &holdStatus })
+                 &wet, &trim, &captureButton, &saveButton, &captureStatus, &swing, &accent, &hold, &holdStatus,
+                 &patternTab, &recutTab })
             addAndMakeVisible (component);
+
+        for (auto* component : std::initializer_list<juce::Component*> {
+                 &processingMode, &attackAlign, &attackThreshold, &reverseChance,
+                 &applyMode, &modeSummary, &modeStatus, &modeHelp, &transformStatus })
+            addChildComponent (component);
+
+        patternTab.setComponentID ("patternTab");
+        recutTab.setComponentID ("recutTab");
+        patternTab.setTitle ("Pattern controls");
+        recutTab.setTitle ("Recut and Studio controls");
+        patternTab.setTooltip ("Show phrase, cut and procedure controls");
+        recutTab.setTooltip ("Show processing mode, attack alignment and reverse controls");
+        patternTab.onClick = [this] { showPage (false); };
+        recutTab.onClick = [this] { showPage (true); };
+
+        processingMode.setTitle ("Requested processing mode");
+        for (auto* child : processingMode.getChildren())
+            if (auto* box = dynamic_cast<juce::ComboBox*> (child))
+            {
+                box->setTitle ("Requested processing mode");
+                box->setTooltip ("Live is immediate. Studio adds 500 ms of monitoring delay. Apply changes while stopped.");
+            }
+        attackAlign.setTitle ("Attack align");
+        for (auto* child : attackAlign.getChildren())
+            if (auto* toggle = dynamic_cast<juce::ToggleButton*> (child))
+                toggle->setTooltip ("Start eligible slices near detected attacks, linked across stereo. Without a qualifying complete aligned slice, both Attack Align and Reverse are ineligible.");
+        attackThreshold.setTitle ("Attack threshold");
+        reverseChance.setTitle ("Reverse chance");
+        attackThreshold.setTooltip ("Minimum detected energy rise, 3 to 24 dB. Higher values select stronger attacks.");
+        const juce::String reverseHelp = "Probability of reversing an eligible slice; 100% means every eligible slice. With Attack Align on, reverse requires a qualifying complete aligned slice. With Attack Align off, reverse can use a complete nominal slice.";
+        reverseChance.setTooltip (reverseHelp);
+        for (auto* child : reverseChance.getChildren())
+            if (auto* slider = dynamic_cast<juce::Slider*> (child))
+                slider->setTooltip (reverseHelp);
+        applyMode.setComponentID ("applyMode");
+        applyMode.setTitle ("Apply requested processing mode while stopped");
+        applyMode.setTooltip ("Stop playback in your host, then apply the requested Live or Studio mode");
+        applyMode.onClick = [this] { hostProcessor.applyRequestedMode(); refreshRecut(); };
+        const auto statusLabel = [] (juce::Label& label, const char* id, const char* title)
+        {
+            label.setComponentID (id);
+            label.setTitle (title);
+            label.setFont (ui::uiFont (13.0f));
+            label.setColour (juce::Label::textColourId, ui::palette::inkMuted);
+            label.setJustificationType (juce::Justification::topLeft);
+            label.setBorderSize ({});
+        };
+        statusLabel (modeSummary, "modeSummary", "Active processing mode and latency");
+        statusLabel (modeStatus, "modeStatus", "Processing mode status");
+        statusLabel (modeHelp, "modeHelp", "Processing mode instructions");
+        statusLabel (transformStatus, "transformStatus", "Attack and reverse status");
+        modeHelp.setText ("Studio adds 500 ms of delay so more slices can use attack alignment and reverse. Stop your host, choose a mode, then Apply.", juce::dontSendNotification);
 
         for (auto* component : std::initializer_list<juce::Component*> { &repeats, &stutter, &stutterArea })
             cutProc11Controls.addAndMakeVisible (component);
@@ -139,18 +198,65 @@ public:
         dim (crusher.isOn(), { &bits, &rate });
         dim (comb.isOn(), { &combType, &combFeedback, &delay });
         showProcedure (static_cast<int> (std::lround (state.getRawParameterValue (ids::procedure)->load())));
+        showPage (false);
         setSize (baseWidth, baseHeight);
     }
 
     void showProcedure (int index)
     {
         activeProcedure = juce::jlimit (0, static_cast<int> (procedures.size()) - 1, index);
-        cutProc11Controls.setVisible (activeProcedure == 0);
-        warpCutControls.setVisible (activeProcedure == 1);
-        sqPusherControls.setVisible (activeProcedure == 2);
-        bounceControls.setVisible (activeProcedure == 3);
+        cutProc11Controls.setVisible (! recutSelected && activeProcedure == 0);
+        warpCutControls.setVisible (! recutSelected && activeProcedure == 1);
+        sqPusherControls.setVisible (! recutSelected && activeProcedure == 2);
+        bounceControls.setVisible (! recutSelected && activeProcedure == 3);
         pitch.setAlpha (activeProcedure == static_cast<int> (livecut::engine::Procedure::bounce) ? 0.5f : 1.0f);
         repaint();
+    }
+
+    void showPage (bool recut)
+    {
+        recutSelected = recut;
+        for (auto* component : std::initializer_list<juce::Component*> {
+                 &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty, &amp, &pan, &pitch })
+            component->setVisible (! recut);
+        for (auto* component : std::initializer_list<juce::Component*> {
+                 &processingMode, &attackAlign, &attackThreshold, &reverseChance,
+                 &applyMode, &modeSummary, &modeStatus, &modeHelp, &transformStatus })
+            component->setVisible (recut);
+        patternTab.setToggleState (! recut, juce::dontSendNotification);
+        recutTab.setToggleState (recut, juce::dontSendNotification);
+        showProcedure (activeProcedure);
+    }
+
+    void refreshRecut()
+    {
+        const auto modeState = hostProcessor.modeState();
+        const auto active = hostProcessor.activeMode();
+        const auto requested = hostProcessor.getParameterState().getRawParameterValue (ids::mode)->load() > 0.5f
+                                   ? livecut::ProcessingMode::studio : livecut::ProcessingMode::live;
+        juce::String summary;
+        if (modeState == LivecutAudioProcessor::ModeState::unprepared)
+            summary = "Active: not prepared";
+        else if (modeState == LivecutAudioProcessor::ModeState::error)
+            summary = "Mode error; see status";
+        else if (modeState == LivecutAudioProcessor::ModeState::pendingHostChange)
+            summary = "Updating host latency...";
+        else
+        {
+            summary = "Active: ";
+            summary += active == livecut::ProcessingMode::studio ? "Studio" : "Live";
+            const auto latency = hostProcessor.reportedLatencySamples();
+            summary += " | " + juce::String (latency) + " samples";
+        }
+        modeSummary.setText (summary, juce::dontSendNotification);
+        modeStatus.setText (hostProcessor.modeStatusText(), juce::dontSendNotification);
+        transformStatus.setText (hostProcessor.transformStatusText(), juce::dontSendNotification);
+        const auto canApply = modeState != LivecutAudioProcessor::ModeState::unprepared
+                              && modeState != LivecutAudioProcessor::ModeState::pendingPlaying
+                              && modeState != LivecutAudioProcessor::ModeState::pendingHostChange
+                              && (requested != active || modeState != LivecutAudioProcessor::ModeState::active);
+        applyMode.setEnabled (canApply);
+        applyMode.setAlpha (canApply ? 1.0f : 0.5f);
     }
 
     void paint (juce::Graphics& g) override
@@ -161,7 +267,7 @@ public:
         g.setFont (ui::uiFont (26.0f, true));
         g.drawText (juce::String ("Livecut ") + JucePlugin_VersionString, juce::Rectangle<int> (margin, 16, 200, 34), juce::Justification::centredLeft);
 
-        for (const auto& section : { phraseSection, cutsSection, procedureSection, crusherSection, combSection })
+        for (const auto& section : { crusherSection, combSection })
         {
             g.setColour (ui::palette::well);
             g.fillRoundedRectangle (section.toFloat(), 4.0f);
@@ -174,15 +280,32 @@ public:
             g.drawText (text, section.reduced (sectionPadding).removeFromTop (22), juce::Justification::centredLeft);
         };
 
-        title ("Phrase", phraseSection);
-        title ("Cuts", cutsSection);
-
-        const auto& info = procedures[static_cast<std::size_t> (activeProcedure)];
-        title (info.name, procedureSection);
-        g.setColour (ui::palette::inkMuted);
-        g.setFont (ui::uiFont (13.0f));
-        g.drawFittedText (info.description, procedureSection.reduced (sectionPadding).withTrimmedTop (24).removeFromTop (34),
-                          juce::Justification::topLeft, 2);
+        if (recutSelected)
+        {
+            for (const auto& section : { modeSection, transformSection })
+            {
+                g.setColour (ui::palette::well);
+                g.fillRoundedRectangle (section.toFloat(), 4.0f);
+            }
+            title ("Processing mode", modeSection);
+            title ("Attack & reverse", transformSection);
+        }
+        else
+        {
+            for (const auto& section : { phraseSection, cutsSection, procedureSection })
+            {
+                g.setColour (ui::palette::well);
+                g.fillRoundedRectangle (section.toFloat(), 4.0f);
+            }
+            title ("Phrase", phraseSection);
+            title ("Cuts", cutsSection);
+            const auto& info = procedures[static_cast<std::size_t> (activeProcedure)];
+            title (info.name, procedureSection);
+            g.setColour (ui::palette::inkMuted);
+            g.setFont (ui::uiFont (13.0f));
+            g.drawFittedText (info.description, procedureSection.reduced (sectionPadding).withTrimmedTop (24).removeFromTop (34),
+                              juce::Justification::topLeft, 2);
+        }
 
         g.setFont (ui::uiFont (12.0f));
         g.drawText ("Ported from Livecut by Remy Muller. CutProc11, WarpCut and SQPusher from Nick Collins' BBCut.",
@@ -193,6 +316,8 @@ public:
     void resized() override
     {
         procedureSwitch.setBounds (baseWidth - margin - 456, 20, 456, 30);
+        patternTab.setBounds (226, 20, 82, 30);
+        recutTab.setBounds (312, 20, 82, 30);
         ruler.setBounds (margin, 62, baseWidth - 2 * margin, 88);
 
         const auto middleTop = 166;
@@ -200,6 +325,17 @@ public:
         phraseSection = { margin, middleTop, 262, middleHeight };
         cutsSection = { phraseSection.getRight() + gap, middleTop, 290, middleHeight };
         procedureSection = { cutsSection.getRight() + gap, middleTop, baseWidth - margin - cutsSection.getRight() - gap, middleHeight };
+        modeSection = { margin, middleTop, 405, middleHeight };
+        transformSection = { modeSection.getRight() + gap, middleTop, 425, middleHeight };
+        processingMode.setBounds (32, 208, 221, choiceRowHeight);
+        applyMode.setBounds (263, 208, 150, choiceRowHeight);
+        modeSummary.setBounds (32, 250, 381, 24);
+        modeStatus.setBounds (32, 284, 381, 68);
+        modeHelp.setBounds (32, 370, 381, 56);
+        attackAlign.setBounds (447, 208, 240, choiceRowHeight);
+        attackThreshold.setBounds (447, 248, 401, sliderRowHeight);
+        reverseChance.setBounds (447, 296, 401, sliderRowHeight);
+        transformStatus.setBounds (447, 350, 401, 76);
 
         Column phrase { phraseSection.reduced (sectionPadding).withTrimmedTop (30) };
         phrase.place (subdivision, choiceRowHeight);
@@ -319,15 +455,23 @@ private:
     ui::RangeSlider delay;
     ui::SliderRow wet, trim, swing, accent;
     ui::PowerSwitch hold;
+    ui::ChoiceRow processingMode;
+    ui::PowerSwitch attackAlign;
+    ui::SliderRow attackThreshold, reverseChance;
+    juce::TextButton patternTab { "Pattern" }, recutTab { "Recut" }, applyMode { "Apply while stopped" };
+    juce::Label modeSummary, modeStatus, modeHelp, transformStatus;
     juce::Label holdStatus;
     livecut::CaptureService& captures;
+    LivecutAudioProcessor& hostProcessor;
     juce::TextButton captureButton { "Capture last phrase" }, saveButton { "Save WAV..." };
     juce::Label captureStatus;
     std::unique_ptr<juce::FileChooser> chooser;
 
     juce::Component cutProc11Controls, warpCutControls, sqPusherControls, bounceControls;
     juce::Rectangle<int> phraseSection, cutsSection, procedureSection, crusherSection, combSection;
+    juce::Rectangle<int> modeSection, transformSection;
     int activeProcedure = 0;
+    bool recutSelected = false;
 };
 
 LivecutAudioProcessorEditor::LivecutAudioProcessorEditor (LivecutAudioProcessor& p)
@@ -335,7 +479,7 @@ LivecutAudioProcessorEditor::LivecutAudioProcessorEditor (LivecutAudioProcessor&
       livecutProcessor (p)
 {
     setLookAndFeel (&lookAndFeel);
-    panel = std::make_unique<Panel> (p.getParameterState(), p.getCaptureService());
+    panel = std::make_unique<Panel> (p.getParameterState(), p.getCaptureService(), p);
     addAndMakeVisible (*panel);
 
     setResizable (true, true);
@@ -367,6 +511,7 @@ void LivecutAudioProcessorEditor::resized()
 void LivecutAudioProcessorEditor::refreshDisplay()
 {
     panel->refreshCapture();
+    panel->refreshRecut();
     panel->showHoldStatus (livecutProcessor.holdStatusText());
     panel->ruler.show (livecut::ui::PhraseRuler::Snapshot::of (livecutProcessor.getDisplayState()));
 }

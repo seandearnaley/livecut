@@ -3,6 +3,7 @@
 #include "Parameters.h"
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
+#include "ui/Controls.h"
 #include "ui/RangeSlider.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -11,6 +12,7 @@
 #include <set>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 using Catch::Matchers::WithinAbs;
 
@@ -35,6 +37,17 @@ juce::Component* findById (juce::Component& component, const juce::String& id)
         if (auto* found = findById (*child, id))
             return found;
 
+    return nullptr;
+}
+
+template <typename Control>
+Control* findControl (juce::Component& component)
+{
+    if (auto* found = dynamic_cast<Control*> (&component))
+        return found;
+    for (auto* child : component.getChildren())
+        if (auto* found = findControl<Control> (*child))
+            return found;
     return nullptr;
 }
 
@@ -270,11 +283,59 @@ TEST_CASE ("Render the editor for design review", "[.screenshot]")
 
     LivecutAudioProcessorEditor editor (processor);
     editor.refreshDisplay();
-    const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
-    juce::FileOutputStream stream (juce::File::getCurrentWorkingDirectory().getChildFile ("editor.png"));
-    stream.setPosition (0);
-    stream.truncate();
-    REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
+    const auto saveImage = [&] (const char* name)
+    {
+        const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
+        juce::FileOutputStream stream (juce::File::getCurrentWorkingDirectory().getChildFile (name));
+        REQUIRE (stream.openedOk());
+        stream.setPosition (0);
+        stream.truncate();
+        REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
+    };
+    saveImage ("editor.png");
+
+    playHead.info.setIsPlaying (false);
+    processor.processBlock (buffer, midi);
+    auto& state = processor.getParameterState();
+    const auto set = [&] (const char* id, float value)
+    {
+        auto& parameter = *state.getParameter (id);
+        parameter.setValueNotifyingHost (parameter.convertTo0to1 (value));
+    };
+    set (livecut::ids::mode, 1.0f);
+    set (livecut::ids::attackAlign, 1.0f);
+    set (livecut::ids::reverseChance, 0.5f);
+    auto* recut = dynamic_cast<juce::TextButton*> (findById (editor, "recutTab"));
+    REQUIRE (recut != nullptr);
+    recut->onClick();
+    editor.refreshDisplay();
+    saveImage ("editor-recut-requested.png");
+    processor.applyRequestedMode();
+    REQUIRE (processor.activeMode() == livecut::ProcessingMode::studio);
+    playHead.info.setIsPlaying (true);
+    for (int block = 0; block < 160; ++block)
+    {
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        {
+            const auto frame = block * buffer.getNumSamples() + sample;
+            const auto position = frame % 6000;
+            const auto value = position < 480 ? 0.7f * std::exp (-static_cast<float> (position) / 100.0f) : 0.0f;
+            buffer.setSample (0, sample, value);
+            buffer.setSample (1, sample, -value);
+        }
+        playHead.info.setPpqPosition (ppq);
+        playHead.info.setPpqPositionOfLastBarStart (std::floor (ppq / 4.0) * 4.0);
+        playHead.info.setBarCount (static_cast<int64_t> (ppq / 4.0));
+        processor.processBlock (buffer, midi);
+        ppq += 512.0 * 174.0 / 60.0 / 48000.0;
+        if (block == 0)
+        {
+            editor.refreshDisplay();
+            saveImage ("editor-recut-filling.png");
+        }
+    }
+    editor.refreshDisplay();
+    saveImage ("editor-recut.png");
 }
 
 TEST_CASE ("The editor exposes capture save and capture status", "[editor][capture]")
@@ -334,4 +395,256 @@ TEST_CASE ("Perform editor displays groove Hold and its status", "[editor][perfo
         INFO (id);
         REQUIRE (findById (editor, id) != nullptr);
     }
+}
+
+TEST_CASE ("Recut has accessible mode and transform controls within the existing footprint", "[editor][recut]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    editor.addToDesktop (0); // JUCE creates accessibility handlers only when a native peer exists.
+    CHECK (editor.getWidth() == 880);
+    CHECK (editor.getHeight() == 724);
+    auto* recut = dynamic_cast<juce::TextButton*> (findById (editor, "recutTab"));
+    auto* pattern = dynamic_cast<juce::TextButton*> (findById (editor, "patternTab"));
+    REQUIRE (recut != nullptr);
+    REQUIRE (pattern != nullptr);
+    CHECK (recut->getAccessibilityHandler() != nullptr);
+    CHECK (recut->getTitle().isNotEmpty());
+    recut->onClick();
+    for (const auto* id : { "mode", "attackAlign", "attackThreshold", "reverseChance",
+                           "applyMode", "modeSummary", "modeStatus", "transformStatus" })
+    {
+        INFO (id);
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        CHECK (isShowing (*control, editor));
+        CHECK (control->getTitle().isNotEmpty());
+        CHECK_FALSE (control->getBounds().isEmpty());
+        CHECK (editor.getLocalBounds().contains (editor.getLocalArea (control, control->getLocalBounds())));
+    }
+    for (const auto* id : { "wet", "outputTrim", "capture", "saveCapture", "swing", "accent", "hold" })
+    {
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        CHECK (isShowing (*control, editor));
+    }
+    auto* subdivision = findById (editor, "subdivision");
+    REQUIRE (subdivision != nullptr);
+    CHECK_FALSE (isShowing (*subdivision, editor));
+    pattern->onClick();
+    CHECK (isShowing (*subdivision, editor));
+    CHECK_FALSE (isShowing (*findById (editor, "mode"), editor));
+
+    recut->onClick();
+    auto& procedure = *processor.getParameterState().getParameter (livecut::ids::procedure);
+    procedure.setValueNotifyingHost (procedure.convertTo0to1 (3.0f));
+    CHECK_FALSE (isShowing (*findById (editor, livecut::ids::bounceChance), editor));
+    pattern->onClick();
+    CHECK (isShowing (*findById (editor, livecut::ids::bounceChance), editor));
+    CHECK_FALSE (isShowing (*findById (editor, livecut::ids::stutterChance), editor));
+}
+
+TEST_CASE ("Recut mode and transform rows do not overlap each other or Apply", "[editor][recut]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    auto* recut = dynamic_cast<juce::TextButton*> (findById (editor, "recutTab"));
+    REQUIRE (recut != nullptr);
+    recut->onClick();
+    std::vector<juce::Rectangle<int>> bounds;
+    for (const auto* id : { "mode", "attackAlign", "attackThreshold", "reverseChance", "applyMode",
+                           "modeSummary", "modeStatus", "transformStatus" })
+    {
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        const auto area = editor.getLocalArea (control, control->getLocalBounds());
+        for (const auto& other : bounds)
+            CHECK_FALSE (area.intersects (other));
+        bounds.push_back (area);
+    }
+}
+
+TEST_CASE ("Recut controls bind parameters and expose named keyboard controls", "[editor][recut]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    editor.addToDesktop (0);
+    auto& state = processor.getParameterState();
+    auto* mode = findById (editor, "mode");
+    auto* attack = findById (editor, "attackAlign");
+    auto* threshold = findById (editor, "attackThreshold");
+    auto* reverse = findById (editor, "reverseChance");
+    REQUIRE (mode != nullptr);
+    REQUIRE (attack != nullptr);
+    REQUIRE (threshold != nullptr);
+    REQUIRE (reverse != nullptr);
+    auto* box = findControl<juce::ComboBox> (*mode);
+    auto* toggle = findControl<juce::ToggleButton> (*attack);
+    auto* thresholdSlider = findControl<juce::Slider> (*threshold);
+    auto* reverseSlider = findControl<juce::Slider> (*reverse);
+    REQUIRE (box != nullptr);
+    REQUIRE (toggle != nullptr);
+    REQUIRE (thresholdSlider != nullptr);
+    REQUIRE (reverseSlider != nullptr);
+    for (auto* component : std::initializer_list<juce::Component*> { box, toggle, thresholdSlider, reverseSlider })
+    {
+        CHECK (component->getTitle().isNotEmpty());
+        CHECK (component->getAccessibilityHandler() != nullptr);
+    }
+    box->setSelectedId (2, juce::sendNotificationSync);
+    toggle->setToggleState (true, juce::sendNotificationSync);
+    thresholdSlider->setValue (12.0, juce::sendNotificationSync);
+    reverseSlider->setValue (0.75, juce::sendNotificationSync);
+    CHECK_THAT (state.getRawParameterValue ("mode")->load(), WithinAbs (1.0, 0.0));
+    CHECK_FALSE (state.getParameter ("mode")->isAutomatable());
+    CHECK_THAT (state.getRawParameterValue ("attackAlign")->load(), WithinAbs (1.0, 0.0));
+    CHECK_THAT (state.getRawParameterValue ("attackThreshold")->load(), WithinAbs (12.0, 0.001));
+    CHECK_THAT (state.getRawParameterValue ("reverseChance")->load(), WithinAbs (0.75, 0.001));
+}
+
+TEST_CASE ("Recut distinguishes requested and active mode and applies through the processor", "[editor][recut]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    auto* apply = dynamic_cast<juce::TextButton*> (findById (editor, "applyMode"));
+    auto* summary = dynamic_cast<juce::Label*> (findById (editor, "modeSummary"));
+    auto* status = dynamic_cast<juce::Label*> (findById (editor, "modeStatus"));
+    auto* transforms = dynamic_cast<juce::Label*> (findById (editor, "transformStatus"));
+    REQUIRE (apply != nullptr);
+    REQUIRE (summary != nullptr);
+    REQUIRE (status != nullptr);
+    REQUIRE (transforms != nullptr);
+    CHECK_FALSE (apply->isEnabled());
+    CHECK_THAT (apply->getAlpha(), WithinAbs (0.5, 1.0 / 255.0));
+    CHECK (summary->getText().containsIgnoreCase ("not prepared"));
+    processor.prepareToPlay (8000.0, 32);
+    juce::AudioBuffer<float> buffer (2, 32);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi); // A real stopped callback supplies transport observation.
+    auto* mode = processor.getParameterState().getParameter ("mode");
+    REQUIRE (mode != nullptr);
+    mode->setValueNotifyingHost (mode->convertTo0to1 (1.0f));
+    editor.refreshDisplay();
+    CHECK (summary->getText().contains ("Active: Live"));
+    CHECK (summary->getText().contains ("0 samples"));
+    REQUIRE (apply->isEnabled());
+    CHECK_THAT (apply->getAlpha(), WithinAbs (1.0, 1.0 / 255.0));
+    apply->onClick();
+    editor.refreshDisplay();
+    CHECK (processor.activeMode() == livecut::ProcessingMode::studio);
+    CHECK (summary->getText().contains ("Active: Studio"));
+    CHECK (summary->getText().contains ("4000 samples"));
+    CHECK (status->getText() == processor.modeStatusText());
+    CHECK (transforms->getText() == processor.transformStatusText());
+    CHECK_FALSE (apply->isEnabled());
+    CHECK_THAT (apply->getAlpha(), WithinAbs (0.5, 1.0 / 255.0));
+    processor.processBlock (buffer, midi);
+    editor.refreshDisplay();
+    CHECK (editor.statusText().containsIgnoreCase ("filling"));
+}
+
+TEST_CASE ("Recut keeps the published Live latency visible when Apply waits for playback to stop", "[editor][recut]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    struct PlayHead final : juce::AudioPlayHead
+    {
+        juce::Optional<PositionInfo> getPosition() const override { return info; }
+        PositionInfo info;
+    } playHead;
+    playHead.info.setIsPlaying (true);
+    playHead.info.setBpm (120.0);
+    playHead.info.setPpqPosition (0.0);
+    playHead.info.setTimeSignature (juce::AudioPlayHead::TimeSignature { 4, 4 });
+    processor.setPlayHead (&playHead);
+    processor.prepareToPlay (8000.0, 32);
+    juce::AudioBuffer<float> buffer (2, 32);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+    LivecutAudioProcessorEditor editor (processor);
+    auto* apply = dynamic_cast<juce::TextButton*> (findById (editor, "applyMode"));
+    auto* summary = dynamic_cast<juce::Label*> (findById (editor, "modeSummary"));
+    auto* status = dynamic_cast<juce::Label*> (findById (editor, "modeStatus"));
+    REQUIRE (apply != nullptr);
+    REQUIRE (summary != nullptr);
+    REQUIRE (status != nullptr);
+    auto& mode = *processor.getParameterState().getParameter (livecut::ids::mode);
+    mode.setValueNotifyingHost (mode.convertTo0to1 (1.0f));
+    editor.refreshDisplay();
+    REQUIRE (apply->isEnabled());
+    apply->onClick();
+    CHECK (processor.modeState() == LivecutAudioProcessor::ModeState::pendingPlaying);
+    CHECK (summary->getText().contains ("Active: Live"));
+    CHECK (summary->getText().contains ("0 samples"));
+    CHECK (status->getText().containsIgnoreCase ("stop host playback"));
+    CHECK_FALSE (apply->isEnabled());
+}
+
+TEST_CASE ("Recut does not claim an active mode after preparation fails", "[editor][recut]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    processor.prepareToPlay (0.0, 32);
+    REQUIRE (processor.modeState() == LivecutAudioProcessor::ModeState::error);
+    LivecutAudioProcessorEditor editor (processor);
+    auto* summary = dynamic_cast<juce::Label*> (findById (editor, "modeSummary"));
+    auto* status = dynamic_cast<juce::Label*> (findById (editor, "modeStatus"));
+    REQUIRE (summary != nullptr);
+    REQUIRE (status != nullptr);
+    CHECK (summary->getText().containsIgnoreCase ("mode error"));
+    CHECK_FALSE (summary->getText().contains ("Active:"));
+    CHECK (status->getText() == processor.modeStatusText());
+}
+
+TEST_CASE ("Recut waits for host latency reconciliation before claiming the new mode is active", "[editor][recut]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    processor.prepareToPlay (8000.0, 32);
+    juce::AudioBuffer<float> buffer (2, 32);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+    LivecutAudioProcessorEditor editor (processor);
+    struct Reconfigure final : juce::AudioProcessorListener
+    {
+        Reconfigure (LivecutAudioProcessor& p, LivecutAudioProcessorEditor& e) : processor (p), editor (e) {}
+        void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
+        void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details) override
+        {
+            if (! details.latencyChanged || triggered)
+                return;
+            triggered = true;
+            processor.prepareToPlay (16000.0, 32);
+            pending = processor.modeState() == LivecutAudioProcessor::ModeState::pendingHostChange;
+            editor.refreshDisplay();
+            auto* summary = dynamic_cast<juce::Label*> (findById (editor, "modeSummary"));
+            if (summary != nullptr)
+                pendingSummary = summary->getText();
+        }
+        LivecutAudioProcessor& processor;
+        LivecutAudioProcessorEditor& editor;
+        bool triggered = false, pending = false;
+        juce::String pendingSummary;
+    } reconfigure (processor, editor);
+    processor.addListener (&reconfigure);
+    auto& mode = *processor.getParameterState().getParameter (livecut::ids::mode);
+    mode.setValueNotifyingHost (mode.convertTo0to1 (1.0f));
+    processor.applyRequestedMode();
+    processor.removeListener (&reconfigure);
+    REQUIRE (reconfigure.triggered);
+    CHECK (reconfigure.pending);
+    CHECK (reconfigure.pendingSummary.containsIgnoreCase ("updating host latency"));
+    CHECK_FALSE (reconfigure.pendingSummary.contains ("Active:"));
+    editor.refreshDisplay();
+    auto* summary = dynamic_cast<juce::Label*> (findById (editor, "modeSummary"));
+    REQUIRE (summary != nullptr);
+    CHECK (summary->getText().contains ("Active: Studio"));
+    CHECK (summary->getText().contains ("8000 samples"));
 }
