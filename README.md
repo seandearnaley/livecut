@@ -48,13 +48,13 @@ Hold uses a complete wet phrase and follows tempo by varispeed, so tempo changes
 change pitch. See [the 0.4.0 release notes](docs/releases/0.4.0.md) for operation,
 compatibility and the complete capture/history memory budget.
 
-**0.5.0 / Recut** adds Attack Align and deterministic Reverse Chance. Live keeps
+**0.5.1 / Recut** adds Attack Align and deterministic Reverse Chance. Live keeps
 zero added latency; Studio buffers 500 ms, including dry audio and plug-in bypass,
 so more cuts have complete source audio available. Select a requested mode on
 the Recut page and Apply after the host supplies a stopped callback. Missing
 transport information leaves Apply pending; normal host preparation can apply
 a saved request. The editor keeps its 880 × 724 layout with Pattern/Recut pages.
-See [the 0.5.0 release notes](docs/releases/0.5.0.md) for source eligibility,
+See [the 0.5.1 release notes](docs/releases/0.5.1.md) for the corrected host lifecycle and [the feature guide](docs/releases/0.5.0.md) for source eligibility,
 transport behavior, memory and validation limits.
 
 ## Building

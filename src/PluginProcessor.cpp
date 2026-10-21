@@ -51,6 +51,7 @@ void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
             mixer.prepare (sampleRate, settings.wet, settings.outputTrimDb);
             processingRunning = false;
             stream = std::move (prepared);
+            declaredLatency = stream->latency;
             publishTransformDisplay();
             ++configurationGeneration;
             display.hold = wetHold.state();
@@ -63,6 +64,7 @@ void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
         if (configurationGeneration != operation)
             return;
         preparationFailed = true;
+        declaredLatency = 0;
         capture.rolling().interrupt();
         wetHold.interrupt();
         display.hold = wetHold.state();
@@ -88,6 +90,8 @@ void LivecutAudioProcessor::releaseResources()
         publishedModeState = ModeState::unprepared;
     }
     retired.reset();
+    // Deactivation discards PCM, not the configured delay contract. Reporting
+    // zero here would make a latency-driven host restart alternate 0/L forever.
     reconcileLatency();
 }
 
@@ -110,7 +114,7 @@ void LivecutAudioProcessor::reconcileLatency()
             }
             latencyUpdateInProgress = true;
             generation = configurationGeneration;
-            desired = stream != nullptr ? stream->latency : 0;
+            desired = declaredLatency;
         }
         if (getLatencySamples() != desired)
             setLatencySamples (desired);
@@ -236,6 +240,7 @@ void LivecutAudioProcessor::tryApplyMode()
         suspendProcessing (true);
         retired = std::move (stream);
         stream = std::move (prepared);
+        declaredLatency = stream->latency;
         publishTransformDisplay();
         ++configurationGeneration;
         observedTransport = AudioObservation::unknown;

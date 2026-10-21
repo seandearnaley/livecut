@@ -409,7 +409,7 @@ TEST_CASE ("Apply reconciles synchronous host reprepare or release outside the c
     if (release)
     {
         CHECK (processor.modeState() == LivecutAudioProcessor::ModeState::unprepared);
-        CHECK (processor.reportedLatencySamples() == 0);
+        CHECK (processor.reportedLatencySamples() == 4000);
         processor.processBlockBypassed (buffer, midi);
         CHECK (buffer.getMagnitude (0, 32) == 0.0f);
         processor.prepareToPlay (8000.0, 32);
@@ -680,8 +680,8 @@ TEST_CASE ("Bounded notifications reconcile empty and failed configurations on r
     CHECK (processor.modeState() == (failPreparation ? LivecutAudioProcessor::ModeState::error
                                                     : LivecutAudioProcessor::ModeState::unprepared));
     CHECK_FALSE (processor.isSuspended());
-    CHECK (processor.getLatencySamples() == 0);
-    CHECK (processor.reportedLatencySamples() == 0);
+    CHECK (processor.getLatencySamples() == (failPreparation ? 0 : 8000));
+    CHECK (processor.reportedLatencySamples() == (failPreparation ? 0 : 8000));
     juce::FloatVectorOperations::fill (buffer.getWritePointer (0), .5f, 32);
     processor.processBlockBypassed (buffer, midi);
     CHECK (buffer.getMagnitude (0, 32) == 0.0f);
@@ -821,4 +821,80 @@ TEST_CASE ("Studio's exact dry and bypass latency scales to supported production
                   && buffer.getSample (1, i) == (done + i == latency + 17 ? -.25f : 0.0f);
     }
     CHECK (exact);
+}
+
+TEST_CASE ("Deferred host latency restarts converge without changing the released configuration", "[processor][recut][apply][async-restart]")
+{
+    const auto rate = GENERATE (8000.0, 48000.0);
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    setRecut (processor, "wet", 0.0f);
+    processor.prepareToPlay (rate, 137);
+    RecutHead head;
+    head.at (0.0, false);
+    processor.setPlayHead (&head);
+    juce::AudioBuffer<float> stopped (2, 137);
+    stopped.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (stopped, midi);
+    struct DeferredHost final : juce::AudioProcessorListener
+    {
+        void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
+        void audioProcessorChanged (juce::AudioProcessor* processor, const ChangeDetails& details) override
+        {
+            if (details.latencyChanged)
+            {
+                notifications.push_back (processor->getLatencySamples());
+                ++pendingRestarts;
+            }
+        }
+        std::vector<int> notifications;
+        int pendingRestarts = 0;
+    } host;
+    processor.addListener (&host);
+    for (const auto mode : { 1.0f, 0.0f })
+    {
+        const auto expected = mode > 0.0f ? static_cast<int> (std::lround (.5 * rate)) : 0;
+        host.notifications.clear();
+        setRecut (processor, "mode", mode);
+        processor.applyRequestedMode();
+        REQUIRE (processor.getLatencySamples() == expected);
+        int restarts = 0;
+        // Each queued host action runs AFTER the notifying call has returned,
+        // just like a deferred VST3 kLatencyChanged deactivate/reactivate cycle.
+        // A hard cap exposes a notification feedback loop without hanging tests.
+        while (host.pendingRestarts > 0 && restarts < 4)
+        {
+            --host.pendingRestarts;
+            ++restarts;
+            processor.releaseResources();
+            CHECK (processor.getLatencySamples() == expected);
+            CHECK (processor.reportedLatencySamples() == expected);
+            CHECK (processor.modeState() == LivecutAudioProcessor::ModeState::unprepared);
+            CHECK_FALSE (processor.isSuspended());
+            juce::FloatVectorOperations::fill (stopped.getWritePointer (0), .5f, stopped.getNumSamples());
+            processor.processBlock (stopped, midi);
+            CHECK (stopped.getMagnitude (0, stopped.getNumSamples()) == 0.0f);
+            juce::FloatVectorOperations::fill (stopped.getWritePointer (0), .5f, stopped.getNumSamples());
+            processor.processBlockBypassed (stopped, midi);
+            CHECK (stopped.getMagnitude (0, stopped.getNumSamples()) == 0.0f);
+            processor.prepareToPlay (rate, 137);
+        }
+        CHECK (host.pendingRestarts == 0);
+        CHECK (restarts == 1);
+        CHECK (host.notifications == std::vector<int> { expected });
+        CHECK (processor.modeState() == LivecutAudioProcessor::ModeState::active);
+        CHECK (processor.reportedLatencySamples() == expected);
+        juce::AudioBuffer<float> impulse (2, expected + 150);
+        impulse.clear();
+        impulse.setSample (0, 17, .75f);
+        impulse.setSample (1, 17, -.25f);
+        processor.processBlock (impulse, midi);
+        bool exact = true;
+        for (int frame = 0; frame < impulse.getNumSamples(); ++frame)
+            exact &= impulse.getSample (0, frame) == (frame == expected + 17 ? .75f : 0.0f)
+                  && impulse.getSample (1, frame) == (frame == expected + 17 ? -.25f : 0.0f);
+        CHECK (exact);
+    }
+    processor.removeListener (&host);
 }

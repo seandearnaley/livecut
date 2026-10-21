@@ -89,6 +89,7 @@ private:
     std::atomic<bool> applyPending { false };
     std::atomic<int> publishedLatency { 0 };
     std::uint64_t configurationGeneration = 0, publishedGeneration = 0; // callback-guard protected
+    int declaredLatency = 0; // callback-guard protected; retained during normal host deactivation
     bool latencyUpdateInProgress = false, preparationFailed = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivecutAudioProcessor)
