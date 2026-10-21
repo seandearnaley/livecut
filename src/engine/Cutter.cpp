@@ -463,7 +463,8 @@ void Cutter::startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timi
     else
     {
         const CutIdentity id { seed,bar,0,0,0,1 };
-        phraseBars = params.minPhraseBars + static_cast<int> (fractureDraw(id,0x46504852415345ULL)*(params.maxPhraseBars-params.minPhraseBars+1));
+        const auto [minimum, maximum] = std::minmax (params.minPhraseBars, params.maxPhraseBars);
+        phraseBars = minimum + static_cast<int> (fractureDraw(id,0x46504852415345ULL)*(maximum-minimum+1));
     }
     cutOrdinal = 0;
     assert (phraseBars >= 1);

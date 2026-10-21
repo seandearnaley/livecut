@@ -70,6 +70,45 @@ TEST_CASE ("Tape zero endpoints stop instead of passing held source DC", "[fract
     REQUIRE (cutter.fractureDiagnostics().tapeSpeed == 0);
 }
 
+TEST_CASE ("Fracture phrase ranges accept independently automated reversed bounds", "[fracture][integration][phrase-bounds]")
+{
+    for (auto family : { FractureProcedure::grainCut, FractureProcedure::tapeCut })
+    {
+        Cutter ordered, reversed;
+        configure (ordered);
+        configure (reversed);
+        FractureParameters fracture;
+        fracture.procedure = family;
+        ordered.setFracture (fracture);
+        reversed.setFracture (fracture);
+        for (int maximum : { 2, 8 })
+        {
+            CutParameters common;
+            common.minPhraseBars = 1;
+            common.maxPhraseBars = maximum;
+            ordered.setParameters (common);
+            std::swap (common.minPhraseBars, common.maxPhraseBars);
+            reversed.setParameters (common);
+            bool reachedMinimum = false, reachedMaximum = false;
+            for (std::uint32_t seed = 1; seed <= 64; ++seed)
+            {
+                ordered.reset();
+                reversed.reset();
+                ordered.setSeed (seed);
+                reversed.setSeed (seed);
+                tick (ordered, 0);
+                tick (reversed, 0);
+                INFO (seed);
+                REQUIRE (reversed.phraseBarCount() == ordered.phraseBarCount());
+                reachedMinimum |= ordered.phraseBarCount() == 1;
+                reachedMaximum |= ordered.phraseBarCount() == maximum;
+            }
+            REQUIRE (reachedMinimum);
+            REQUIRE (reachedMaximum);
+        }
+    }
+}
+
 TEST_CASE ("Grain waits for its fixed guarded pool and launches immediately when complete", "[fracture][integration]")
 {
     Cutter cutter;
