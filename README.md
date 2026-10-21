@@ -43,6 +43,11 @@ Work in progress, landing as a stack of small pull requests:
 See [the 0.3.0 release notes](docs/releases/0.3.0.md) for capture behavior,
 capacity, memory use and compatibility.
 
+**0.4.0 / Perform** adds audio Hold, 50–75% Swing and deterministic Accent.
+Hold uses a complete wet phrase and follows tempo by varispeed, so tempo changes
+change pitch. See [the 0.4.0 release notes](docs/releases/0.4.0.md) for operation,
+compatibility and the complete capture/history memory budget.
+
 ## Building
 
 Requirements: CMake 3.25+, and a recent Xcode (macOS) or Visual Studio (Windows).
