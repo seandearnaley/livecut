@@ -331,3 +331,27 @@ TEST_CASE ("Perform hides unused groove controls and legacy mode restores them",
     CHECK (swing->isEnabled());
     CHECK (accent->isEnabled());
 }
+
+TEST_CASE ("Perform captions use readable ASCII axis and status labels", "[editor][performance-ui][caption-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    processor.getParameterState().getParameter (livecut::ids::performanceEnabled)->setValueNotifyingHost (1.0f);
+    processor.prepareToPlay (8000, 32);
+    LivecutAudioProcessorEditor editor (processor);
+    juce::StringArray labels;
+    const auto collect = [&labels] (auto&& self, juce::Component& component) -> void
+    {
+        if (auto* label = dynamic_cast<juce::Label*> (&component)) labels.add (label->getText());
+        if (auto* button = dynamic_cast<juce::TextButton*> (&component)) labels.add (button->getButtonText());
+        for (auto* child : component.getChildren())
+            if (child->isVisible()) self (self, *child);
+    };
+    collect (collect, editor);
+    for (const auto* expected : { "Variation X", "Density Y", "Grain X", "Tail Y", "Perform ready | 0 latency",
+                                  "Rhythm: next 1/8 bar | Texture: 3 ms | Solid dot: target / ring: applied" })
+    {
+        INFO (expected);
+        CHECK (labels.contains (expected));
+    }
+}

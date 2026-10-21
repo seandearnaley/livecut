@@ -67,8 +67,8 @@ void PerformancePage::FillButton::timerCallback()
 
 PerformancePage::PerformancePage (LivecutAudioProcessor& processor)
     : owner (processor), enabled (parameter (owner, ids::performanceEnabled), "Perform engine"),
-      rhythm (parameter (owner, ids::performanceVariation), parameter (owner, ids::performanceDensity), "Rhythm", "Variation →", "Density ↑"),
-      texture (parameter (owner, ids::performanceGrain), parameter (owner, ids::performanceCharacter), "Texture", "Grain →", "Tail ↑"),
+      rhythm (parameter (owner, ids::performanceVariation), parameter (owner, ids::performanceDensity), "Rhythm", "Variation X", "Density Y"),
+      texture (parameter (owner, ids::performanceGrain), parameter (owner, ids::performanceCharacter), "Texture", "Grain X", "Tail Y"),
       seed (parameter (owner, ids::performanceSeed), "Pattern seed"),
       fill (parameter (owner, ids::performanceFill))
 {
@@ -111,7 +111,7 @@ PerformancePage::PerformancePage (LivecutAudioProcessor& processor)
     }
     status.setComponentID ("performanceStatus");
     status.setTitle ("Performance source and pending state");
-    timing.setText ("Rhythm: next 1/8 bar  ·  Texture: 3 ms  ·  Solid dot: target / ring: applied", juce::dontSendNotification);
+    timing.setText ("Rhythm: next 1/8 bar | Texture: 3 ms | Solid dot: target / ring: applied", juce::dontSendNotification);
     refresh();
 }
 
@@ -147,7 +147,7 @@ void PerformancePage::refresh()
         && display.status.load() != DisplayState::Status::streamError);
     const auto configurationReady = active == enabled.isOn() && state == LivecutAudioProcessor::ModeState::active
         && (! active || ! requestedSpectral) && engineHealthy;
-    prepare.setButtonText (configurationReady ? (active ? "Perform ready · 0 latency" : "Prepare Perform") : "Apply while stopped");
+    prepare.setButtonText (configurationReady ? (active ? "Perform ready | 0 latency" : "Prepare Perform") : "Apply while stopped");
     prepare.setEnabled ((! configurationReady || ! active) && state != LivecutAudioProcessor::ModeState::pendingPlaying
                         && state != LivecutAudioProcessor::ModeState::pendingHostChange && state != LivecutAudioProcessor::ModeState::unprepared);
     grab.setEnabled (active && ! display.performanceCaptureArmed.load());
