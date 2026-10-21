@@ -4,6 +4,7 @@
 
 #include "engine/CutProcedures.h"
 #include "engine/Effects.h"
+#include "engine/ImpactEffects.h"
 #include "engine/LivePlayer.h"
 #include "engine/AttackCandidates.h"
 
@@ -61,6 +62,7 @@ public:
     // Take effect from the next block.
     void setCrusher (const CrusherParameters& parameters);
     void setComb (const CombParameters& parameters);
+    void setImpact (const ImpactParameters& parameters);
 
     // Takes effect from the next phrase.
     void setSeed (std::uint32_t seed);
@@ -141,6 +143,7 @@ public:
     const LivePlayer& player() const { return livePlayer; }
     const BitCrusher& crusher() const { return bitCrusher; }
     const Comb& comb() const { return combFilter; }
+    const ImpactEffects& impact() const { return impactEffects; }
 
 private:
     CutProcedure& procedureFor (Procedure p);
@@ -151,6 +154,7 @@ private:
     void renderSwung (float& left, float& right, std::int64_t bar, double beats, double beatsPerSample, const Timing& timing, std::int64_t renderedExclusiveEnd);
     double physicalDistance (double phraseUnits, std::int64_t bar, double beats, const Timing& timing) const;
     void startEffectsCut();
+    void startImpactCut();
     void selectTransform (std::int64_t renderFrame);
     void applyStructuralChanges();
 
@@ -164,10 +168,12 @@ private:
         int unitsPerBar = 8;
         std::array<double, 6> effects {};
         CombParameters comb;
+        ImpactParameters impact;
         TransformParameters transform;
         AttackCandidates attacks;
         std::uint64_t transportEpoch = 0;
         std::uint32_t transformSeed = 1;
+        std::uint32_t impactSeed = 1;
     };
     // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
     // 1/32-bar block starts plus a boundary/recovery plan await activation.
@@ -198,10 +204,14 @@ private:
     LivePlayer livePlayer;
     BitCrusher bitCrusher;
     Comb combFilter;
+    ImpactEffects impactEffects;
     CutParameters params;
     CrusherParameters crusherParams;
     CombParameters combParams;
+    ImpactParameters impactParams;
     std::size_t effectsCut = 0; // the cut the effects were last set for
+    std::optional<std::size_t> impactCut;
+    std::uint32_t phraseImpactSeed = 1;
     std::vector<Cut> cuts;
 
     Procedure procedure = Procedure::cutProc11;

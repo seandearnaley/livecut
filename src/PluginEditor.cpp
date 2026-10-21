@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cmath>
+#include <vector>
 
 namespace ids = livecut::ids;
 namespace ui = livecut::ui;
@@ -45,6 +46,105 @@ struct Column
         component.setBounds (area.removeFromTop (height));
         area.removeFromTop (rowGap);
     }
+};
+} // namespace
+
+namespace
+{
+// Dedicated page keeps the existing Pattern and Recut rows at their original size.
+class ImpactPage final : public juce::Component
+{
+public:
+    explicit ImpactPage (juce::AudioProcessorValueTreeState& state)
+    {
+        const auto add = [&] (const char* id, const char* caption, const char* help, int column)
+        {
+            auto* parameter = state.getParameter (id);
+            jassert (parameter != nullptr);
+            std::unique_ptr<juce::Component> control;
+            if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (parameter))
+                control = std::make_unique<ui::ChoiceRow> (*choice, "");
+            else if (parameter->isBoolean())
+                control = std::make_unique<ui::PowerSwitch> (*parameter, caption);
+            else
+                control = std::make_unique<ui::SliderRow> (*parameter, caption);
+            control->setTitle (parameter->getName (80));
+            for (auto* child : control->getChildren())
+            {
+                child->setTitle (parameter->getName (80));
+                if (auto* tooltip = dynamic_cast<juce::SettableTooltipClient*> (child))
+                    tooltip->setTooltip (help);
+            }
+            addAndMakeVisible (*control);
+            rows.push_back ({ std::move (control), column, parameter->isBoolean() ? 26 : dynamic_cast<juce::AudioParameterChoice*> (parameter) != nullptr ? 28 : 35 });
+        };
+        add (ids::impactAttackMs, "Env attack", "Shared cut envelope attack, 0 to 25 ms. Restarts on each cut/repeat.", -1);
+        add (ids::impactDecayMs, "Env decay", "Shared cut envelope decay to -60 dB, 5 to 1000 ms.", -1);
+        add (ids::impactFilterEnabled, "Slice filter", "Enable the cut-aware stereo filter. Changes apply at the next planned block; FX gates ramp over 2 ms.", 0);
+        add (ids::impactFilterType, "Filter type", "Low-pass, band-pass or high-pass filter.", 0);
+        add (ids::impactFilterChance, "Chance", "Deterministic probability per cut, independent of cutter randomness.", 0);
+        add (ids::impactFilterCutoff, "Cutoff", "Base cutoff in Hz; also limited to 45% of sample rate.", 0);
+        add (ids::impactFilterQ, "Resonance", "Filter Q from 0.5 to 8; high values emphasize the cutoff.", 0);
+        add (ids::impactFilterEnvOctaves, "Env depth", "Cut envelope modulation, -6 to +6 octaves.", 0);
+        add (ids::impactFilterRepeatOctaves, "Repeat", "Cutoff offset from first to last repeat, -4 to +4 octaves. A single repeat starts at zero.", 0);
+        add (ids::impactFilterMix, "Filter mix", "Filter amount; 0% is neutral after the gate ramp settles.", 0);
+        add (ids::impactDriveEnabled, "Drive / fold", "Enable first-order ADAA waveshaping. No added buffered latency; active processing adds half-sample phase and high-frequency coloration.", 1);
+        add (ids::impactDriveMode, "Drive mode", "Soft saturation or wavefolding. Enabled Drive at 0 dB is still nonlinear.", 1);
+        add (ids::impactDriveChance, "Chance", "Deterministic probability per cut, independent of cutter randomness.", 1);
+        add (ids::impactDriveDb, "Drive", "Input drive from 0 to 30 dB. Enabled 0 dB is not neutral; use power off or mix 0% for neutral output.", 1);
+        add (ids::impactDriveEnvDb, "Env depth", "Drive offset from the shared cut envelope, -24 to +24 dB.", 1);
+        add (ids::impactDriveRepeatDb, "Repeat", "Drive offset from first to last repeat, -24 to +24 dB.", 1);
+        add (ids::impactDriveMix, "Drive mix", "Drive amount; 0% is neutral after the gate ramp settles.", 1);
+        add (ids::impactTransientEnabled, "Transient", "Enable stereo-linked transient shaping. Changes apply at the next planned block.", 2);
+        add (ids::impactTransientChance, "Chance", "Deterministic probability per cut, independent of cutter randomness.", 2);
+        add (ids::impactTransientAttackDb, "Attack", "Transient gain, -18 to +18 dB. Attack and sustain both 0 dB are neutral.", 2);
+        add (ids::impactTransientSustainDb, "Sustain", "Body gain, -18 to +18 dB. Attack and sustain both 0 dB are neutral.", 2);
+        add (ids::impactTransientTimeMs, "Response", "Stereo-linked detector response, 10 to 200 ms.", 2);
+        add (ids::impactTransientMix, "Transient mix", "Transient effect amount; 0% is neutral after the gate ramp settles.", 2);
+        help.setComponentID ("impactHelp");
+        help.setTitle ("Impact timing and signal path");
+        help.setText ("Next planned block  |  2 ms FX gates  |  Filter > Drive > Transient", juce::dontSendNotification);
+        help.setFont (ui::uiFont (12.0f));
+        help.setColour (juce::Label::textColourId, ui::palette::inkMuted);
+        help.setBorderSize ({});
+        addAndMakeVisible (help);
+    }
+
+    void resized() override
+    {
+        const auto width = (getWidth() - 2 * gap) / 3;
+        std::array<int, 3> tops { 94, 94, 94 };
+        int shared = 0;
+        for (auto& row : rows)
+        {
+            if (row.column < 0)
+            {
+                row.control->setBounds (166 + shared++ * 254, 8, 230, 40);
+                continue;
+            }
+            const auto col = static_cast<std::size_t> (row.column);
+            row.control->setBounds (row.column * (width + gap) + sectionPadding, tops[col], width - 2 * sectionPadding, row.height);
+            tops[col] += row.height + 3;
+        }
+        help.setBounds (sectionPadding, 53, getWidth() - 2 * sectionPadding, 22);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (ui::palette::well);
+        g.fillRoundedRectangle (getLocalBounds().removeFromTop (81).toFloat(), 4.0f);
+        const auto width = (getWidth() - 2 * gap) / 3;
+        for (int col = 0; col < 3; ++col)
+            g.fillRoundedRectangle (juce::Rectangle<int> (col * (width + gap), 84, width, getHeight() - 84).toFloat(), 4.0f);
+        g.setColour (ui::palette::ink);
+        g.setFont (ui::uiFont (14.0f, true));
+        g.drawFittedText ("Filter / drive\nenvelope", { sectionPadding, 8, 140, 40 }, juce::Justification::centredLeft, 2);
+    }
+
+private:
+    struct Row { std::unique_ptr<juce::Component> control; int column, height; };
+    std::vector<Row> rows;
+    juce::Label help;
 };
 } // namespace
 
@@ -91,6 +191,7 @@ public:
           attackAlign (parameter (state, ids::attackAlign), "Attack align"),
           attackThreshold (parameter (state, ids::attackThreshold), "Attack threshold"),
           reverseChance (parameter (state, ids::reverseChance), "Reverse chance"),
+          impactControls (state),
           captures (captureService),
           hostProcessor (processor)
     {
@@ -98,7 +199,7 @@ public:
                  &procedureSwitch, &ruler, &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty,
                  &amp, &pan, &pitch, &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay,
                  &wet, &trim, &captureButton, &saveButton, &captureStatus, &swing, &accent, &hold, &holdStatus,
-                 &patternTab, &recutTab })
+                 &patternTab, &recutTab, &impactTab })
             addAndMakeVisible (component);
 
         for (auto* component : std::initializer_list<juce::Component*> {
@@ -106,14 +207,20 @@ public:
                  &applyMode, &modeSummary, &modeStatus, &modeHelp, &transformStatus })
             addChildComponent (component);
 
+        addChildComponent (impactControls);
+        impactTab.setComponentID ("impactTab");
+        impactTab.setTitle ("Impact effects controls");
+        impactTab.setTooltip ("Show Slice Filter, Drive / Wavefold and Transient controls");
+        impactTab.onClick = [this] { showPage (Page::impact); };
+
         patternTab.setComponentID ("patternTab");
         recutTab.setComponentID ("recutTab");
         patternTab.setTitle ("Pattern controls");
         recutTab.setTitle ("Recut and Studio controls");
         patternTab.setTooltip ("Show phrase, cut and procedure controls");
         recutTab.setTooltip ("Show processing mode, attack alignment and reverse controls");
-        patternTab.onClick = [this] { showPage (false); };
-        recutTab.onClick = [this] { showPage (true); };
+        patternTab.onClick = [this] { showPage (Page::pattern); };
+        recutTab.onClick = [this] { showPage (Page::recut); };
 
         processingMode.setTitle ("Requested processing mode");
         for (auto* child : processingMode.getChildren())
@@ -198,33 +305,40 @@ public:
         dim (crusher.isOn(), { &bits, &rate });
         dim (comb.isOn(), { &combType, &combFeedback, &delay });
         showProcedure (static_cast<int> (std::lround (state.getRawParameterValue (ids::procedure)->load())));
-        showPage (false);
+        showPage (Page::pattern);
         setSize (baseWidth, baseHeight);
     }
 
     void showProcedure (int index)
     {
         activeProcedure = juce::jlimit (0, static_cast<int> (procedures.size()) - 1, index);
-        cutProc11Controls.setVisible (! recutSelected && activeProcedure == 0);
-        warpCutControls.setVisible (! recutSelected && activeProcedure == 1);
-        sqPusherControls.setVisible (! recutSelected && activeProcedure == 2);
-        bounceControls.setVisible (! recutSelected && activeProcedure == 3);
+        cutProc11Controls.setVisible (selectedPage == Page::pattern && activeProcedure == 0);
+        warpCutControls.setVisible (selectedPage == Page::pattern && activeProcedure == 1);
+        sqPusherControls.setVisible (selectedPage == Page::pattern && activeProcedure == 2);
+        bounceControls.setVisible (selectedPage == Page::pattern && activeProcedure == 3);
         pitch.setAlpha (activeProcedure == static_cast<int> (livecut::engine::Procedure::bounce) ? 0.5f : 1.0f);
         repaint();
     }
 
-    void showPage (bool recut)
+    enum class Page { pattern, recut, impact };
+
+    void showPage (Page page)
     {
-        recutSelected = recut;
+        selectedPage = page;
         for (auto* component : std::initializer_list<juce::Component*> {
                  &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty, &amp, &pan, &pitch })
-            component->setVisible (! recut);
+            component->setVisible (page == Page::pattern);
         for (auto* component : std::initializer_list<juce::Component*> {
                  &processingMode, &attackAlign, &attackThreshold, &reverseChance,
                  &applyMode, &modeSummary, &modeStatus, &modeHelp, &transformStatus })
-            component->setVisible (recut);
-        patternTab.setToggleState (! recut, juce::dontSendNotification);
-        recutTab.setToggleState (recut, juce::dontSendNotification);
+            component->setVisible (page == Page::recut);
+        for (auto* component : std::initializer_list<juce::Component*> {
+                 &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay })
+            component->setVisible (page != Page::impact);
+        impactControls.setVisible (page == Page::impact);
+        patternTab.setToggleState (page == Page::pattern, juce::dontSendNotification);
+        recutTab.setToggleState (page == Page::recut, juce::dontSendNotification);
+        impactTab.setToggleState (page == Page::impact, juce::dontSendNotification);
         showProcedure (activeProcedure);
     }
 
@@ -265,8 +379,9 @@ public:
 
         g.setColour (ui::palette::ink);
         g.setFont (ui::uiFont (26.0f, true));
-        g.drawText (juce::String ("Livecut ") + JucePlugin_VersionString, juce::Rectangle<int> (margin, 16, 200, 34), juce::Justification::centredLeft);
+        g.drawText (juce::String ("Livecut ") + JucePlugin_VersionString, juce::Rectangle<int> (margin, 16, 180, 34), juce::Justification::centredLeft);
 
+        if (selectedPage != Page::impact)
         for (const auto& section : { crusherSection, combSection })
         {
             g.setColour (ui::palette::well);
@@ -280,7 +395,7 @@ public:
             g.drawText (text, section.reduced (sectionPadding).removeFromTop (22), juce::Justification::centredLeft);
         };
 
-        if (recutSelected)
+        if (selectedPage == Page::recut)
         {
             for (const auto& section : { modeSection, transformSection })
             {
@@ -290,7 +405,7 @@ public:
             title ("Processing mode", modeSection);
             title ("Attack & reverse", transformSection);
         }
-        else
+        else if (selectedPage == Page::pattern)
         {
             for (const auto& section : { phraseSection, cutsSection, procedureSection })
             {
@@ -316,8 +431,10 @@ public:
     void resized() override
     {
         procedureSwitch.setBounds (baseWidth - margin - 456, 20, 456, 30);
-        patternTab.setBounds (226, 20, 82, 30);
-        recutTab.setBounds (312, 20, 82, 30);
+        patternTab.setBounds (212, 20, 67, 30);
+        recutTab.setBounds (283, 20, 55, 30);
+        impactTab.setBounds (342, 20, 58, 30);
+        impactControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         ruler.setBounds (margin, 62, baseWidth - 2 * margin, 88);
 
         const auto middleTop = 166;
@@ -458,9 +575,10 @@ private:
     ui::ChoiceRow processingMode;
     ui::PowerSwitch attackAlign;
     ui::SliderRow attackThreshold, reverseChance;
-    juce::TextButton patternTab { "Pattern" }, recutTab { "Recut" }, applyMode { "Apply while stopped" };
+    juce::TextButton patternTab { "Pattern" }, recutTab { "Recut" }, impactTab { "Impact" }, applyMode { "Apply while stopped" };
     juce::Label modeSummary, modeStatus, modeHelp, transformStatus;
     juce::Label holdStatus;
+    ImpactPage impactControls;
     livecut::CaptureService& captures;
     LivecutAudioProcessor& hostProcessor;
     juce::TextButton captureButton { "Capture last phrase" }, saveButton { "Save WAV..." };
@@ -471,7 +589,7 @@ private:
     juce::Rectangle<int> phraseSection, cutsSection, procedureSection, crusherSection, combSection;
     juce::Rectangle<int> modeSection, transformSection;
     int activeProcedure = 0;
-    bool recutSelected = false;
+    Page selectedPage = Page::pattern;
 };
 
 LivecutAudioProcessorEditor::LivecutAudioProcessorEditor (LivecutAudioProcessor& p)

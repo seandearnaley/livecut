@@ -204,6 +204,31 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 number (ids::attackThreshold, "Attack Threshold", FloatRange (3.0f, 24.0f), 6.0f, decimals (1, "dB"), 5),
                 number (ids::reverseChance, "Reverse Chance", FloatRange (0.0f, 1.0f), 0.0f, percent(), 5));
 
+    // 0.6 appends new IDs and AU ordering hints without altering earlier parameters.
+    layout.add (toggle (ids::impactFilterEnabled, "Impact Filter", false, 6),
+                choice (ids::impactFilterType, "Filter Type", { "Low-pass", "Band-pass", "High-pass" }, 0, 6),
+                number (ids::impactFilterChance, "Filter Chance", FloatRange (0, 1), 1, percent(), 6),
+                number (ids::impactFilterCutoff, "Filter Cutoff", skewed (30, 18000, 1000), 12000, decimals (0, "Hz"), 6),
+                number (ids::impactFilterQ, "Filter Resonance", FloatRange (.5f, 8), .707f, decimals (3, "Q"), 6),
+                number (ids::impactFilterEnvOctaves, "Filter Envelope", FloatRange (-6, 6), 0, decimals (1, "oct"), 6),
+                number (ids::impactFilterRepeatOctaves, "Filter Repeat", FloatRange (-4, 4), 0, decimals (1, "oct"), 6),
+                number (ids::impactFilterMix, "Filter Mix", FloatRange (0, 1), 1, percent(), 6),
+                toggle (ids::impactDriveEnabled, "Impact Drive", false, 6),
+                choice (ids::impactDriveMode, "Drive Mode", { "Drive", "Wavefold" }, 0, 6),
+                number (ids::impactDriveChance, "Drive Chance", FloatRange (0, 1), 1, percent(), 6),
+                number (ids::impactDriveDb, "Drive Gain", FloatRange (0, 30), 6, decimals (1, "dB"), 6),
+                number (ids::impactDriveEnvDb, "Drive Envelope", FloatRange (-24, 24), 0, decimals (1, "dB"), 6),
+                number (ids::impactDriveRepeatDb, "Drive Repeat", FloatRange (-24, 24), 0, decimals (1, "dB"), 6),
+                number (ids::impactDriveMix, "Drive Mix", FloatRange (0, 1), 1, percent(), 6),
+                toggle (ids::impactTransientEnabled, "Impact Transient", false, 6),
+                number (ids::impactTransientChance, "Transient Chance", FloatRange (0, 1), 1, percent(), 6),
+                number (ids::impactTransientAttackDb, "Transient Attack", FloatRange (-18, 18), 0, decimals (1, "dB"), 6),
+                number (ids::impactTransientSustainDb, "Transient Sustain", FloatRange (-18, 18), 0, decimals (1, "dB"), 6),
+                number (ids::impactTransientTimeMs, "Transient Response", FloatRange (10, 200), 40, decimals (1, "ms"), 6),
+                number (ids::impactTransientMix, "Transient Mix", FloatRange (0, 1), 1, percent(), 6),
+                number (ids::impactAttackMs, "Impact Envelope Attack", FloatRange (0, 25), 1, decimals (1, "ms"), 6),
+                number (ids::impactDecayMs, "Impact Envelope Decay", FloatRange (5, 1000), 80, decimals (1, "ms"), 6));
+
     return layout;
 }
 
@@ -253,7 +278,30 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       mode (state, ids::mode),
       attackAlign (state, ids::attackAlign),
       attackThreshold (state, ids::attackThreshold),
-      reverseChance (state, ids::reverseChance)
+      reverseChance (state, ids::reverseChance),
+      impactFilterEnabled (state, ids::impactFilterEnabled),
+      impactFilterType (state, ids::impactFilterType),
+      impactFilterChance (state, ids::impactFilterChance),
+      impactFilterCutoff (state, ids::impactFilterCutoff),
+      impactFilterQ (state, ids::impactFilterQ),
+      impactFilterEnvOctaves (state, ids::impactFilterEnvOctaves),
+      impactFilterRepeatOctaves (state, ids::impactFilterRepeatOctaves),
+      impactFilterMix (state, ids::impactFilterMix),
+      impactDriveEnabled (state, ids::impactDriveEnabled),
+      impactDriveMode (state, ids::impactDriveMode),
+      impactDriveChance (state, ids::impactDriveChance),
+      impactDriveDb (state, ids::impactDriveDb),
+      impactDriveEnvDb (state, ids::impactDriveEnvDb),
+      impactDriveRepeatDb (state, ids::impactDriveRepeatDb),
+      impactDriveMix (state, ids::impactDriveMix),
+      impactTransientEnabled (state, ids::impactTransientEnabled),
+      impactTransientChance (state, ids::impactTransientChance),
+      impactTransientAttackDb (state, ids::impactTransientAttackDb),
+      impactTransientSustainDb (state, ids::impactTransientSustainDb),
+      impactTransientTimeMs (state, ids::impactTransientTimeMs),
+      impactTransientMix (state, ids::impactTransientMix),
+      impactAttackMs (state, ids::impactAttackMs),
+      impactDecayMs (state, ids::impactDecayMs)
 {
 }
 
@@ -313,6 +361,30 @@ Settings SettingsReader::read() const
     combSettings.feedback = combFeedback.read();
     combSettings.minDelayMs = minDelay.read();
     combSettings.maxDelayMs = maxDelay.read();
+
+    settings.impact.filter.enabled = impactFilterEnabled.read() > 0.5f;
+    settings.impact.filter.type = static_cast<engine::ImpactParameters::Filter::Type> (impactFilterType.readIndex());
+    settings.impact.filter.chance = impactFilterChance.read();
+    settings.impact.filter.cutoffHz = impactFilterCutoff.read();
+    settings.impact.filter.q = impactFilterQ.read();
+    settings.impact.filter.envelopeOctaves = impactFilterEnvOctaves.read();
+    settings.impact.filter.repeatOctaves = impactFilterRepeatOctaves.read();
+    settings.impact.filter.mix = impactFilterMix.read();
+    settings.impact.drive.enabled = impactDriveEnabled.read() > 0.5f;
+    settings.impact.drive.mode = static_cast<engine::ImpactParameters::Drive::Mode> (impactDriveMode.readIndex());
+    settings.impact.drive.chance = impactDriveChance.read();
+    settings.impact.drive.driveDb = impactDriveDb.read();
+    settings.impact.drive.envelopeDb = impactDriveEnvDb.read();
+    settings.impact.drive.repeatDb = impactDriveRepeatDb.read();
+    settings.impact.drive.mix = impactDriveMix.read();
+    settings.impact.transient.enabled = impactTransientEnabled.read() > 0.5f;
+    settings.impact.transient.chance = impactTransientChance.read();
+    settings.impact.transient.attackDb = impactTransientAttackDb.read();
+    settings.impact.transient.sustainDb = impactTransientSustainDb.read();
+    settings.impact.transient.timeMs = impactTransientTimeMs.read();
+    settings.impact.transient.mix = impactTransientMix.read();
+    settings.impact.attackMs = impactAttackMs.read();
+    settings.impact.decayMs = impactDecayMs.read();
     return settings;
 }
 
@@ -328,6 +400,7 @@ void applySettings (engine::Cutter& cutter, const Settings& settings)
     cutter.setParameters (settings.cut);
     cutter.setCrusher (settings.crusher);
     cutter.setComb (settings.comb);
+    cutter.setImpact (settings.impact);
 }
 
 } // namespace livecut

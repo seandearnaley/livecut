@@ -684,3 +684,118 @@ TEST_CASE ("Recut waits for host latency reconciliation before claiming the new 
     CHECK (summary->getText().contains ("Active: Studio"));
     CHECK (summary->getText().contains ("8000 samples"));
 }
+
+TEST_CASE ("Impact page exposes three modules without displacing shared performance controls", "[editor][impact]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    auto* impact = dynamic_cast<juce::TextButton*> (findById (editor, "impactTab"));
+    REQUIRE (impact != nullptr);
+    impact->onClick();
+    CHECK (editor.getWidth() == 880);
+    CHECK (editor.getHeight() == 724);
+    std::vector<juce::Rectangle<int>> bounds;
+    for (const auto* id : { "impactFilterEnabled", "impactFilterType", "impactFilterChance", "impactFilterCutoff",
+                           "impactFilterQ", "impactFilterEnvOctaves", "impactFilterRepeatOctaves", "impactFilterMix",
+                           "impactDriveEnabled", "impactDriveMode", "impactDriveChance", "impactDriveDb",
+                           "impactDriveEnvDb", "impactDriveRepeatDb", "impactDriveMix", "impactTransientEnabled",
+                           "impactTransientChance", "impactTransientAttackDb", "impactTransientSustainDb",
+                           "impactTransientTimeMs", "impactTransientMix", "impactAttackMs", "impactDecayMs" })
+    {
+        INFO (id);
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        CHECK (isShowing (*control, editor));
+        CHECK (control->getTitle().isNotEmpty());
+        const auto area = editor.getLocalArea (control, control->getLocalBounds());
+        CHECK_FALSE (area.isEmpty());
+        CHECK (editor.getLocalBounds().contains (area));
+        for (const auto& other : bounds)
+            CHECK_FALSE (area.intersects (other));
+        bounds.push_back (area);
+    }
+    for (const auto* id : { "wet", "outputTrim", "capture", "saveCapture", "swing", "accent", "hold" })
+    {
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        CHECK (isShowing (*control, editor));
+    }
+    CHECK_FALSE (isShowing (*findById (editor, "subdivision"), editor));
+    CHECK_FALSE (isShowing (*findById (editor, "crusher"), editor));
+    auto* pattern = dynamic_cast<juce::TextButton*> (findById (editor, "patternTab"));
+    REQUIRE (pattern != nullptr);
+    pattern->onClick();
+    CHECK (isShowing (*findById (editor, "subdivision"), editor));
+    CHECK (isShowing (*findById (editor, "crusher"), editor));
+    CHECK_FALSE (isShowing (*findById (editor, "impactFilterCutoff"), editor));
+}
+
+TEST_CASE ("Impact controls bind both ways and have named accessible input controls", "[editor][impact]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    editor.addToDesktop (0);
+    auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "impactTab"));
+    REQUIRE (tab != nullptr);
+    tab->onClick();
+    auto& state = processor.getParameterState();
+    for (const auto* id : { "impactFilterCutoff", "impactDriveDb", "impactTransientAttackDb", "impactDecayMs" })
+    {
+        auto* row = findById (editor, id);
+        REQUIRE (row != nullptr);
+        auto* slider = findControl<juce::Slider> (*row);
+        REQUIRE (slider != nullptr);
+        CHECK (slider->getTitle().isNotEmpty());
+        CHECK (slider->getAccessibilityHandler() != nullptr);
+        CHECK (slider->getTooltip().isNotEmpty());
+        auto& parameter = *state.getParameter (id);
+        const auto target = parameter.convertFrom0to1 (.6f);
+        slider->setValue (target, juce::sendNotificationSync);
+        CHECK_THAT (state.getRawParameterValue (id)->load(), WithinAbs (target, .001));
+        parameter.setValueNotifyingHost (.3f);
+        CHECK_THAT (slider->getValue(), WithinAbs (parameter.convertFrom0to1 (.3f), .001));
+    }
+    for (const auto* id : { "impactFilterEnabled", "impactDriveEnabled", "impactTransientEnabled" })
+    {
+        auto* row = findById (editor, id);
+        REQUIRE (row != nullptr);
+        auto* button = findControl<juce::ToggleButton> (*row);
+        REQUIRE (button != nullptr);
+        CHECK (button->getAccessibilityHandler() != nullptr);
+        CHECK (button->getTitle().isNotEmpty());
+        button->setToggleState (true, juce::sendNotificationSync);
+        CHECK (state.getRawParameterValue (id)->load() == 1);
+    }
+    for (const auto* id : { "impactFilterType", "impactDriveMode" })
+    {
+        auto* row = findById (editor, id);
+        REQUIRE (row != nullptr);
+        auto* box = findControl<juce::ComboBox> (*row);
+        REQUIRE (box != nullptr);
+        CHECK (box->getAccessibilityHandler() != nullptr);
+        CHECK (box->getTitle().isNotEmpty());
+        box->setSelectedId (2, juce::sendNotificationSync);
+        CHECK (state.getRawParameterValue (id)->load() == 1);
+    }
+}
+
+TEST_CASE ("Render the Impact editor for design review", "[.screenshot][impact]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "impactTab"));
+    REQUIRE (tab != nullptr);
+    tab->onClick();
+    auto& state = processor.getParameterState();
+    for (const auto* id : { "impactFilterEnabled", "impactDriveEnabled", "impactTransientEnabled" })
+        state.getParameter (id)->setValueNotifyingHost (1);
+    const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
+    juce::FileOutputStream stream (juce::File::getCurrentWorkingDirectory().getChildFile ("editor-impact.png"));
+    REQUIRE (stream.openedOk());
+    stream.setPosition (0);
+    stream.truncate();
+    REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
+}
