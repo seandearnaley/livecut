@@ -53,6 +53,8 @@ inline constexpr auto bounceChance = "bounceChance";
 inline constexpr auto ratchetChance = "ratchetChance";
 inline constexpr auto climb = "climb";
 inline constexpr auto halftimeChance = "halftimeChance";
+inline constexpr auto wet = "wet";
+inline constexpr auto outputTrim = "outputTrim";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
@@ -66,6 +68,8 @@ struct Settings
     int unitsPerBar = 8;
     std::uint32_t seed = 1;
     double fadeMilliseconds = 0.0;
+    float wet = 1.0f;
+    float outputTrimDb = 0.0f;
     engine::CutParameters cut;
     engine::CrusherParameters crusher;
     engine::CombParameters comb;
@@ -133,6 +137,8 @@ private:
     Source ratchetChance;
     Source climb;
     Source halftimeChance;
+    Source wet;
+    Source outputTrim;
 };
 
 void applySettings (engine::Cutter& cutter, const Settings& settings);

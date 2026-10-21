@@ -9,6 +9,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <set>
+#include <chrono>
+#include <thread>
 
 using Catch::Matchers::WithinAbs;
 
@@ -273,4 +275,51 @@ TEST_CASE ("Render the editor for design review", "[.screenshot]")
     stream.setPosition (0);
     stream.truncate();
     REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
+}
+
+TEST_CASE ("The editor exposes capture save and capture status", "[editor][capture]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    for (const auto* id : { "capture", "saveCapture", "captureStatus" })
+    {
+        INFO (id);
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        CHECK (isShowing (*control, editor));
+    }
+}
+
+TEST_CASE ("Capture controls follow readiness and jobs survive editor destruction", "[editor][capture]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    auto& capture = processor.getCaptureService();
+    capture.rolling().prepare (48000.0, 64);
+    {
+        LivecutAudioProcessorEditor editor (processor);
+        auto* button = dynamic_cast<juce::TextButton*> (findById (editor, "capture"));
+        auto* save = dynamic_cast<juce::TextButton*> (findById (editor, "saveCapture"));
+        REQUIRE (button != nullptr);
+        REQUIRE (save != nullptr);
+        CHECK_FALSE (button->isEnabled());
+        CHECK_FALSE (save->isEnabled());
+        capture.rolling().startPhrase (true);
+        for (int sample = 0; sample < 64; ++sample)
+            capture.rolling().push (0.25f, -0.25f);
+        capture.rolling().completePhrase();
+        editor.refreshDisplay();
+        CHECK (button->isEnabled());
+        button->onClick();
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds (5);
+    while (capture.isBusy() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for (std::chrono::milliseconds (1));
+    REQUIRE_FALSE (capture.isBusy());
+    REQUIRE (capture.captured() != nullptr);
+    LivecutAudioProcessorEditor reopened (processor);
+    auto* save = findById (reopened, "saveCapture");
+    REQUIRE (save != nullptr);
+    CHECK (save->isEnabled());
 }

@@ -51,7 +51,7 @@ struct Column
 class LivecutAudioProcessorEditor::Panel final : public juce::Component
 {
 public:
-    explicit Panel (juce::AudioProcessorValueTreeState& state)
+    explicit Panel (juce::AudioProcessorValueTreeState& state, livecut::CaptureService& captureService)
         : procedureSwitch (choice (state, ids::procedure)),
           subdivision (choice (state, ids::subdivision), "Subdivision"),
           phraseBars (parameter (state, ids::minPhraseBars), parameter (state, ids::maxPhraseBars), "Bars"),
@@ -80,11 +80,15 @@ public:
           comb (parameter (state, ids::comb), "Comb"),
           combType (choice (state, ids::combType), {}),
           combFeedback (parameter (state, ids::combFeedback), "Feedback"),
-          delay (parameter (state, ids::minDelay), parameter (state, ids::maxDelay), "Delay")
+          delay (parameter (state, ids::minDelay), parameter (state, ids::maxDelay), "Delay"),
+          wet (parameter (state, ids::wet), "Wet"),
+          trim (parameter (state, ids::outputTrim), "Trim"),
+          captures (captureService)
     {
         for (auto* component : std::initializer_list<juce::Component*> {
                  &procedureSwitch, &ruler, &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty,
-                 &amp, &pan, &pitch, &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay })
+                 &amp, &pan, &pitch, &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay,
+                 &wet, &trim, &captureButton, &saveButton, &captureStatus })
             addAndMakeVisible (component);
 
         for (auto* component : std::initializer_list<juce::Component*> { &repeats, &stutter, &stutterArea })
@@ -100,6 +104,19 @@ public:
 
         for (auto* controls : { &cutProc11Controls, &warpCutControls, &sqPusherControls, &bounceControls })
             addChildComponent (controls);
+
+        captureButton.setComponentID ("capture");
+        saveButton.setComponentID ("saveCapture");
+        captureStatus.setComponentID ("captureStatus");
+        wet.setTooltip ("Linear dry/wet mix, smoothed over 20 ms");
+        trim.setTooltip ("Output gain from -24 to +24 dB, smoothed over 20 ms");
+        captureButton.setTooltip ("Keep the last fully completed phrase, including Wet and Trim");
+        saveButton.setTooltip ("Save the captured phrase as stereo 32-bit float WAV");
+        captureStatus.setColour (juce::Label::textColourId, ui::palette::inkMuted);
+        captureStatus.setFont (ui::uiFont (12.0f));
+        captureButton.onClick = [this] { captures.requestCapture(); refreshCapture(); };
+        saveButton.onClick = [this] { chooseSaveFile(); };
+        refreshCapture();
 
         procedureSwitch.onChange = [this] (int index) { showProcedure (index); };
 
@@ -134,7 +151,7 @@ public:
 
         g.setColour (ui::palette::ink);
         g.setFont (ui::uiFont (26.0f, true));
-        g.drawText ("Livecut", juce::Rectangle<int> (margin, 16, 200, 34), juce::Justification::centredLeft);
+        g.drawText (juce::String ("Livecut ") + JucePlugin_VersionString, juce::Rectangle<int> (margin, 16, 200, 34), juce::Justification::centredLeft);
 
         for (const auto& section : { phraseSection, cutsSection, procedureSection, crusherSection, combSection })
         {
@@ -221,12 +238,45 @@ public:
         combFeedback.setBounds (combArea.removeFromLeft (combColumn).withHeight (sliderRowHeight));
         combArea.removeFromLeft (gap);
         delay.setBounds (combArea.withHeight (sliderRowHeight));
+
+        wet.setBounds (margin, 562, 240, sliderRowHeight);
+        trim.setBounds (270, 562, 240, sliderRowHeight);
+        captureButton.setBounds (536, 566, 156, 30);
+        saveButton.setBounds (702, 566, 158, 30);
+        captureStatus.setBounds (margin, 604, baseWidth - 2 * margin, 24);
+    }
+
+    void refreshCapture()
+    {
+        captureButton.setEnabled (! captures.isBusy() && captures.rolling().hasLatest());
+        saveButton.setEnabled (! captures.isBusy() && captures.captured() != nullptr);
+        captureButton.setAlpha (captureButton.isEnabled() ? 1.0f : 0.5f);
+        saveButton.setAlpha (saveButton.isEnabled() ? 1.0f : 0.5f);
+        captureStatus.setText (captures.statusText(), juce::dontSendNotification);
     }
 
     ui::ProcedureSwitch procedureSwitch;
     ui::PhraseRuler ruler;
 
 private:
+    void chooseSaveFile()
+    {
+        chooser = std::make_unique<juce::FileChooser> ("Save captured phrase", juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Livecut phrase.wav"), "*.wav");
+        const juce::Component::SafePointer<Panel> safe (this);
+        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                               | juce::FileBrowserComponent::warnAboutOverwriting,
+                             [safe] (const juce::FileChooser& dialog)
+        {
+            if (safe == nullptr)
+                return;
+            const auto target = dialog.getResult();
+            if (target == juce::File())
+                return;
+            safe->captures.requestSave (target);
+            safe->refreshCapture();
+        });
+    }
+
     static juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
     {
         auto* found = state.getParameter (id);
@@ -253,6 +303,11 @@ private:
     ui::ChoiceRow combType;
     ui::SliderRow combFeedback;
     ui::RangeSlider delay;
+    ui::SliderRow wet, trim;
+    livecut::CaptureService& captures;
+    juce::TextButton captureButton { "Capture last phrase" }, saveButton { "Save WAV..." };
+    juce::Label captureStatus;
+    std::unique_ptr<juce::FileChooser> chooser;
 
     juce::Component cutProc11Controls, warpCutControls, sqPusherControls, bounceControls;
     juce::Rectangle<int> phraseSection, cutsSection, procedureSection, crusherSection, combSection;
@@ -264,7 +319,7 @@ LivecutAudioProcessorEditor::LivecutAudioProcessorEditor (LivecutAudioProcessor&
       livecutProcessor (p)
 {
     setLookAndFeel (&lookAndFeel);
-    panel = std::make_unique<Panel> (p.getParameterState());
+    panel = std::make_unique<Panel> (p.getParameterState(), p.getCaptureService());
     addAndMakeVisible (*panel);
 
     setResizable (true, true);
@@ -295,6 +350,7 @@ void LivecutAudioProcessorEditor::resized()
 
 void LivecutAudioProcessorEditor::refreshDisplay()
 {
+    panel->refreshCapture();
     panel->ruler.show (livecut::ui::PhraseRuler::Snapshot::of (livecutProcessor.getDisplayState()));
 }
 

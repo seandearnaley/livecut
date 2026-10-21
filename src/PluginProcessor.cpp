@@ -17,9 +17,12 @@ LivecutAudioProcessor::LivecutAudioProcessor()
 void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     cutter.prepare (sampleRate);
+    const auto settings = settingsReader.read();
+    mixer.prepare (sampleRate, settings.wet, settings.outputTrimDb);
+    capture.rolling().prepare (sampleRate);
 }
 
-void LivecutAudioProcessor::releaseResources() {}
+void LivecutAudioProcessor::releaseResources() { capture.rolling().interrupt(); }
 
 bool LivecutAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
@@ -31,7 +34,9 @@ bool LivecutAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) 
 void LivecutAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
-    livecut::applySettings (cutter, settingsReader.read());
+    const auto settings = settingsReader.read();
+    livecut::applySettings (cutter, settings);
+    mixer.setTargets (settings.wet, settings.outputTrimDb);
 
     const auto* playHead = getPlayHead();
     const auto position = playHead != nullptr ? playHead->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo> {};
@@ -41,12 +46,25 @@ void LivecutAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     if (! sync)
     {
         cutter.reset();
+        capture.rolling().interrupt();
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        {
+            auto& left = buffer.getWritePointer (0)[sample];
+            auto& right = buffer.getWritePointer (1)[sample];
+            mixer.process (left, right, left, right);
+        }
         display.status = livecut::DisplayState::Status::waitingForHost;
         return;
     }
 
-    cutter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), sync->timing, sync->position);
+    cutter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), sync->timing, sync->position, this);
     publishDisplay();
+}
+
+void LivecutAudioProcessor::processOutput (int, float dryLeft, float dryRight, float& left, float& right)
+{
+    mixer.process (dryLeft, dryRight, left, right);
+    capture.rolling().push (left, right);
 }
 
 void LivecutAudioProcessor::publishDisplay()
@@ -95,7 +113,10 @@ void LivecutAudioProcessor::changeProgramName (int, const juce::String&) {}
 
 void LivecutAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (const auto xml = parameters.copyState().createXml())
+    auto state = parameters.copyState();
+    state.setProperty ("schemaVersion", 3, nullptr);
+    state.setProperty ("algorithmVersion", 2, nullptr);
+    if (const auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
 
@@ -104,8 +125,22 @@ void LivecutAudioProcessor::setStateInformation (const void* data, int sizeInByt
     // State that isn't ours, or isn't readable, leaves the current settings as they are.
     const auto xml = getXmlFromBinary (data, sizeInBytes);
 
-    if (xml != nullptr && xml->hasTagName (parameters.state.getType()))
-        parameters.replaceState (juce::ValueTree::fromXml (*xml));
+    if (xml == nullptr || ! xml->hasTagName (parameters.state.getType()))
+        return;
+    auto restored = juce::ValueTree::fromXml (*xml);
+    // A missing parameter means the default of that release, even when loading
+    // an old set into an instance whose newer controls were already adjusted.
+    for (auto* parameter : getParameters())
+    {
+        const auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (parameter);
+        if (ranged == nullptr || restored.getChildWithProperty ("id", ranged->getParameterID()).isValid())
+            continue;
+        juce::ValueTree child ("PARAM");
+        child.setProperty ("id", ranged->getParameterID(), nullptr);
+        child.setProperty ("value", ranged->convertFrom0to1 (ranged->getDefaultValue()), nullptr);
+        restored.appendChild (child, nullptr);
+    }
+    parameters.replaceState (restored);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

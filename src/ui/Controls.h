@@ -18,6 +18,7 @@ public:
     SliderRow (juce::RangedAudioParameter& parameter, const juce::String& caption);
 
     void resized() override;
+    void setTooltip (const juce::String& text) { slider.setTooltip (text); caption.setTooltip (text); readout.setTooltip (text); }
 
 private:
     void showValue();

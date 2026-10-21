@@ -1,5 +1,6 @@
 # Build trees
 build/
+build-capture/
 cmake-build-*/
 
 # IDE and OS clutter

@@ -579,3 +579,67 @@ TEST_CASE ("A halftime bar near the longest supported bar stays in the buffer an
         }
     }
 }
+
+TEST_CASE ("Phrase events report every in-buffer boundary before its output sample", "[cutter][capture]")
+{
+    struct Events final : Cutter::Observer
+    {
+        void discontinuity (int offset) override { resets.push_back (offset); }
+        void phraseCompleted (int offset) override { ends.push_back (offset); }
+        void phraseStarted (int offset, bool full) override { starts.push_back ({ offset, full }); }
+        void processOutput (int offset, float, float, float&, float&) override { samples.push_back (offset); }
+        std::vector<int> resets, samples, ends;
+        std::vector<std::pair<int, bool>> starts;
+    } events;
+    Cutter cutter;
+    cutter.prepare (8000.0); // 16000 samples per 4/4 bar at 120 BPM
+    CutParameters params;
+    params.minPhraseBars = params.maxPhraseBars = 1;
+    cutter.setParameters (params);
+    Buffer buffer (49001);
+    cutter.process (buffer.left.data(), buffer.right.data(), 49001, { 120.0, 4.0 }, { 0, 0.0 }, &events);
+    REQUIRE (events.starts.size() == 4);
+    for (int phrase = 0; phrase < 4; ++phrase)
+    {
+        CHECK (events.starts[static_cast<std::size_t> (phrase)].first == phrase * 16000);
+        CHECK (events.starts[static_cast<std::size_t> (phrase)].second);
+    }
+    CHECK (events.samples.size() == 49001);
+    REQUIRE (events.resets.size() == 1);
+    CHECK (events.resets[0] == 0);
+
+    events.starts.clear();
+    events.resets.clear();
+    cutter.process (buffer.left.data(), buffer.right.data(), 17000, { 120.0, 4.0 }, { 20, 1.0 }, &events);
+    REQUIRE (events.resets.size() == 1);
+    REQUIRE (events.starts.size() == 2);
+    CHECK (events.starts[0].first == 0);
+    CHECK_FALSE (events.starts[0].second); // unit 2 is a partial phrase
+    CHECK (events.starts[1].first == 12000);
+    CHECK (events.starts[1].second);
+}
+
+TEST_CASE ("An exclusive-end completion is not repeated at the next phrase start", "[cutter][capture]")
+{
+    struct Events final : Cutter::Observer
+    {
+        void discontinuity (int) override {}
+        void phraseStarted (int, bool) override { ++starts; }
+        void phraseCompleted (int offset) override { ++ends; lastEnd = offset; }
+        void processOutput (int, float, float, float&, float&) override {}
+        int starts = 0, ends = 0, lastEnd = -1;
+    } events;
+    Cutter cutter;
+    cutter.prepare (8000.0);
+    CutParameters parameters;
+    parameters.minPhraseBars = parameters.maxPhraseBars = 1;
+    cutter.setParameters (parameters);
+    Buffer buffer (16000);
+    cutter.process (buffer.left.data(), buffer.right.data(), 16000, { 120.0, 4.0 }, { 0, 0.0 }, &events);
+    CHECK (events.starts == 1);
+    CHECK (events.ends == 1);
+    CHECK (events.lastEnd == 16000);
+    cutter.process (buffer.left.data(), buffer.right.data(), 1, { 120.0, 4.0 }, { 1, 0.0 }, &events);
+    CHECK (events.starts == 2);
+    CHECK (events.ends == 1);
+}
