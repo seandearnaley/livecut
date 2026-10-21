@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures to build")
 
-project(Livecut VERSION 0.7.0 LANGUAGES C CXX)
+project(Livecut VERSION 0.8.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +31,8 @@ add_library(LivecutEngine STATIC
     src/engine/Effects.cpp
     src/engine/ImpactEffects.cpp
     src/engine/FrequencyEffects.cpp
+    src/engine/Resonator.cpp
+    src/engine/RouteRack.cpp
     src/engine/Fracture.cpp
     src/engine/LivePlayer.cpp
     src/engine/PhraseSeed.cpp
@@ -43,6 +45,18 @@ target_link_libraries(LivecutEngine
     PRIVATE
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
+
+# The FFT adapter and worker are shared by plugin and processor tests.
+add_library(LivecutSpectral STATIC
+    src/spectral/SpectralStage.h
+    src/spectral/SpectralStage.cpp
+    src/spectral/SpectralKernel.h
+    src/spectral/SpectralKernel.cpp
+    src/spectral/JuceFft.cpp)
+target_include_directories(LivecutSpectral PUBLIC src)
+target_compile_features(LivecutSpectral PUBLIC cxx_std_20)
+target_link_libraries(LivecutSpectral PRIVATE juce::juce_dsp
+    juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 
 juce_add_plugin(Livecut
     PRODUCT_NAME "Livecut"
@@ -97,7 +111,7 @@ target_sources(LivecutCode
         src/ui/RangeSlider.cpp
         src/ui/RangeSlider.h)
 target_include_directories(LivecutCode INTERFACE src)
-target_link_libraries(LivecutCode INTERFACE LivecutEngine juce::juce_audio_utils)
+target_link_libraries(LivecutCode INTERFACE LivecutEngine LivecutSpectral juce::juce_audio_utils)
 
 target_link_libraries(Livecut
     PRIVATE
@@ -122,6 +136,9 @@ if(LIVECUT_BUILD_TESTS)
 
     add_executable(LivecutTests
         tests/engine/AllocationCounter.cpp
+        tests/SpectralTests.cpp
+        tests/ResonanceProcessorTests.cpp
+        tests/ResonanceStateTests.cpp
         tests/CaptureTests.cpp
         tests/EditorTests.cpp
         tests/HostSyncTests.cpp
@@ -167,6 +184,9 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/FrequencyEffectsTests.cpp
         tests/engine/ImpactIntegrationTests.cpp
         tests/engine/FractureIntegrationTests.cpp
+        tests/engine/ResonatorTests.cpp
+        tests/engine/RouteRackTests.cpp
+        tests/engine/ResonanceIntegrationTests.cpp
         tests/engine/FractureTests.cpp
         tests/engine/LivePlayerTests.cpp
         tests/engine/PhraseSeedTests.cpp

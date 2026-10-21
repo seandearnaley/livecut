@@ -1013,3 +1013,337 @@ TEST_CASE ("Render the Fracture editor for design review", "[.screenshot][fractu
     pattern->onClick();
     save ("editor-fracture-tape-pattern.png");
 }
+
+TEST_CASE ("Resonance controls bind parameters and fit the editor", "[editor][resonance-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "resonanceTab"));
+    REQUIRE (tab != nullptr);
+    tab->onClick();
+    std::vector<juce::Rectangle<int>> bounds;
+    for (const auto* id : { "patternTab", "recutTab", "impactTab", "fractureTab", "resonanceTab", "procedure",
+                           "resonanceEnabled", "resonanceRootHz", "resonanceDecayMs", "resonanceExcitationDb",
+                           "resonanceInterval1", "resonanceInterval2", "resonanceInterval3", "resonanceInterval4",
+                           "resonanceWeight1", "resonanceWeight2", "resonanceWeight3", "resonanceWeight4",
+                           "resonanceMix", "resonanceOrder", "resonanceSpectralEnabled", "resonanceFreeze",
+                           "resonanceSmearMs", "resonanceSpectralMix", "applySpectral", "spectralStatus", "resonatorStatus", "resonanceHelp",
+                           "wet", "outputTrim", "capture", "saveCapture", "swing", "accent", "hold" })
+    {
+        INFO (id);
+        auto* control = findById (editor, id);
+        REQUIRE (control != nullptr);
+        CHECK (isShowing (*control, editor));
+        if (juce::String (id).startsWith ("resonance") || juce::String (id) == "resonatorStatus"
+            || juce::String (id) == "spectralStatus" || juce::String (id) == "applySpectral")
+            CHECK (control->getTitle().isNotEmpty());
+        const auto area = editor.getLocalArea (control, control->getLocalBounds());
+        CHECK (editor.getLocalBounds().contains (area));
+        for (const auto& previous : bounds)
+            CHECK_FALSE (area.intersects (previous));
+        bounds.push_back (area);
+    }
+    auto* root = findControl<juce::Slider> (*findById (editor, "resonanceRootHz"));
+    auto* freeze = findControl<juce::ToggleButton> (*findById (editor, "resonanceFreeze"));
+    REQUIRE (root != nullptr);
+    REQUIRE (freeze != nullptr);
+    root->setValue (220, juce::sendNotificationSync);
+    freeze->setToggleState (true, juce::sendNotificationSync);
+    CHECK_THAT (processor.getParameterState().getRawParameterValue ("resonanceRootHz")->load(), WithinAbs (220, .001));
+    CHECK (processor.getParameterState().getRawParameterValue ("resonanceFreeze")->load() == 1);
+    CHECK (root->getTitle().isNotEmpty());
+    CHECK (freeze->getTitle().isNotEmpty());
+}
+
+TEST_CASE ("Render the Resonance editor for design review", "[.screenshot][resonance-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    struct Head final : juce::AudioPlayHead
+    {
+        juce::Optional<PositionInfo> getPosition() const override { return info; }
+        PositionInfo info;
+    } head;
+    head.info.setIsPlaying (false);
+    head.info.setBpm (120);
+    head.info.setPpqPosition (0);
+    head.info.setPpqPositionOfLastBarStart (0);
+    head.info.setTimeSignature (juce::AudioPlayHead::TimeSignature { 4, 4 });
+    processor.setPlayHead (&head);
+    processor.setNonRealtime (true);
+    processor.prepareToPlay (48000, 256);
+    juce::AudioBuffer<float> buffer (2, 256);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+    LivecutAudioProcessorEditor editor (processor);
+    auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "resonanceTab"));
+    auto* apply = dynamic_cast<juce::TextButton*> (findById (editor, "applySpectral"));
+    REQUIRE (tab != nullptr);
+    REQUIRE (apply != nullptr);
+    tab->onClick();
+    const auto save = [&] (const char* name)
+    {
+        editor.refreshDisplay();
+        const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
+        juce::FileOutputStream output (juce::File::getCurrentWorkingDirectory().getChildFile (name));
+        REQUIRE (output.openedOk());
+        output.setPosition (0);
+        output.truncate();
+        REQUIRE (juce::PNGImageFormat().writeImageToStream (image, output));
+    };
+    auto& state = processor.getParameterState();
+    state.getParameter ("resonanceEnabled")->setValueNotifyingHost (1);
+    state.getParameter ("resonanceSpectralEnabled")->setValueNotifyingHost (1);
+    state.getParameter ("resonanceFreeze")->setValueNotifyingHost (1);
+    save ("editor-resonance-pending.png");
+    REQUIRE (apply->isEnabled());
+    apply->onClick();
+    REQUIRE (processor.activeSpectral());
+    save ("editor-resonance-waiting.png");
+    head.info.setIsPlaying (true);
+    double ppq = 0;
+    for (int block = 0; block < 160; ++block)
+    {
+        buffer.clear();
+        head.info.setPpqPosition (ppq);
+        head.info.setPpqPositionOfLastBarStart (std::floor (ppq / 4) * 4);
+        processor.processBlock (buffer, midi);
+        ppq += 256.0 * 120 / 60 / 48000;
+    }
+    REQUIRE (processor.getDisplayState().spectralFault.load() == livecut::spectral::Fault::none);
+    REQUIRE (processor.getDisplayState().spectralAvailability.load() == livecut::spectral::Availability::ready);
+    save ("editor-resonance.png");
+}
+
+TEST_CASE ("Both configuration Apply buttons handle a Mode-only tuple change", "[editor][resonance-ui][apply-tuple]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    StoppedHead stopped;
+    processor.setPlayHead (&stopped);
+    processor.prepareToPlay (8000.0, 32);
+    juce::AudioBuffer<float> buffer (2, 32);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+    LivecutAudioProcessorEditor editor (processor);
+    auto* spectralApply = dynamic_cast<juce::TextButton*> (findById (editor, "applySpectral"));
+    auto* recutApply = dynamic_cast<juce::TextButton*> (findById (editor, "applyMode"));
+    REQUIRE (spectralApply != nullptr);
+    REQUIRE (recutApply != nullptr);
+    auto& mode = *processor.getParameterState().getParameter (livecut::ids::mode);
+    mode.setValueNotifyingHost (mode.convertTo0to1 (1));
+    editor.refreshDisplay();
+    CHECK (recutApply->isEnabled());
+    REQUIRE (spectralApply->isEnabled());
+    spectralApply->onClick();
+    editor.refreshDisplay();
+    CHECK (processor.activeMode() == livecut::ProcessingMode::studio);
+    CHECK_FALSE (processor.activeSpectral());
+    CHECK_FALSE (spectralApply->isEnabled());
+    CHECK_FALSE (recutApply->isEnabled());
+}
+
+TEST_CASE ("Resonance inputs expose keyboard changes and bidirectional host bindings", "[editor][resonance-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    editor.addToDesktop (0);
+    auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "resonanceTab"));
+    REQUIRE (tab != nullptr);
+    tab->onClick();
+    auto& state = processor.getParameterState();
+    for (const auto* id : { "resonanceRootHz", "resonanceDecayMs", "resonanceExcitationDb", "resonanceInterval1",
+                           "resonanceInterval2", "resonanceInterval3", "resonanceInterval4", "resonanceWeight1",
+                           "resonanceWeight2", "resonanceWeight3", "resonanceWeight4", "resonanceMix",
+                           "resonanceSmearMs", "resonanceSpectralMix" })
+    {
+        INFO (id);
+        auto* row = findById (editor, id);
+        REQUIRE (row != nullptr);
+        auto* slider = findControl<juce::Slider> (*row);
+        REQUIRE (slider != nullptr);
+        CHECK (slider->getAccessibilityHandler() != nullptr);
+        CHECK (slider->getTitle().isNotEmpty());
+        CHECK (slider->getTooltip().isNotEmpty());
+        auto& parameter = *state.getParameter (id);
+        const auto target = parameter.getNormalisableRange().snapToLegalValue (parameter.convertFrom0to1 (.4f));
+        slider->setValue (target, juce::sendNotificationSync);
+        CHECK_THAT (state.getRawParameterValue (id)->load(), WithinAbs (target, .001));
+        parameter.setValueNotifyingHost (.6f);
+        const auto before = slider->getValue();
+        CHECK_THAT (before, WithinAbs (state.getRawParameterValue (id)->load(), .001));
+        CHECK (slider->keyPressed (juce::KeyPress (juce::KeyPress::rightKey)));
+        CHECK (slider->getValue() > before);
+        CHECK_THAT (state.getRawParameterValue (id)->load(), WithinAbs (slider->getValue(), .001));
+    }
+    for (const auto* id : { "resonanceEnabled", "resonanceSpectralEnabled", "resonanceFreeze" })
+    {
+        auto* row = findById (editor, id);
+        REQUIRE (row != nullptr);
+        auto* toggle = findControl<juce::ToggleButton> (*row);
+        REQUIRE (toggle != nullptr);
+        CHECK (toggle->getAccessibilityHandler() != nullptr);
+        CHECK (toggle->getTitle().isNotEmpty());
+        toggle->setToggleState (true, juce::sendNotificationSync);
+        CHECK (state.getRawParameterValue (id)->load() == 1);
+        state.getParameter (id)->setValueNotifyingHost (0);
+        CHECK_FALSE (toggle->getToggleState());
+    }
+    auto* order = findControl<juce::ComboBox> (*findById (editor, "resonanceOrder"));
+    REQUIRE (order != nullptr);
+    CHECK (order->getTitle().isNotEmpty());
+    CHECK (order->getAccessibilityHandler() != nullptr);
+    order->setSelectedId (3, juce::sendNotificationSync);
+    CHECK (state.getRawParameterValue ("resonanceOrder")->load() == 2);
+    state.getParameter ("resonanceOrder")->setValueNotifyingHost (0);
+    CHECK (order->getSelectedId() == 1);
+}
+
+TEST_CASE ("Resonance displays invalid weights retuning and effect-order transitions", "[editor][resonance-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    // An idle fixture publishes diagnostic snapshots; no audio thread is running.
+    auto& display = const_cast<livecut::DisplayState&> (processor.getDisplayState());
+    auto* status = dynamic_cast<juce::Label*> (findById (editor, "resonatorStatus"));
+    REQUIRE (status != nullptr);
+    display.resonatorState.store (livecut::engine::Resonator::State::invalidWeights);
+    editor.refreshDisplay();
+    CHECK (status->getText().contains ("All weights zero"));
+    CHECK (status->getText().contains ("wet is silent"));
+    display.resonatorState.store (livecut::engine::Resonator::State::invalidParameters);
+    editor.refreshDisplay();
+    CHECK (status->getText().contains ("Invalid tuning"));
+    display.resonatorState.store (livecut::engine::Resonator::State::unsupportedRate);
+    editor.refreshDisplay();
+    CHECK (status->getText().contains ("Unsupported"));
+    display.resonatorState.store (livecut::engine::Resonator::State::ready);
+    display.resonatorRetuning.store (true);
+    display.resonatorPending.store (true);
+    display.effectRoute.store (livecut::engine::EffectRoute::impactResonatorFrequency);
+    display.requestedEffectRoute.store (livecut::engine::EffectRoute::resonatorImpactFrequency);
+    editor.refreshDisplay();
+    CHECK (status->getText().contains ("Retuning: 50 ms"));
+    CHECK (status->getText().contains ("latest tuning queued"));
+    CHECK (status->getText().contains ("pending next bar"));
+    display.effectRouteTransition.store (true);
+    editor.refreshDisplay();
+    CHECK (status->getText().contains ("Effect order crossfading"));
+    CHECK_FALSE (status->getText().contains ("pending next bar"));
+}
+
+TEST_CASE ("Resonance Apply distinguishes pending and active spectral configuration", "[editor][resonance-ui]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    struct Head final : juce::AudioPlayHead
+    {
+        juce::Optional<PositionInfo> getPosition() const override { return info; }
+        PositionInfo info;
+    } head;
+    head.info.setIsPlaying (true);
+    head.info.setBpm (120);
+    head.info.setPpqPosition (0);
+    head.info.setTimeSignature (juce::AudioPlayHead::TimeSignature { 4, 4 });
+    processor.setPlayHead (&head);
+    processor.setNonRealtime (true);
+    processor.prepareToPlay (8000, 32);
+    juce::AudioBuffer<float> buffer (2, 32);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+    LivecutAudioProcessorEditor editor (processor);
+    auto* apply = dynamic_cast<juce::TextButton*> (findById (editor, "applySpectral"));
+    auto* recut = dynamic_cast<juce::TextButton*> (findById (editor, "applyMode"));
+    auto* status = dynamic_cast<juce::Label*> (findById (editor, "spectralStatus"));
+    REQUIRE (apply != nullptr);
+    REQUIRE (recut != nullptr);
+    REQUIRE (status != nullptr);
+    auto& spectral = *processor.getParameterState().getParameter ("resonanceSpectralEnabled");
+    spectral.setValueNotifyingHost (1);
+    editor.refreshDisplay();
+    REQUIRE (apply->isEnabled());
+    CHECK (recut->isEnabled());
+    CHECK_FALSE (processor.activeSpectral());
+    CHECK (status->getText().containsIgnoreCase ("pending"));
+    CHECK (status->getText().contains ("Requested: Live / Spectral on"));
+    CHECK (status->getText().contains ("Active: Live / Spectral off"));
+    apply->onClick();
+    editor.refreshDisplay();
+    CHECK (processor.modeState() == LivecutAudioProcessor::ModeState::pendingPlaying);
+    CHECK_FALSE (processor.activeSpectral());
+    CHECK_FALSE (apply->isEnabled());
+    CHECK_FALSE (recut->isEnabled());
+    head.info.setIsPlaying (false);
+    processor.processBlock (buffer, midi);
+    // Repeat the existing queued request from the message thread after a real stopped callback.
+    processor.applyRequestedMode();
+    editor.refreshDisplay();
+    REQUIRE (processor.activeSpectral());
+    CHECK (processor.reportedLatencySamples() == 2048);
+    CHECK_FALSE (apply->isEnabled());
+    CHECK_FALSE (recut->isEnabled());
+    CHECK (status->getText().contains ("2048"));
+    CHECK (status->getText().contains ("Active: Live / Spectral on"));
+    CHECK (status->getText().containsIgnoreCase ("Waiting"));
+    // Every installed stream requires its own explicit transport observation.
+    buffer.clear();
+    processor.processBlock (buffer, midi);
+    spectral.setValueNotifyingHost (0);
+    editor.refreshDisplay();
+    CHECK (processor.activeSpectral());
+    CHECK (status->getText().containsIgnoreCase ("pending"));
+    REQUIRE (recut->isEnabled());
+    recut->onClick();
+    editor.refreshDisplay();
+    CHECK_FALSE (processor.activeSpectral());
+    CHECK (processor.reportedLatencySamples() == 0);
+}
+
+TEST_CASE ("Both Apply buttons recover an actual stopped Spectral fault", "[editor][resonance-ui][fault]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (const auto* buttonId : { "applySpectral", "applyMode" })
+    {
+        INFO (buttonId);
+        livecut::spectral::TestHooks hooks;
+        hooks.pause = true;
+        LivecutAudioProcessor processor (&hooks);
+        processor.getParameterState().getParameter ("resonanceSpectralEnabled")->setValueNotifyingHost (1);
+        StoppedHead stopped;
+        processor.setPlayHead (&stopped);
+        processor.prepareToPlay (8000, 2048);
+        juce::AudioBuffer<float> buffer (2, 2048);
+        buffer.clear();
+        juce::MidiBuffer midi;
+        processor.processBlock (buffer, midi);
+        REQUIRE (processor.getDisplayState().spectralFault.load() == livecut::spectral::Fault::deadline);
+        hooks.pause = false;
+        LivecutAudioProcessorEditor editor (processor);
+        auto* spectralApply = dynamic_cast<juce::TextButton*> (findById (editor, "applySpectral"));
+        auto* recutApply = dynamic_cast<juce::TextButton*> (findById (editor, "applyMode"));
+        auto* status = dynamic_cast<juce::Label*> (findById (editor, "spectralStatus"));
+        REQUIRE (spectralApply != nullptr);
+        REQUIRE (recutApply != nullptr);
+        REQUIRE (status != nullptr);
+        CHECK (status->getText().contains ("Spectral error"));
+        CHECK (spectralApply->isEnabled());
+        CHECK (recutApply->isEnabled());
+        auto* selectedApply = dynamic_cast<juce::TextButton*> (findById (editor, buttonId));
+        REQUIRE (selectedApply != nullptr);
+        selectedApply->onClick();
+        editor.refreshDisplay();
+        CHECK (processor.modeState() == LivecutAudioProcessor::ModeState::active);
+        CHECK (processor.activeSpectral());
+        CHECK (processor.getDisplayState().spectralFault.load() == livecut::spectral::Fault::none);
+        CHECK (processor.reportedLatencySamples() == 2048);
+        CHECK_FALSE (status->getText().contains ("Spectral error"));
+        CHECK_FALSE (spectralApply->isEnabled());
+        CHECK_FALSE (recutApply->isEnabled());
+    }
+}

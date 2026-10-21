@@ -6,6 +6,7 @@
 #include "engine/WetHold.h"
 #include "engine/Cutter.h"
 #include "engine/Fracture.h"
+#include "spectral/SpectralStage.h"
 
 namespace livecut
 {
@@ -43,6 +44,16 @@ struct DisplayState
     std::atomic<engine::FractureState> fractureState { engine::FractureState::off };
     std::atomic<int> fractureVoices { 0 };
     std::atomic<double> fractureTapeSpeed { 0.0 };
+
+    std::atomic<engine::Resonator::State> resonatorState { engine::Resonator::State::ready };
+    std::atomic<bool> resonatorRetuning { false }, resonatorPending { false }, effectRouteTransition { false };
+    std::atomic<engine::EffectRoute> effectRoute { engine::EffectRoute::impactResonatorFrequency };
+    std::atomic<engine::EffectRoute> requestedEffectRoute { engine::EffectRoute::impactResonatorFrequency };
+
+    std::atomic<spectral::Availability> spectralAvailability { spectral::Availability::disabled };
+    std::atomic<spectral::Fault> spectralFault { spectral::Fault::none };
+    std::atomic<bool> spectralConfigured { false };
+    std::atomic<int> spectralFftSize { 0 }, spectralHop { 0 }, spectralDelay { 0 };
 
     static_assert (std::atomic<Status>::is_always_lock_free);
     static_assert (std::atomic<double>::is_always_lock_free);

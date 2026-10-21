@@ -146,6 +146,158 @@ private:
     std::vector<Row> rows;
     juce::Label help;
 };
+// Resonator tuning and the prepared spectral suffix share one page.
+class ResonancePage final : public juce::Component
+{
+public:
+    explicit ResonancePage (LivecutAudioProcessor& processor) : owner (processor)
+    {
+        auto& state = owner.getParameterState();
+        const auto add = [&] (const char* id, const char* caption, const char* help, int column)
+        {
+            auto* parameter = state.getParameter (id);
+            jassert (parameter != nullptr);
+            std::unique_ptr<juce::Component> control;
+            if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (parameter))
+                control = std::make_unique<ui::ChoiceRow> (*choice, "");
+            else if (parameter->isBoolean())
+                control = std::make_unique<ui::PowerSwitch> (*parameter, caption);
+            else
+                control = std::make_unique<ui::SliderRow> (*parameter, caption);
+            control->setTitle (parameter->getName (80));
+            for (auto* child : control->getChildren())
+            {
+                child->setTitle (parameter->getName (80));
+                if (auto* tooltip = dynamic_cast<juce::SettableTooltipClient*> (child))
+                    tooltip->setTooltip (help);
+            }
+            addAndMakeVisible (*control);
+            rows.push_back ({ std::move (control), column, parameter->isBoolean() ? 27 : dynamic_cast<juce::AudioParameterChoice*> (parameter) != nullptr ? 30 : 35 });
+        };
+        add (ids::resonanceEnabled, "Resonator", "Enable four tuned resonances. Controls apply at the next planned block; tuning changes crossfade over 50 ms.", 0);
+        add (ids::resonanceRootHz, "Root", "Root frequency, 40 to 800 Hz. Four voices use semitone offsets from this frequency.", 0);
+        add (ids::resonanceDecayMs, "Decay", "Pole decay time to -60 dB, 40 to 5000 ms. Excitation and source content affect the heard tail.", 0);
+        add (ids::resonanceExcitationDb, "Excitation", "Resonator input gain, -12 to +12 dB. There is no hidden limiter.", 0);
+        add (ids::resonanceMix, "Resonator mix", "Local resonator blend, with 2 ms gate smoothing. Zero is neutral after settling.", 0);
+        add (ids::resonanceOrder, "Effect order", "Three fixed orders for Impact, Resonator and Frequency. Changes begin on a bar boundary with a 5 ms crossfade; Spectral always follows them.", 0);
+        add (ids::resonanceInterval1, "Voice 1 interval", "Semitone offset from root, -12 to +24. Retuning crossfades fixed banks over 50 ms.", 1);
+        add (ids::resonanceWeight1, "Voice 1 weight", "Relative voice weight. Weights normalize together; all four at zero explicitly disable resonator wet output.", 1);
+        add (ids::resonanceInterval2, "Voice 2 interval", "Semitone offset from root, -12 to +24. Retuning crossfades fixed banks over 50 ms.", 1);
+        add (ids::resonanceWeight2, "Voice 2 weight", "Relative voice weight. Weights normalize together; all four at zero explicitly disable resonator wet output.", 1);
+        add (ids::resonanceInterval3, "Voice 3 interval", "Semitone offset from root, -12 to +24. Retuning crossfades fixed banks over 50 ms.", 1);
+        add (ids::resonanceWeight3, "Voice 3 weight", "Relative voice weight. Weights normalize together; all four at zero explicitly disable resonator wet output.", 1);
+        add (ids::resonanceInterval4, "Voice 4 interval", "Semitone offset from root, -12 to +24. Retuning crossfades fixed banks over 50 ms.", 1);
+        add (ids::resonanceWeight4, "Voice 4 weight", "Relative voice weight. Weights normalize together; all four at zero explicitly disable resonator wet output.", 1);
+        add (ids::resonanceSpectralEnabled, "Spectral engine", "Requested prepared configuration. Apply while stopped. Adds 8192 samples at 48 kHz; mix zero and host bypass retain this delay.", 2);
+        add (ids::resonanceFreeze, "Freeze", "Hold magnitudes and continue phase evolution from the next eligible full analysis frame. This is spectral freeze, separate from Audio Hold.", 2);
+        add (ids::resonanceSmearMs, "Smear", "Magnitude smoothing time constant, 0 to 2000 ms. Zero disables smear; it is not an amplitude decay guarantee.", 2);
+        add (ids::resonanceSpectralMix, "Spectral mix", "Blend the pre-spectral processed signal with spectral output. While warming, the spectral contribution is explicitly silent.", 2);
+        apply.setComponentID ("applySpectral");
+        apply.setTitle ("Apply requested Mode and Spectral configuration while stopped");
+        apply.setTooltip ("Stop the host, then apply the requested Live / Studio mode and Spectral engine together, or replace a faulted prepared stream.");
+        apply.onClick = [this] { owner.applyRequestedMode(); refresh(); };
+        addAndMakeVisible (apply);
+        status.setComponentID ("spectralStatus");
+        status.setTitle ("Spectral readiness and latency");
+        status.setFont (ui::uiFont (12.0f));
+        status.setColour (juce::Label::textColourId, ui::palette::inkMuted);
+        status.setJustificationType (juce::Justification::topLeft);
+        status.setBorderSize ({});
+        addAndMakeVisible (status);
+        tuningStatus.setComponentID ("resonatorStatus");
+        tuningStatus.setTitle ("Resonator validity and effect order");
+        tuningStatus.setFont (ui::uiFont (12.0f));
+        tuningStatus.setColour (juce::Label::textColourId, ui::palette::inkMuted);
+        tuningStatus.setJustificationType (juce::Justification::topLeft);
+        tuningStatus.setBorderSize ({});
+        addAndMakeVisible (tuningStatus);
+        help.setComponentID ("resonanceHelp");
+        help.setTitle ("Resonance signal path instructions");
+        help.setText ("Crusher / Comb precede this rack. Spectral follows all three orders. Hold and Capture follow Spectral.", juce::dontSendNotification);
+        help.setFont (ui::uiFont (12.0f));
+        help.setColour (juce::Label::textColourId, ui::palette::inkMuted);
+        help.setBorderSize ({});
+        addAndMakeVisible (help);
+    }
+    void refresh()
+    {
+        const auto& display = owner.getDisplayState();
+        juce::String tuning;
+        switch (display.resonatorState.load())
+        {
+            case livecut::engine::Resonator::State::ready:
+                tuning = display.resonatorRetuning.load() ? "Retuning: 50 ms crossfade" : "Resonator tuning ready";
+                if (display.resonatorPending.load()) tuning += "; latest tuning queued";
+                break;
+            case livecut::engine::Resonator::State::invalidWeights: tuning = "All weights zero: resonator wet is silent"; break;
+            case livecut::engine::Resonator::State::invalidParameters: tuning = "Invalid tuning: resonator wet is silent"; break;
+            case livecut::engine::Resonator::State::unsupportedRate: tuning = "Unsupported resonator sample rate"; break;
+        }
+        if (display.effectRouteTransition.load()) tuning += "\nEffect order crossfading";
+        else if (display.effectRoute.load() != display.requestedEffectRoute.load()) tuning += "\nEffect order pending next bar";
+        tuningStatus.setText (tuning, juce::dontSendNotification);
+        const auto state = owner.modeState();
+        const auto& parameters = owner.getParameterState();
+        const auto requestedSpectral = parameters.getRawParameterValue (ids::resonanceSpectralEnabled)->load() > .5f;
+        const auto requestedMode = parameters.getRawParameterValue (ids::mode)->load() > .5f
+            ? livecut::ProcessingMode::studio : livecut::ProcessingMode::live;
+        const auto fault = display.spectralFault.load() != livecut::spectral::Fault::none;
+        const auto modeName = [] (livecut::ProcessingMode mode) { return mode == livecut::ProcessingMode::studio ? "Studio" : "Live"; };
+        juce::String summary = juce::String ("Requested: ") + modeName (requestedMode) + (requestedSpectral ? " / Spectral on" : " / Spectral off");
+        if (state == LivecutAudioProcessor::ModeState::unprepared)
+            summary += "\nActive: not prepared";
+        else if (state == LivecutAudioProcessor::ModeState::pendingHostChange)
+            summary += "\nActive: host configuration changing";
+        else if (state == LivecutAudioProcessor::ModeState::error)
+            summary += "\nActive: configuration error";
+        else
+            summary += juce::String ("\nActive: ") + modeName (owner.activeMode()) + (owner.activeSpectral() ? " / Spectral on" : " / Spectral off");
+        const auto configurationStatus = !fault && (state != LivecutAudioProcessor::ModeState::active || requestedMode != owner.activeMode())
+            ? owner.modeStatusText() : owner.spectralStatusText();
+        status.setText (summary + "\n" + configurationStatus, juce::dontSendNotification);
+        const auto canApply = state != LivecutAudioProcessor::ModeState::unprepared
+            && state != LivecutAudioProcessor::ModeState::pendingPlaying
+            && state != LivecutAudioProcessor::ModeState::pendingHostChange
+            && (requestedMode != owner.activeMode() || requestedSpectral != owner.activeSpectral()
+                || state != LivecutAudioProcessor::ModeState::active || fault);
+        apply.setEnabled (canApply);
+        apply.setAlpha (canApply ? 1.0f : .5f);
+    }
+    void resized() override
+    {
+        const auto width = (getWidth() - 2 * gap) / 3;
+        std::array<int, 3> tops { 38, 38, 38 };
+        for (auto& row : rows)
+        {
+            const auto col = static_cast<std::size_t> (row.column);
+            row.control->setBounds (row.column * (width + gap) + sectionPadding, tops[col], width - 2 * sectionPadding, row.height);
+            tops[col] += row.height + 3;
+        }
+        tuningStatus.setBounds (sectionPadding, 263, width - 2 * sectionPadding, 80);
+        apply.setBounds (2 * (width + gap) + sectionPadding, 185, width - 2 * sectionPadding, 28);
+        status.setBounds (2 * (width + gap) + sectionPadding, 221, width - 2 * sectionPadding, 129);
+        help.setBounds (sectionPadding, getHeight() - 26, getWidth() - 2 * sectionPadding, 22);
+    }
+    void paint (juce::Graphics& g) override
+    {
+        const auto width = (getWidth() - 2 * gap) / 3;
+        const std::array titles { "Tuned resonator", "Four voices", "Spectral Freeze / Smear" };
+        for (int col = 0; col < 3; ++col)
+        {
+            g.setColour (ui::palette::well);
+            g.fillRoundedRectangle (juce::Rectangle<int> (col * (width + gap), 0, width, getHeight() - 30).toFloat(), 4.0f);
+            g.setColour (ui::palette::ink);
+            g.setFont (ui::uiFont (14.0f, true));
+            g.drawText (titles[static_cast<std::size_t> (col)], juce::Rectangle<int> { col * (width + gap) + sectionPadding, 8, width - 2 * sectionPadding, 22 }, juce::Justification::centredLeft);
+        }
+    }
+private:
+    struct Row { std::unique_ptr<juce::Component> control; int column, height; };
+    LivecutAudioProcessor& owner;
+    std::vector<Row> rows;
+    juce::TextButton apply { "Apply while stopped" };
+    juce::Label status, help, tuningStatus;
+};
 // A fixed three-column reader/FX page; it does not own audio or a second AD clock.
 class FracturePage final : public juce::Component
 {
@@ -360,6 +512,7 @@ public:
           reverseChance (parameter (state, ids::reverseChance), "Reverse chance"),
           impactControls (state),
           fractureControls (state),
+          resonanceControls (processor),
           captures (captureService),
           hostProcessor (processor)
     {
@@ -367,7 +520,7 @@ public:
                  &procedureSwitch, &ruler, &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty,
                  &amp, &pan, &pitch, &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay,
                  &wet, &trim, &captureButton, &saveButton, &captureStatus, &swing, &accent, &hold, &holdStatus,
-                 &patternTab, &recutTab, &impactTab, &fractureTab })
+                 &patternTab, &recutTab, &impactTab, &fractureTab, &resonanceTab })
             addAndMakeVisible (component);
 
         for (auto* component : std::initializer_list<juce::Component*> {
@@ -377,6 +530,11 @@ public:
 
         addChildComponent (impactControls);
         addChildComponent (fractureControls);
+        addChildComponent (resonanceControls);
+        resonanceTab.setComponentID ("resonanceTab");
+        resonanceTab.setTitle ("Resonance and spectral controls");
+        resonanceTab.setTooltip ("Show tuned resonator, effect order and Spectral Freeze / Smear");
+        resonanceTab.onClick = [this] { showPage (Page::resonance); };
         fractureTab.setComponentID ("fractureTab");
         fractureTab.setTitle ("Fracture reader and frequency controls");
         fractureTab.setTooltip ("Show Classic / GrainCut / TapeCut families and Ring / Frequency Shift");
@@ -416,8 +574,8 @@ public:
             if (auto* slider = dynamic_cast<juce::Slider*> (child))
                 slider->setTooltip (reverseHelp);
         applyMode.setComponentID ("applyMode");
-        applyMode.setTitle ("Apply requested processing mode while stopped");
-        applyMode.setTooltip ("Stop playback in your host, then apply the requested Live or Studio mode");
+        applyMode.setTitle ("Apply requested Mode and Spectral configuration while stopped");
+        applyMode.setTooltip ("Stop playback, then apply the requested Live / Studio mode and Spectral engine together, or replace a faulted prepared stream.");
         applyMode.onClick = [this] { hostProcessor.applyRequestedMode(); refreshRecut(); };
         const auto statusLabel = [] (juce::Label& label, const char* id, const char* title)
         {
@@ -508,7 +666,7 @@ public:
         repaint();
     }
 
-    enum class Page { pattern, recut, impact, fracture };
+    enum class Page { pattern, recut, impact, fracture, resonance };
 
     void showPage (Page page)
     {
@@ -525,10 +683,12 @@ public:
             component->setVisible (page == Page::pattern || page == Page::recut);
         impactControls.setVisible (page == Page::impact);
         fractureControls.setVisible (page == Page::fracture);
+        resonanceControls.setVisible (page == Page::resonance);
         patternTab.setToggleState (page == Page::pattern, juce::dontSendNotification);
         recutTab.setToggleState (page == Page::recut, juce::dontSendNotification);
         impactTab.setToggleState (page == Page::impact, juce::dontSendNotification);
         fractureTab.setToggleState (page == Page::fracture, juce::dontSendNotification);
+        resonanceTab.setToggleState (page == Page::resonance, juce::dontSendNotification);
         showProcedure (activeProcedure);
     }
 
@@ -558,7 +718,9 @@ public:
         const auto canApply = modeState != LivecutAudioProcessor::ModeState::unprepared
                               && modeState != LivecutAudioProcessor::ModeState::pendingPlaying
                               && modeState != LivecutAudioProcessor::ModeState::pendingHostChange
-                              && (requested != active || modeState != LivecutAudioProcessor::ModeState::active);
+                              && (requested != active || modeState != LivecutAudioProcessor::ModeState::active
+                                  || (hostProcessor.getParameterState().getRawParameterValue (ids::resonanceSpectralEnabled)->load() > .5f) != hostProcessor.activeSpectral()
+                                  || hostProcessor.getDisplayState().spectralFault.load() != livecut::spectral::Fault::none);
         applyMode.setEnabled (canApply);
         applyMode.setAlpha (canApply ? 1.0f : 0.5f);
     }
@@ -624,11 +786,13 @@ public:
 
     void resized() override
     {
-        procedureSwitch.setBounds (baseWidth - margin - 456, 20, 456, 30);
+        procedureSwitch.setBounds (510, 20, 350, 30);
         patternTab.setBounds (122, 20, 67, 30);
         recutTab.setBounds (193, 20, 55, 30);
         impactTab.setBounds (252, 20, 62, 30);
         fractureTab.setBounds (318, 20, 82, 30);
+        resonanceTab.setBounds (404, 20, 100, 30);
+        resonanceControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         fractureControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         impactControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         ruler.setBounds (margin, 62, baseWidth - 2 * margin, 88);
@@ -707,7 +871,7 @@ public:
         holdStatus.setBounds (margin, 678, baseWidth - 2 * margin, 22);
     }
 
-    void refreshFracture() { fractureControls.refresh (hostProcessor.getDisplayState()); }
+    void refreshFracture() { fractureControls.refresh (hostProcessor.getDisplayState()); resonanceControls.refresh(); }
 
     void refreshCapture()
     {
@@ -773,11 +937,12 @@ private:
     ui::ChoiceRow processingMode;
     ui::PowerSwitch attackAlign;
     ui::SliderRow attackThreshold, reverseChance;
-    juce::TextButton patternTab { "Pattern" }, recutTab { "Recut" }, impactTab { "Impact" }, fractureTab { "Fracture" }, applyMode { "Apply while stopped" };
+    juce::TextButton patternTab { "Pattern" }, recutTab { "Recut" }, impactTab { "Impact" }, fractureTab { "Fracture" }, resonanceTab { "Resonance" }, applyMode { "Apply while stopped" };
     juce::Label modeSummary, modeStatus, modeHelp, transformStatus;
     juce::Label holdStatus;
     ImpactPage impactControls;
     FracturePage fractureControls;
+    ResonancePage resonanceControls;
     livecut::CaptureService& captures;
     LivecutAudioProcessor& hostProcessor;
     juce::TextButton captureButton { "Capture last phrase" }, saveButton { "Save WAV..." };

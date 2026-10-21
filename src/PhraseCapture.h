@@ -17,6 +17,7 @@ namespace livecut
 struct CapturedPhrase
 {
     double sampleRate = 0.0;
+    bool spectralWarmup = false;
     std::array<std::vector<float>, 2> channels;
     std::size_t size() const { return channels[0].size(); }
 };
@@ -43,6 +44,7 @@ public:
         explicit operator bool() const { return owner != nullptr; }
         std::span<const float> channel (std::size_t index) const;
         double sampleRate() const;
+        bool spectralWarmup() const;
 
     private:
         friend class PhraseCapture;
@@ -74,7 +76,7 @@ public:
     // Existing leases retain old storage across prepare and destruction.
     void prepare (double sampleRate, std::size_t capacityFrames = 0);
     void startPhrase (bool completeStart);
-    void push (float left, float right);
+    void push (float left, float right, bool spectralWarmup = false);
     void completePhrase();
     void interrupt();
 

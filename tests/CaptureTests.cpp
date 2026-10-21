@@ -242,3 +242,48 @@ TEST_CASE ("Saving preserves the exact selected filename", "[capture][wav]")
     CHECK (sibling.loadFileAsString() == "previous WAV must stay untouched");
     REQUIRE (sibling.deleteFile());
 }
+
+TEST_CASE ("Capture warmup annotation belongs to the immutable phrase", "[capture][resonance]")
+{
+    PhraseCapture capture;
+    capture.prepare (48000.0, 16);
+    capture.startPhrase (true);
+    capture.push (.4f, -.4f, true);
+    capture.push (.2f, -.2f);
+    capture.completePhrase();
+    auto warm = capture.acquireLatest();
+    REQUIRE (warm);
+    CHECK (warm.spectralWarmup());
+    capture.startPhrase (true);
+    capture.push (.7f, -.7f);
+    capture.completePhrase();
+    CHECK (warm.spectralWarmup());
+    CHECK (warm.channel (0)[0] == .4f);
+    CHECK (capture.status() == PhraseCapture::Status::busy);
+    warm = {};
+    capture.startPhrase (true);
+    capture.push (.7f, -.7f);
+    capture.completePhrase();
+    auto clean = capture.acquireLatest();
+    REQUIRE (clean);
+    CHECK_FALSE (clean.spectralWarmup());
+    capture.prepare (44100.0, 8);
+    CHECK_FALSE (clean.spectralWarmup());
+    CHECK (clean.channel (0)[0] == .7f);
+}
+
+TEST_CASE ("Capture service preserves and describes spectral warmup", "[capture][resonance]")
+{
+    livecut::CaptureService service;
+    service.rolling().prepare (48000.0, 16);
+    service.rolling().startPhrase (true);
+    service.rolling().push (.5f, -.5f, true);
+    service.rolling().completePhrase();
+    REQUIRE (service.requestCapture());
+    REQUIRE (awaitWorker (service));
+    const auto snapshot = service.captured();
+    REQUIRE (snapshot != nullptr);
+    CHECK (snapshot->spectralWarmup);
+    CHECK (snapshot->channels[0][0] == .5f);
+    CHECK (service.statusText().contains ("Captured while spectral path was warming"));
+}

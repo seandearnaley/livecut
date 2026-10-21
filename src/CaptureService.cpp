@@ -32,6 +32,7 @@ bool CaptureService::requestCapture()
         {
             auto phrase = std::make_shared<CapturedPhrase>();
             phrase->sampleRate = lease->sampleRate();
+            phrase->spectralWarmup = lease->spectralWarmup();
             for (std::size_t channel = 0; channel < 2; ++channel)
             {
                 const auto samples = lease->channel (channel);
@@ -139,6 +140,8 @@ juce::String CaptureService::statusText() const
         }
         case Operation::idle: break;
     }
+    if (const auto snapshot = captured(); snapshot != nullptr && snapshot->spectralWarmup)
+        operationText += "Captured while spectral path was warming; ";
     const auto previous = recorder.hasLatest() ? " (last full phrase available)" : "";
     switch (recorder.status())
     {
