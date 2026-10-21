@@ -6,6 +6,8 @@
 #include "engine/ImpactEffects.h"
 #include "engine/Fracture.h"
 #include "engine/FrequencyEffects.h"
+#include "engine/Resonator.h"
+#include "engine/RouteRack.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -107,6 +109,24 @@ inline constexpr auto fractureFrequencyHz = "fractureFrequencyHz";
 inline constexpr auto fractureFrequencyEnvHz = "fractureFrequencyEnvHz";
 inline constexpr auto fractureFrequencyRepeatHz = "fractureFrequencyRepeatHz";
 inline constexpr auto fractureFrequencyMix = "fractureFrequencyMix";
+inline constexpr auto resonanceEnabled = "resonanceEnabled";
+inline constexpr auto resonanceRootHz = "resonanceRootHz";
+inline constexpr auto resonanceDecayMs = "resonanceDecayMs";
+inline constexpr auto resonanceExcitationDb = "resonanceExcitationDb";
+inline constexpr auto resonanceInterval1 = "resonanceInterval1";
+inline constexpr auto resonanceInterval2 = "resonanceInterval2";
+inline constexpr auto resonanceInterval3 = "resonanceInterval3";
+inline constexpr auto resonanceInterval4 = "resonanceInterval4";
+inline constexpr auto resonanceWeight1 = "resonanceWeight1";
+inline constexpr auto resonanceWeight2 = "resonanceWeight2";
+inline constexpr auto resonanceWeight3 = "resonanceWeight3";
+inline constexpr auto resonanceWeight4 = "resonanceWeight4";
+inline constexpr auto resonanceMix = "resonanceMix";
+inline constexpr auto resonanceOrder = "resonanceOrder";
+inline constexpr auto resonanceSpectralEnabled = "resonanceSpectralEnabled";
+inline constexpr auto resonanceFreeze = "resonanceFreeze";
+inline constexpr auto resonanceSmearMs = "resonanceSmearMs";
+inline constexpr auto resonanceSpectralMix = "resonanceSpectralMix";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
@@ -136,6 +156,10 @@ struct Settings
     engine::ImpactParameters impact;
     engine::FractureParameters fracture;
     engine::FrequencyParameters frequency;
+    engine::ResonatorParameters resonance;
+    engine::EffectRoute resonanceOrder = engine::EffectRoute::impactResonatorFrequency;
+    bool requestedSpectral = false, spectralFreeze = false;
+    float spectralSmearMs = 0.0f, spectralMix = 1.0f;
 };
 
 // Reads every parameter's current value. It caches each parameter's atomic
@@ -247,6 +271,24 @@ private:
     Source fractureFrequencyEnvHz;
     Source fractureFrequencyRepeatHz;
     Source fractureFrequencyMix;
+    Source resonanceEnabled;
+    Source resonanceRootHz;
+    Source resonanceDecayMs;
+    Source resonanceExcitationDb;
+    Source resonanceInterval1;
+    Source resonanceInterval2;
+    Source resonanceInterval3;
+    Source resonanceInterval4;
+    Source resonanceWeight1;
+    Source resonanceWeight2;
+    Source resonanceWeight3;
+    Source resonanceWeight4;
+    Source resonanceMix;
+    Source resonanceOrder;
+    Source resonanceSpectralEnabled;
+    Source resonanceFreeze;
+    Source resonanceSmearMs;
+    Source resonanceSpectralMix;
 
 
 };

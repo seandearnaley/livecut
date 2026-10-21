@@ -24,7 +24,8 @@ constexpr std::array allIds {
     ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance, ids::wet, ids::outputTrim, ids::swing, ids::accent, ids::hold,
     ids::mode, ids::attackAlign, ids::attackThreshold, ids::reverseChance,
     ids::impactFilterEnabled, ids::impactFilterType, ids::impactFilterChance, ids::impactFilterCutoff, ids::impactFilterQ, ids::impactFilterEnvOctaves, ids::impactFilterRepeatOctaves, ids::impactFilterMix, ids::impactDriveEnabled, ids::impactDriveMode, ids::impactDriveChance, ids::impactDriveDb, ids::impactDriveEnvDb, ids::impactDriveRepeatDb, ids::impactDriveMix, ids::impactTransientEnabled, ids::impactTransientChance, ids::impactTransientAttackDb, ids::impactTransientSustainDb, ids::impactTransientTimeMs, ids::impactTransientMix, ids::impactAttackMs, ids::impactDecayMs,
-    ids::fractureProcedure, ids::fractureActivity, ids::fractureGrainSizeMs, ids::fractureGrainDensity, ids::fractureGrainPositionSpreadMs, ids::fractureGrainPitchSpreadCents, ids::fractureGrainPanSpread, ids::fractureTapeStartSpeed, ids::fractureTapeEndSpeed, ids::fractureTapeCurve, ids::fractureTapeCycle, ids::fractureTapeAlternate, ids::fractureFrequencyEnabled, ids::fractureFrequencyMode, ids::fractureFrequencyChance, ids::fractureFrequencyHz, ids::fractureFrequencyEnvHz, ids::fractureFrequencyRepeatHz, ids::fractureFrequencyMix
+    ids::fractureProcedure, ids::fractureActivity, ids::fractureGrainSizeMs, ids::fractureGrainDensity, ids::fractureGrainPositionSpreadMs, ids::fractureGrainPitchSpreadCents, ids::fractureGrainPanSpread, ids::fractureTapeStartSpeed, ids::fractureTapeEndSpeed, ids::fractureTapeCurve, ids::fractureTapeCycle, ids::fractureTapeAlternate, ids::fractureFrequencyEnabled, ids::fractureFrequencyMode, ids::fractureFrequencyChance, ids::fractureFrequencyHz, ids::fractureFrequencyEnvHz, ids::fractureFrequencyRepeatHz, ids::fractureFrequencyMix,
+    ids::resonanceEnabled, ids::resonanceRootHz, ids::resonanceDecayMs, ids::resonanceExcitationDb, ids::resonanceInterval1, ids::resonanceInterval2, ids::resonanceInterval3, ids::resonanceInterval4, ids::resonanceWeight1, ids::resonanceWeight2, ids::resonanceWeight3, ids::resonanceWeight4, ids::resonanceMix, ids::resonanceOrder, ids::resonanceSpectralEnabled, ids::resonanceFreeze, ids::resonanceSmearMs, ids::resonanceSpectralMix
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -271,7 +272,7 @@ TEST_CASE ("Parameters added for Bounce carry version hint 2", "[parameters]")
         const auto isMixer = name == ids::wet || name == ids::outputTrim;
         const auto isPerform = name == ids::swing || name == ids::accent || name == ids::hold;
         const auto isRecut = name == ids::mode || name == ids::attackAlign || name == ids::attackThreshold || name == ids::reverseChance;
-        CHECK (parameter (state, id).getVersionHint() == (name.startsWith ("fracture") ? 7 : name.startsWith ("impact") ? 6 : isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
+        CHECK (parameter (state, id).getVersionHint() == (name.startsWith ("resonance") ? 8 : name.startsWith ("fracture") ? 7 : name.startsWith ("impact") ? 6 : isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
     }
 }
 
@@ -570,4 +571,30 @@ TEST_CASE ("Fracture settings map all controls without changing Classic automati
     CHECK_THAT (safe.frequency.envelopeHz, WithinAbs (2000, .001));
     CHECK (parameter (state, ids::fractureFrequencyMix).getText (.75f, 32) == "75%");
     CHECK (parameter (state, ids::fractureTapeStartSpeed).getLabel() == "x");
+}
+
+TEST_CASE ("Resonance controls preserve prepared configuration and explicit invalid weights", "[parameters][resonance]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    CHECK_FALSE (parameter (state, ids::resonanceSpectralEnabled).isAutomatable());
+    CHECK (parameter (state, ids::resonanceFreeze).isAutomatable());
+    CHECK (parameter (state, ids::resonanceOrder).getNumSteps() == 3);
+    for (const auto* id : { ids::resonanceWeight1, ids::resonanceWeight2, ids::resonanceWeight3, ids::resonanceWeight4 })
+        setValue (state, id, 0);
+    setValue (state, ids::resonanceRootHz, 220);
+    setValue (state, ids::resonanceInterval2, -7);
+    setValue (state, ids::resonanceSpectralEnabled, 1);
+    setValue (state, ids::resonanceFreeze, 1);
+    setValue (state, ids::resonanceSmearMs, 750);
+    setValue (state, ids::resonanceSpectralMix, .4f);
+    const auto settings = SettingsReader (state).read();
+    CHECK_THAT (settings.resonance.rootHz, WithinAbs (220, .001));
+    CHECK (settings.resonance.intervals[1] == -7);
+    for (auto weight : settings.resonance.weights)
+        CHECK (weight == 0);
+    CHECK (settings.requestedSpectral);
+    CHECK (settings.spectralFreeze);
+    CHECK (settings.spectralSmearMs == 750);
+    CHECK_THAT (settings.spectralMix, WithinAbs (.4f, 1.e-6f));
 }

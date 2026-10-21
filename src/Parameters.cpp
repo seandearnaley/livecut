@@ -250,6 +250,27 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 number (ids::fractureFrequencyRepeatHz, "Frequency Repeat", FloatRange (-2000, 2000), 0, decimals (1, "Hz"), 7),
                 number (ids::fractureFrequencyMix, "Frequency Mix", FloatRange (0, 1), 1, percent(), 7));
 
+    // 0.8 appends controls; old host indices and defaults remain fixed.
+    layout.add (toggle (ids::resonanceEnabled, "Resonator", false, 8),
+                number (ids::resonanceRootHz, "Resonator Root", skewed (40, 800, 220), 110, decimals (1, "Hz"), 8),
+                number (ids::resonanceDecayMs, "Resonator Decay", skewed (40, 5000, 500), 500, decimals (0, "ms"), 8),
+                number (ids::resonanceExcitationDb, "Resonator Excitation", FloatRange (-12, 12), 0, decimals (1, "dB"), 8),
+                integer (ids::resonanceInterval1, "Resonator Interval 1", -12, 24, 0, "", 8, semitones()),
+                integer (ids::resonanceInterval2, "Resonator Interval 2", -12, 24, 7, "", 8, semitones()),
+                integer (ids::resonanceInterval3, "Resonator Interval 3", -12, 24, 12, "", 8, semitones()),
+                integer (ids::resonanceInterval4, "Resonator Interval 4", -12, 24, 19, "", 8, semitones()),
+                number (ids::resonanceWeight1, "Resonator Weight 1", FloatRange (0, 1), 1, percent(), 8),
+                number (ids::resonanceWeight2, "Resonator Weight 2", FloatRange (0, 1), 1, percent(), 8),
+                number (ids::resonanceWeight3, "Resonator Weight 3", FloatRange (0, 1), 1, percent(), 8),
+                number (ids::resonanceWeight4, "Resonator Weight 4", FloatRange (0, 1), 1, percent(), 8),
+                number (ids::resonanceMix, "Resonator Mix", FloatRange (0, 1), 1, percent(), 8),
+                choice (ids::resonanceOrder, "Effect Order", { "Impact > Resonator > Frequency", "Resonator > Impact > Frequency", "Impact > Frequency > Resonator" }, 0, 8),
+                std::make_unique<juce::AudioParameterBool> (juce::ParameterID { ids::resonanceSpectralEnabled, 8 }, "Spectral Engine", false,
+                    juce::AudioParameterBoolAttributes().withAutomatable (false)),
+                toggle (ids::resonanceFreeze, "Spectral Freeze", false, 8),
+                number (ids::resonanceSmearMs, "Spectral Smear", FloatRange (0, 2000), 0, decimals (0, "ms"), 8),
+                number (ids::resonanceSpectralMix, "Spectral Mix", FloatRange (0, 1), 1, percent(), 8));
+
     return layout;
 }
 
@@ -341,7 +362,25 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       fractureFrequencyHz (state, ids::fractureFrequencyHz),
       fractureFrequencyEnvHz (state, ids::fractureFrequencyEnvHz),
       fractureFrequencyRepeatHz (state, ids::fractureFrequencyRepeatHz),
-      fractureFrequencyMix (state, ids::fractureFrequencyMix)
+      fractureFrequencyMix (state, ids::fractureFrequencyMix),
+      resonanceEnabled (state, ids::resonanceEnabled),
+      resonanceRootHz (state, ids::resonanceRootHz),
+      resonanceDecayMs (state, ids::resonanceDecayMs),
+      resonanceExcitationDb (state, ids::resonanceExcitationDb),
+      resonanceInterval1 (state, ids::resonanceInterval1),
+      resonanceInterval2 (state, ids::resonanceInterval2),
+      resonanceInterval3 (state, ids::resonanceInterval3),
+      resonanceInterval4 (state, ids::resonanceInterval4),
+      resonanceWeight1 (state, ids::resonanceWeight1),
+      resonanceWeight2 (state, ids::resonanceWeight2),
+      resonanceWeight3 (state, ids::resonanceWeight3),
+      resonanceWeight4 (state, ids::resonanceWeight4),
+      resonanceMix (state, ids::resonanceMix),
+      resonanceOrder (state, ids::resonanceOrder),
+      resonanceSpectralEnabled (state, ids::resonanceSpectralEnabled),
+      resonanceFreeze (state, ids::resonanceFreeze),
+      resonanceSmearMs (state, ids::resonanceSmearMs),
+      resonanceSpectralMix (state, ids::resonanceSpectralMix)
 {
 }
 
@@ -445,6 +484,18 @@ Settings SettingsReader::read() const
     settings.frequency.envelopeHz = fractureFrequencyEnvHz.read();
     settings.frequency.repeatHz = fractureFrequencyRepeatHz.read();
     settings.frequency.mix = fractureFrequencyMix.read();
+    settings.resonance.enabled = resonanceEnabled.read() > .5f;
+    settings.resonance.rootHz = resonanceRootHz.read();
+    settings.resonance.decayMs = resonanceDecayMs.read();
+    settings.resonance.excitationDb = resonanceExcitationDb.read();
+    settings.resonance.intervals = { resonanceInterval1.readIndex(), resonanceInterval2.readIndex(), resonanceInterval3.readIndex(), resonanceInterval4.readIndex() };
+    settings.resonance.weights = { resonanceWeight1.read(), resonanceWeight2.read(), resonanceWeight3.read(), resonanceWeight4.read() };
+    settings.resonance.mix = resonanceMix.read();
+    settings.resonanceOrder = static_cast<engine::EffectRoute> (resonanceOrder.readIndex());
+    settings.requestedSpectral = resonanceSpectralEnabled.read() > .5f;
+    settings.spectralFreeze = resonanceFreeze.read() > .5f;
+    settings.spectralSmearMs = resonanceSmearMs.read();
+    settings.spectralMix = resonanceSpectralMix.read();
     return settings;
 }
 
@@ -463,6 +514,8 @@ void applySettings (engine::Cutter& cutter, const Settings& settings)
     cutter.setImpact (settings.impact);
     cutter.setFracture (settings.fracture);
     cutter.setFrequency (settings.frequency);
+    cutter.setResonator (settings.resonance);
+    cutter.setEffectRoute (settings.resonanceOrder);
 }
 
 } // namespace livecut

@@ -3,6 +3,7 @@
 #include "Parameters.h"
 #include "engine/DelayTimeline.h"
 #include "engine/OnsetDetector.h"
+#include "spectral/SpectralStage.h"
 #include <limits>
 #include <stdexcept>
 
@@ -22,34 +23,41 @@ struct RenderContext
 struct StreamResources : private engine::Cutter::SourceContext
 {
     using Timeline = engine::DelayTimeline<RenderContext>;
-    StreamResources (double rate, ProcessingMode selected) : sampleRate (rate), mode (selected)
+    StreamResources (double rate, ProcessingMode selected, bool spectralRequested = false, spectral::TestHooks* hooks = nullptr)
+        : sampleRate (rate), mode (selected), spectralEnabled (spectralRequested)
     {
-        if (! std::isfinite (rate) || rate < 8000.0 || rate > 384000.0)
+        if (!std::isfinite (rate) || rate < 8000.0 || rate > 384000.0)
             throw std::invalid_argument ("Unsupported processing rate");
-        latency = mode == ProcessingMode::studio ? static_cast<int> (std::lround (.5 * rate)) : 0;
-        cutter.prepare (rate, latency);
-        if (! detector.prepare (rate, 8192, 3.0) || ! timeline.prepare (latency))
+        baseLatency = mode == ProcessingMode::studio ? static_cast<int> (std::lround (.5 * rate)) : 0;
+        if (spectralEnabled)
+        {
+            spectral = std::make_unique<spectral::Stage> (spectral::Preparation{rate, true, hooks});
+            stopPublication = std::make_shared<const spectral::StopHandle> (spectral->stopHandle ());
+        }
+        latency = baseLatency + (spectral ? spectral->latency () : 0);
+        cutter.prepare (rate, baseLatency);
+        if (!detector.prepare (rate, 8192, 3.0) || !timeline.prepare (baseLatency))
             throw std::runtime_error ("Cannot prepare stream metadata");
         cutter.setTransformSource (detector, *this);
     }
 
-    bool appendContext (RenderContext context, int frames, std::uint64_t& epochCounter)
+    bool appendContext (RenderContext context, int frames, std::uint64_t &epochCounter)
     {
         if (frames == 0)
             return true;
-        auto discontinuous = ! haveInput || context.running != lastRunning;
+        auto discontinuous = !haveInput || context.running != lastRunning;
         if (haveInput && context.running && lastRunning)
             discontinuous |= std::abs (context.ppq - expectedPpq) > .001;
         if (discontinuous)
         {
-            if (epochCounter == std::numeric_limits<std::uint64_t>::max())
+            if (epochCounter == std::numeric_limits<std::uint64_t>::max ())
                 return false;
             inputEpoch = ++epochCounter;
             epochStart = inputFrame;
-            if (! detector.beginTransportEpoch (inputEpoch))
+            if (!detector.beginTransportEpoch (inputEpoch))
                 return false;
         }
-        if (! timeline.append (inputFrame, frames, inputEpoch, epochStart, context))
+        if (!timeline.append (inputFrame, frames, inputEpoch, epochStart, context))
             return false;
         haveInput = true;
         lastRunning = context.running;
@@ -61,7 +69,7 @@ struct StreamResources : private engine::Cutter::SourceContext
     std::optional<engine::Cutter::TransportBounds> sourceBoundsAt (std::int64_t frame) const override
     {
         if (const auto epoch = timeline.sourceEpoch (frame))
-            return engine::Cutter::TransportBounds { epoch->id, epoch->start, epoch->end };
+            return engine::Cutter::TransportBounds{epoch->id, epoch->start, epoch->end};
         return std::nullopt;
     }
 
@@ -71,7 +79,10 @@ struct StreamResources : private engine::Cutter::SourceContext
     std::optional<Timeline::Lookup> rendering;
     double sampleRate;
     ProcessingMode mode;
-    int latency = 0;
+    bool spectralEnabled = false;
+    std::unique_ptr<spectral::Stage> spectral;
+    std::shared_ptr<const spectral::StopHandle> stopPublication;
+    int latency = 0, baseLatency = 0;
     std::int64_t inputFrame = 0, nextRender = 0, epochStart = 0;
     double expectedPpq = 0.0;
     std::uint64_t inputEpoch = 0, renderEpoch = 0;

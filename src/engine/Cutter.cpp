@@ -13,6 +13,7 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace livecut::engine
 {
@@ -44,9 +45,9 @@ void Cutter::prepare (double newSampleRate, std::int64_t latencyFrames)
     livePlayer.prepare (static_cast<int> (std::ceil (maxBarSeconds * sampleRate)), retained);
     bitCrusher.prepare (sampleRate);
     combFilter.prepare (sampleRate);
-    impactEffects.prepare (sampleRate);
     fractureReader.prepare (sampleRate);
-    frequencyEffects.prepare (sampleRate);
+    if (! routeRack.prepare (sampleRate))
+        throw std::runtime_error ("Cannot prepare effect rack");
     setFadeMilliseconds (fadeMilliseconds);
     reset();
 }
@@ -90,6 +91,17 @@ void Cutter::setFracture (const FractureParameters& parameters)
 void Cutter::setFrequency (const FrequencyParameters& parameters)
 {
     frequencyParams = parameters;
+}
+
+void Cutter::setResonator (const ResonatorParameters& parameters)
+{
+    resonatorParams = parameters;
+}
+
+void Cutter::setEffectRoute (EffectRoute route)
+{
+    pendingEffectRoute = route;
+    routeRack.requestRoute (route);
 }
 
 void Cutter::setSeed (std::uint32_t newSeed)
@@ -140,9 +152,8 @@ void Cutter::resetRendering()
     hasActivePlan = false;
     processingError = Error::none;
     livePlayer.resetRendering();
-    impactEffects.reset();
     fractureReader.reset();
-    frequencyEffects.reset();
+    routeRack.reset();
     fractureCut.reset();
     frequencySelected = false;
     fractureBpm = 0;
@@ -288,6 +299,8 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
     {
         emittedBar = true;
         lastEmittedBar = bar;
+        routeRack.requestRoute (pendingEffectRoute);
+        routeRack.barStarted();
         if (observer != nullptr)
             observer->barStarted (sampleOffset, bar);
     }
@@ -368,9 +381,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             right = combedRight;
         }
 
-        impactEffects.process (left, right);
-        frequencyEffects.process (left,right,impactEffects.diagnostics().envelope,
-                                  impactEffects.diagnostics().repeatProgress,frequencySelected);
+        routeRack.process (left, right);
 
         if (livePlayer.currentCut() != effectsCut)
             startEffectsCut();
@@ -508,6 +519,7 @@ void Cutter::planBlock (const Timing& timing)
     plan.fracture = fractureParams;
     plan.fracture.procedure = fractureProcedure;
     plan.frequency = frequencyParams;
+    plan.resonator = resonatorParams;
     plan.transportEpoch = 0;
     plan.attacks = {};
     if (plan.transform.attackAlign || plan.transform.reverseChance > 0.0 || fractureProcedure != FractureProcedure::classic)
@@ -756,9 +768,8 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         const auto& fx = activePlan.effects;
         bitCrusher.setBlock (fx[0], fx[1], fx[2], fx[3]);
         combFilter.setBlock (activePlan.comb, fx[4], fx[5]);
-        impactEffects.setParameters (activePlan.impact);
         fractureReader.setParameters (activePlan.fracture);
-        frequencyEffects.setParameters (activePlan.frequency);
+        routeRack.setParameters ({ activePlan.impact, activePlan.frequency, activePlan.resonator });
         impactCut.reset();
         fractureCut.reset();
         fractureBpm = 0;
@@ -908,13 +919,11 @@ void Cutter::startImpactCut()
     // Classic effects may prepare the next cut on the previous sample. Impact
     // instead triggers here, after swing/tempo have selected the actual cut and
     // before its first rendered sample. Its identity never uses buffer offsets.
-    impactEffects.startCut ({ activePlan.impactSeed, activePlan.phraseBar,
-                              activePlan.start, cut.logicalStart, index,
-                              livePlayer.cuts().size() });
     const CutIdentity id { activePlan.impactSeed,activePlan.phraseBar,activePlan.start,
                            cut.logicalStart,index,livePlayer.cuts().size() };
     frequencySelected = activePlan.frequency.enabled && (activePlan.frequency.chance >= 1
                      || fractureDraw(id,0x4652455155454e43ULL) < activePlan.frequency.chance);
+    routeRack.startCut ({ id, frequencySelected });
 }
 
 } // namespace livecut::engine

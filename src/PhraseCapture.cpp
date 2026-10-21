@@ -16,6 +16,7 @@ struct PhraseCapture::Storage
         std::atomic<Ownership> ownership { Ownership::free };
         std::array<std::vector<float>, 2> channels;
         std::size_t length = 0;
+        bool spectralWarmup = false;
     };
     std::array<Slot, 2> slots;
     std::atomic<int> latest { -1 };
@@ -57,6 +58,11 @@ std::span<const float> PhraseCapture::Lease::channel (std::size_t index) const
     return { source.channels[index].data(), source.length };
 }
 double PhraseCapture::Lease::sampleRate() const { return owner != nullptr ? owner->sampleRate : 0.0; }
+
+bool PhraseCapture::Lease::spectralWarmup() const
+{
+    return owner != nullptr && owner->slots[static_cast<std::size_t> (slot)].spectralWarmup;
+}
 
 PhraseCapture::Prepared PhraseCapture::prepareStorage (double sampleRate, std::size_t capacityFrames)
 {
@@ -116,6 +122,7 @@ void PhraseCapture::startPhrase (bool completeStart)
         currentStatus.store (Status::recording, std::memory_order_relaxed);
     s.written = 0;
     s.overflow = false;
+    s.slots[static_cast<std::size_t> (s.writing)].spectralWarmup = false;
     s.recording = true;
 }
 
@@ -148,7 +155,7 @@ void PhraseCapture::completePhrase()
         currentStatus.store (Status::busy, std::memory_order_relaxed);
 }
 
-void PhraseCapture::push (float left, float right)
+void PhraseCapture::push (float left, float right, bool spectralWarmup)
 {
     if (active == nullptr || ! active->recording || active->overflow)
         return;
@@ -160,6 +167,7 @@ void PhraseCapture::push (float left, float right)
         return;
     }
     auto& slot = s.slots[static_cast<std::size_t> (s.writing)];
+    slot.spectralWarmup |= spectralWarmup;
     slot.channels[0][s.written] = left;
     slot.channels[1][s.written] = right;
     ++s.written;

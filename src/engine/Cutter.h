@@ -7,6 +7,7 @@
 #include "engine/ImpactEffects.h"
 #include "engine/Fracture.h"
 #include "engine/FrequencyEffects.h"
+#include "engine/RouteRack.h"
 #include "engine/LivePlayer.h"
 #include "engine/AttackCandidates.h"
 
@@ -67,6 +68,8 @@ public:
     void setImpact (const ImpactParameters& parameters);
     void setFracture (const FractureParameters& parameters);
     void setFrequency (const FrequencyParameters& parameters);
+    void setResonator (const ResonatorParameters& parameters);
+    void setEffectRoute (EffectRoute route);
 
     // Takes effect from the next phrase.
     void setSeed (std::uint32_t seed);
@@ -147,8 +150,10 @@ public:
     const LivePlayer& player() const { return livePlayer; }
     const BitCrusher& crusher() const { return bitCrusher; }
     const Comb& comb() const { return combFilter; }
-    const ImpactEffects& impact() const { return impactEffects; }
+    const ImpactEffects& impact() const { return routeRack.impact(); }
     const FractureDiagnostics& fractureDiagnostics() const { return fractureReader.diagnostics(); }
+    const Resonator& resonator() const { return routeRack.resonator(); }
+    const RouteRack::Diagnostics& routeDiagnostics() const { return routeRack.diagnostics(); }
 
 private:
     CutProcedure& procedureFor (Procedure p);
@@ -179,6 +184,7 @@ private:
         ImpactParameters impact;
         FractureParameters fracture;
         FrequencyParameters frequency;
+        ResonatorParameters resonator;
         TransformParameters transform;
         AttackCandidates attacks;
         std::uint64_t transportEpoch = 0;
@@ -216,15 +222,16 @@ private:
     LivePlayer livePlayer;
     BitCrusher bitCrusher;
     Comb combFilter;
-    ImpactEffects impactEffects;
     FractureReader fractureReader;
-    FrequencyEffects frequencyEffects;
+    RouteRack routeRack;
     CutParameters params;
     CrusherParameters crusherParams;
     CombParameters combParams;
     ImpactParameters impactParams;
     FractureParameters fractureParams;
     FrequencyParameters frequencyParams;
+    ResonatorParameters resonatorParams;
+    EffectRoute pendingEffectRoute = EffectRoute::impactResonatorFrequency;
     FractureProcedure fractureProcedure = FractureProcedure::classic;
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;
