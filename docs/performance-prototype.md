@@ -4,7 +4,7 @@
 
 Build one playable path for expressive break performance, with precision and audio fidelity as explicit acceptance gates. The user's references are Aphex Twin, Squarepusher and Noisia: exploratory rhythmic relationships, articulate break phrasing and sculpted physical impact. These are listening directions, not artist-imitation presets or a claim that an algorithm has taste.
 
-The 0.6–0.8 processors remain available. This prototype adds a separate Perform instrument rather than mapping an XY widget onto legacy block-frozen FX settings. A captured source, rhythmic event plan and continuous texture controls have distinct ownership.
+The 0.6–0.8 processors remain available. This prototype adds a separate Perform instrument rather than mapping an XY widget onto legacy block-frozen FX settings. A captured source, rhythmic event plan and continuous texture controls have distinct ownership. Legacy Swing, Accent and FX settings apply only in Live/Studio; Hold, wet/dry, output trim and output Capture remain active in Perform.
 
 ## First complete workflow
 

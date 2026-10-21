@@ -694,6 +694,9 @@ public:
         performanceControls.setVisible (page == Page::performance);
         performanceTab.setToggleState (page == Page::performance, juce::dontSendNotification);
         procedureSwitch.setVisible (page != Page::performance);
+        swing.setVisible (page != Page::performance);
+        accent.setVisible (page != Page::performance);
+        layoutGrooveFooter();
         for (auto* component : std::initializer_list<juce::Component*> {
                  &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty, &amp, &pan, &pitch })
             component->setVisible (page == Page::pattern);
@@ -891,11 +894,28 @@ public:
         captureStatus.setBounds (margin, 604, baseWidth - 2 * margin, 24);
         swing.setBounds (margin, 638, 240, sliderRowHeight);
         accent.setBounds (270, 638, 240, sliderRowHeight);
-        hold.setBounds (536, 644, 156, 28);
-        holdStatus.setBounds (margin, 678, baseWidth - 2 * margin, 22);
+        layoutGrooveFooter();
     }
 
-    void refreshPerformance() { performanceControls.refresh(); }
+    void layoutGrooveFooter()
+    {
+        const auto performance = selectedPage == Page::performance;
+        hold.setBounds (performance ? margin : 536, 644, 156, 28);
+        holdStatus.setBounds (performance ? 190 : margin, performance ? 644 : 678,
+                              performance ? baseWidth - margin - 190 : baseWidth - 2 * margin,
+                              performance ? 28 : 22);
+    }
+
+    void refreshPerformance()
+    {
+        performanceControls.refresh();
+        const auto grooveActive = hostProcessor.activeMode() != livecut::ProcessingMode::perform;
+        for (auto* control : { &swing, &accent })
+        {
+            control->setEnabled (grooveActive);
+            control->setAlpha (grooveActive ? 1.0f : .5f);
+        }
+    }
 
     void refreshFracture() { fractureControls.refresh (hostProcessor.getDisplayState()); resonanceControls.refresh(); }
 

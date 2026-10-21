@@ -273,3 +273,61 @@ TEST_CASE ("Perform preparation remains available for an incompatible Spectral r
     CHECK_FALSE (processor.activeSpectral());
     CHECK_FALSE (prepare->isEnabled());
 }
+
+TEST_CASE ("Perform hides unused groove controls and legacy mode restores them", "[editor][performance-ui][groove]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    struct Stopped final : juce::AudioPlayHead
+    {
+        juce::Optional<PositionInfo> getPosition() const override { return PositionInfo {}; }
+    } stopped;
+    LivecutAudioProcessor processor;
+    processor.setPlayHead (&stopped);
+    processor.prepareToPlay (8000, 32);
+    juce::AudioBuffer<float> buffer (2, 32);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+    LivecutAudioProcessorEditor editor (processor);
+    auto* swing = findPerformanceControl (editor, livecut::ids::swing);
+    auto* accent = findPerformanceControl (editor, livecut::ids::accent);
+    auto* pattern = dynamic_cast<juce::TextButton*> (findPerformanceControl (editor, "patternTab"));
+    auto* perform = dynamic_cast<juce::TextButton*> (findPerformanceControl (editor, "performanceTab"));
+    REQUIRE (swing != nullptr);
+    REQUIRE (accent != nullptr);
+    REQUIRE (pattern != nullptr);
+    REQUIRE (perform != nullptr);
+    CHECK_FALSE (swing->isVisible());
+    CHECK_FALSE (accent->isVisible());
+    pattern->onClick();
+    CHECK (swing->isVisible());
+    CHECK (accent->isVisible());
+    CHECK (swing->isEnabled());
+    CHECK (accent->isEnabled());
+    processor.preparePerformanceMode();
+    editor.refreshDisplay();
+    REQUIRE (processor.activeMode() == livecut::ProcessingMode::perform);
+    CHECK (swing->isVisible());
+    CHECK (accent->isVisible());
+    CHECK_FALSE (swing->isEnabled());
+    CHECK_FALSE (accent->isEnabled());
+    perform->onClick();
+    CHECK_FALSE (swing->isVisible());
+    CHECK_FALSE (accent->isVisible());
+    for (const auto* id : { "wet", "outputTrim", "hold", "capture", "saveCapture" })
+    {
+        INFO (id);
+        auto* control = findPerformanceControl (editor, id);
+        REQUIRE (control != nullptr);
+        CHECK (control->isVisible());
+    }
+    processor.processBlock (buffer, midi); // Observe stopped transport in the new prepared stream.
+    processor.leavePerformanceMode();
+    editor.refreshDisplay();
+    REQUIRE (processor.activeMode() == livecut::ProcessingMode::live);
+    pattern->onClick();
+    CHECK (swing->isVisible());
+    CHECK (accent->isVisible());
+    CHECK (swing->isEnabled());
+    CHECK (accent->isEnabled());
+}
