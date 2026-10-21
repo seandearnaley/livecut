@@ -50,7 +50,7 @@ source addressing once, so later features do not each invent a new player.
 
 ### Deliverables
 
-- Audio Hold using a complete captured phrase, with explicit quantised entry,
+- Audio Hold using a complete captured wet phrase, with explicit quantised entry,
   release, seam handling and unavailable-capture behavior.
 - Swing and bounded accent/humanise controls whose neutral values preserve
   current timing and random sequences.
@@ -62,9 +62,15 @@ source addressing once, so later features do not each invent a new player.
 
 - A source region refers to stable audio, never an ambiguous wrapped ring index.
 - Hold is audio looping, not a promise that freezing a seed freezes the sound.
+- Hold records post-effects/pre-mix wet audio and applies the global mixer once;
+  dry means current live input. WAV capture remains final post-mix output.
+- Hold follows tempo through explicitly labelled varispeed, so tempo changes
+  change pitch. No pitch-preserving stretch is implied.
 - Timing transforms preserve block/phrase endpoints and legal positive durations.
 - Added randomness is isolated from legacy random draws; disabled new controls
   leave old sessions unchanged.
+- Swing warps output time within complete eighth-note pairs, preserving bar
+  boundaries; an unmatched final eighth in an odd meter remains straight.
 - Tempo changes, host stops and seeks have defined Hold behavior. Any initial
   limitations must be documented and surfaced, rather than implicitly resampled
   or silently released.
@@ -103,10 +109,16 @@ read, rather than claiming perfect drum classification.
   delay; existing sessions default to Live mode.
 - Prefer a stable sample latency during playback. Tempo-dependent musical source
   spans must fit the prepared budget, with explicit handling when they do not.
+- Initial Studio design target: a fixed 500 ms prepared budget, showing its
+  current musical horizon. Mode changes must have an explicit, host-tested
+  reconfiguration path; merely changing a displayed parameter is insufficient.
 - Audio, transport and control changes share a timestamp model. Delayed playback
   uses the corresponding musical position and control events.
 - Reverse requires a complete source region. Detection time includes analysis
   delay; zero-latency mode cannot repair a first attack retrospectively.
+- Stop, seek and loop behavior must prevent audio from an earlier timeline epoch
+  leaking into the new one. The history capacity covers every active voice's
+  lifetime, not just its first read.
 - Detection identifies candidate attacks, not instrument identity. Detection
   confidence/availability must not silently select an unrelated source.
 - No time-stretch library, ML model or stem-separation dependency in this release.
@@ -141,6 +153,8 @@ available hosts; distinguish automated evidence from listening judgments.
 - Preserve each earlier version's draft while later versions are implemented.
 - Manual computer use follows the user's GPT-5.6 Sol preference. Never label an
   automated processor test or successful startup as a listening test.
+- Tail reporting is reviewed when Hold and Studio are added; indefinitely held
+  audio must not continue to advertise the legacy eight-second maximum tail.
 
 ## Status
 
