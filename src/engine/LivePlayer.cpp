@@ -244,14 +244,14 @@ void LivePlayer::advanceToUnits (double logicalUnits)
     }
 }
 
-void LivePlayer::retimeMusicalCut (int samplesToEnd, int samplesToGate)
+void LivePlayer::retimeMusicalCut (int samplesToEnd, int samplesToGate, std::int64_t renderedExclusiveEnd)
 {
     if (current >= playing.size())
         return;
     auto& cut = playing[current];
     cut.size = position + std::max (samplesToEnd, 1);
     const auto sounding = position + std::max (samplesToGate, 0);
-    const auto progress = sourceForNextFrame().firstFrame - source.firstFrame;
+    const auto progress = renderedExclusiveEnd - source.firstFrame;
     const auto recordedAtStart = static_cast<int> (std::clamp<std::int64_t> (progress - position - 1, 0, capacity));
     cut.playable = cut.pitched ? (cut.start == 0 && cut.rate < 1.0 ? sounding : playableSamples (sounding, cut.rate, recordedAtStart, capacity))
                                : std::min (sounding, capacity);

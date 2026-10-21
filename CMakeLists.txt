@@ -140,6 +140,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/legacy/LegacyPlayer.cpp
         tests/engine/LegacyEquivalenceTests.cpp
         tests/engine/PerformTests.cpp
+        tests/engine/StudioTests.cpp
         tests/engine/TransformSpanTests.cpp
         tests/engine/AllocationCounter.cpp
         tests/engine/AudioHistoryTests.cpp

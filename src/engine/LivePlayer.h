@@ -59,9 +59,13 @@ public:
     void resetSource();
     void resetRendering();
     std::optional<StereoFrame> readSourceFrame (double relativeFrame) const;
+    std::optional<StereoFrame> rawFrame (std::int64_t frame) const
+    {
+        return history.read ({ history.retainedRegion().epoch, frame, 1 }, 0);
+    }
     bool hasSourceError() const { return sourceError; }
     void advanceToUnits (double logicalUnits);
-    void retimeMusicalCut (int samplesToEnd, int samplesToGate);
+    void retimeMusicalCut (int samplesToEnd, int samplesToGate, std::int64_t renderedExclusiveEnd);
 
     // Records one input frame and replaces it with the output frame.
     void process (float& left, float& right);

@@ -92,6 +92,15 @@ public:
     // Cuts a stereo buffer in place. `position` is the host's position at its first sample.
     void process (float* left, float* right, int numSamples, const Timing& timing, const Position& position, Observer* observer = nullptr);
 
+    // One physical input clock, independent of the renderer's original contexts.
+    bool ingestInputFrame (std::int64_t frame, StereoFrame raw);
+    std::int64_t nextInputFrame() const { return livePlayer.sourceForNextFrame().firstFrame; }
+    std::optional<StereoFrame> rawInputFrame (std::int64_t frame) const { return livePlayer.rawFrame (frame); }
+    // A context is an ORIGINAL host segment, possibly split over output buffers.
+    void beginRenderContext (const Timing&, const Position&, std::int64_t firstFrame, int sampleOffset, Observer*);
+    void renderOne (std::int64_t frame, float& left, float& right, int sampleOffset, Observer*);
+    void endRenderContext (int sampleOffset, Observer*);
+
     bool isCutting() const { return cutting && hasActivePlan; }
     bool isTimingSupported() const { return timingSupported; }
     Procedure activeProcedure() const { return procedure; }
@@ -104,7 +113,7 @@ public:
     std::span<const Cut> currentCuts() const { return { activePlan.cuts.data(), hasActivePlan ? activePlan.count : 0 }; }
     SourceRegion activeSourceRegion() const { return activePlan.source; }
     std::size_t maximumQueuedPlans() const { return maximumQueued; }
-    enum class Error { none, planOverflow, sourceUnavailable };
+    enum class Error { none, planOverflow, sourceUnavailable, renderDiscontinuity };
     Error error() const { return processingError; }
     double swingPercent() const { return swing; }
     const LivePlayer& player() const { return livePlayer; }
@@ -117,7 +126,7 @@ private:
     void startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timing);
     void planBlock (const Timing& timing);
     void activatePlans (std::int64_t bar, double beats, double halfSample, const Timing& timing);
-    void renderSwung (float& left, float& right, std::int64_t bar, double beats, double beatsPerSample, const Timing& timing);
+    void renderSwung (float& left, float& right, std::int64_t bar, double beats, double beatsPerSample, const Timing& timing, std::int64_t renderedExclusiveEnd);
     double physicalDistance (double phraseUnits, std::int64_t bar, double beats, const Timing& timing) const;
     void startEffectsCut();
     void applyStructuralChanges();
@@ -178,6 +187,11 @@ private:
     std::int64_t expectedBar = 0;
     double expectedBeatsIntoBar = 0.0;
     double previousBeatsPerBar = 4.0;
+
+    Timing renderTiming;
+    std::int64_t renderBar = 0, renderCursor = 0;
+    double renderBeats = 0.0, renderBeatsPerSample = 0.0;
+    bool renderContextActive = false;
 
     std::int64_t phraseBar = 0;
     int phraseBars = 0;
