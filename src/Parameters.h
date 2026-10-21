@@ -58,11 +58,17 @@ inline constexpr auto outputTrim = "outputTrim";
 inline constexpr auto swing = "swing";
 inline constexpr auto accent = "accent";
 inline constexpr auto hold = "hold";
+inline constexpr auto mode = "mode";
+inline constexpr auto attackAlign = "attackAlign";
+inline constexpr auto attackThreshold = "attackThreshold";
+inline constexpr auto reverseChance = "reverseChance";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
 
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+enum class ProcessingMode { live, studio };
 
 // Everything the cutter needs from the parameters, read in one go.
 struct Settings
@@ -76,6 +82,9 @@ struct Settings
     double swingPercent = 50.0;
     float accent = 0.0f;
     bool hold = false;
+    ProcessingMode requestedMode = ProcessingMode::live;
+    bool attackAlign = false;
+    float attackThresholdDb = 6.0f, reverseChance = 0.0f;
     engine::CutParameters cut;
     engine::CrusherParameters crusher;
     engine::CombParameters comb;
@@ -147,7 +156,7 @@ private:
     Source outputTrim;
     Source swing;
     Source accent;
-    Source hold;
+    Source hold, mode, attackAlign, attackThreshold, reverseChance;
 };
 
 void applySettings (engine::Cutter& cutter, const Settings& settings);

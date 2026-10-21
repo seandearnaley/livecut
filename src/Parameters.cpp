@@ -197,7 +197,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 number (ids::outputTrim, "Output Trim", FloatRange (-24.0f, 24.0f), 0.0f, decimals (1, "dB"), 3),
                 number (ids::swing, "Swing", FloatRange (50.0f, 75.0f), 50.0f, decimals (1, "%"), 4),
                 number (ids::accent, "Accent", FloatRange (0.0f, 1.0f), 0.0f, percent(), 4),
-                toggle (ids::hold, "Audio Hold", false, 4));
+                toggle (ids::hold, "Audio Hold", false, 4),
+                std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids::mode, 5 }, "Processing Mode",
+                    juce::StringArray { "Live", "Studio" }, 0, juce::AudioParameterChoiceAttributes().withAutomatable (false)),
+                toggle (ids::attackAlign, "Attack Align", false, 5),
+                number (ids::attackThreshold, "Attack Threshold", FloatRange (3.0f, 24.0f), 6.0f, decimals (1, "dB"), 5),
+                number (ids::reverseChance, "Reverse Chance", FloatRange (0.0f, 1.0f), 0.0f, percent(), 5));
 
     return layout;
 }
@@ -244,7 +249,11 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       outputTrim (state, ids::outputTrim),
       swing (state, ids::swing),
       accent (state, ids::accent),
-      hold (state, ids::hold)
+      hold (state, ids::hold),
+      mode (state, ids::mode),
+      attackAlign (state, ids::attackAlign),
+      attackThreshold (state, ids::attackThreshold),
+      reverseChance (state, ids::reverseChance)
 {
 }
 
@@ -260,6 +269,10 @@ Settings SettingsReader::read() const
     settings.swingPercent = swing.read();
     settings.accent = accent.read();
     settings.hold = hold.read() > 0.5f;
+    settings.requestedMode = mode.readIndex() == 0 ? ProcessingMode::live : ProcessingMode::studio;
+    settings.attackAlign = attackAlign.read() > 0.5f;
+    settings.attackThresholdDb = attackThreshold.read();
+    settings.reverseChance = reverseChance.read();
 
     auto& cut = settings.cut;
     cut.minPhraseBars = minPhraseBars.readIndex();
@@ -310,6 +323,7 @@ void applySettings (engine::Cutter& cutter, const Settings& settings)
     cutter.setSeed (settings.seed);
     cutter.setSwing (settings.swingPercent);
     cutter.setAccent (settings.accent);
+    cutter.setTransforms ({ settings.attackAlign, settings.attackThresholdDb, settings.reverseChance });
     cutter.setFadeMilliseconds (settings.fadeMilliseconds);
     cutter.setParameters (settings.cut);
     cutter.setCrusher (settings.crusher);

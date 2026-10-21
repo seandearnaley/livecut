@@ -52,6 +52,24 @@ public:
         int slot = -1;
     };
 
+    // Build storage off the callback guard, install only during exclusion.
+    // Returned retired storage is destroyed by the caller after releasing it.
+    class Prepared
+    {
+    public:
+        Prepared() = default;
+        Prepared (Prepared&&) noexcept = default;
+        Prepared& operator= (Prepared&&) noexcept = default;
+        Prepared (const Prepared&) = delete;
+        Prepared& operator= (const Prepared&) = delete;
+
+    private:
+        friend class PhraseCapture;
+        std::shared_ptr<Storage> storage;
+    };
+    static Prepared prepareStorage (double sampleRate, std::size_t capacityFrames = 0);
+    Prepared installPrepared (Prepared prepared);
+
     // Host lifecycle only; never concurrent with process/push/startPhrase.
     // Existing leases retain old storage across prepare and destruction.
     void prepare (double sampleRate, std::size_t capacityFrames = 0);

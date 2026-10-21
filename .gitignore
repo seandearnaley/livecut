@@ -2,6 +2,8 @@
 build/
 build-capture/
 build-perform/
+build-recut/
+build-recut-release/
 cmake-build-*/
 
 # IDE and OS clutter

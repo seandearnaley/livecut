@@ -55,6 +55,9 @@ juce::String PhraseRuler::describe (const Snapshot& snapshot)
                  + " seconds pass through uncut. Raise the tempo to cut them.";
         case Status::planOverflow: return "Cut plan queue exhausted; restart transport";
         case Status::sourceUnavailable: return "Source audio unavailable; restart transport";
+        case Status::filling: return "Studio filling its 500 ms audio buffer";
+        case Status::preparationError: return "Cannot prepare audio: use a sample rate from 8 to 384 kHz and prepare again";
+        case Status::streamError: return "Audio stream error: prepare the plug-in again";
         case Status::startingSoon:
             return "Starting on the next unit";
         case Status::cutting:

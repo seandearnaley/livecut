@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include "engine/WetHold.h"
+#include "engine/Cutter.h"
 
 namespace livecut
 {
@@ -20,7 +21,10 @@ struct DisplayState
         startingSoon,   // playing, waiting for the next unit to start cutting
         cutting,
         planOverflow,
-        sourceUnavailable
+        sourceUnavailable,
+        filling,
+        preparationError,
+        streamError
     };
 
     std::atomic<Status> status { Status::waitingForHost };
@@ -30,6 +34,9 @@ struct DisplayState
     std::atomic<double> blockStart { 0.0 }; // units into the phrase
     std::atomic<double> blockEnd { 0.0 };
     std::atomic<double> position { 0.0 };
+    using TransformReason = engine::Cutter::TransformReason;
+    std::atomic<TransformReason> transformReason { TransformReason::off };
+    std::atomic<std::uint64_t> transformEligible { 0 }, attackApplied { 0 }, reverseApplied { 0 }, transformIneligible { 0 };
 
     static_assert (std::atomic<Status>::is_always_lock_free);
     static_assert (std::atomic<double>::is_always_lock_free);

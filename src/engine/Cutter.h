@@ -5,6 +5,7 @@
 #include "engine/CutProcedures.h"
 #include "engine/Effects.h"
 #include "engine/LivePlayer.h"
+#include "engine/AttackCandidates.h"
 
 #include <cstdint>
 #include <array>
@@ -48,7 +49,7 @@ public:
     Cutter();
 
     // Allocates everything the cutter needs. Call before processing, never on the audio thread.
-    void prepare (double sampleRate);
+    void prepare (double sampleRate, std::int64_t latencyFrames = 0);
 
     // Structural changes land on the next bar line.
     void setProcedure (Procedure procedure);
@@ -65,6 +66,27 @@ public:
     void setSeed (std::uint32_t seed);
     void setSwing (double percent);
     void setAccent (float amount);
+
+    struct TransformParameters { bool attackAlign = false; double thresholdDb = 6.0, reverseChance = 0.0; };
+    struct TransportBounds { std::uint64_t epoch; std::int64_t first; std::optional<std::int64_t> end; };
+    struct SourceContext
+    {
+        virtual ~SourceContext() = default;
+        // Queried at planning/activation, never cached across future input epochs.
+        virtual std::optional<TransportBounds> sourceBoundsAt (std::int64_t renderFrame) const = 0;
+    };
+    void setTransforms (TransformParameters);
+    void setTransformSource (const OnsetDetector& detector, const SourceContext& source)
+    { onsetDetector = &detector; sourceContext = &source; }
+    enum class TransformReason { off, awaitingCut, searchPending, noAttack, sourceIncomplete, tooLong,
+                                 sourceLost, applied, eligibleForward, silentCut, analysisError };
+    struct TransformStats
+    {
+        std::uint64_t eligible = 0, attackAligned = 0, reversed = 0, ineligible = 0;
+        std::int64_t lastSourceStart = -1;
+        TransformReason reason = TransformReason::off;
+    };
+    const TransformStats& transformStats() const { return transforms; }
 
     void setFadeMilliseconds (double milliseconds);
 
@@ -92,6 +114,15 @@ public:
     // Cuts a stereo buffer in place. `position` is the host's position at its first sample.
     void process (float* left, float* right, int numSamples, const Timing& timing, const Position& position, Observer* observer = nullptr);
 
+    // One physical input clock, independent of the renderer's original contexts.
+    bool ingestInputFrame (std::int64_t frame, StereoFrame raw);
+    std::int64_t nextInputFrame() const { return livePlayer.sourceForNextFrame().firstFrame; }
+    std::optional<StereoFrame> rawInputFrame (std::int64_t frame) const { return livePlayer.rawFrame (frame); }
+    // A context is an ORIGINAL host segment, possibly split over output buffers.
+    void beginRenderContext (const Timing&, const Position&, std::int64_t firstFrame, int sampleOffset, Observer*);
+    void renderOne (std::int64_t frame, float& left, float& right, int sampleOffset, Observer*);
+    void endRenderContext (int sampleOffset, Observer*);
+
     bool isCutting() const { return cutting && hasActivePlan; }
     bool isTimingSupported() const { return timingSupported; }
     Procedure activeProcedure() const { return procedure; }
@@ -104,7 +135,7 @@ public:
     std::span<const Cut> currentCuts() const { return { activePlan.cuts.data(), hasActivePlan ? activePlan.count : 0 }; }
     SourceRegion activeSourceRegion() const { return activePlan.source; }
     std::size_t maximumQueuedPlans() const { return maximumQueued; }
-    enum class Error { none, planOverflow, sourceUnavailable };
+    enum class Error { none, planOverflow, sourceUnavailable, renderDiscontinuity };
     Error error() const { return processingError; }
     double swingPercent() const { return swing; }
     const LivePlayer& player() const { return livePlayer; }
@@ -117,9 +148,10 @@ private:
     void startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timing);
     void planBlock (const Timing& timing);
     void activatePlans (std::int64_t bar, double beats, double halfSample, const Timing& timing);
-    void renderSwung (float& left, float& right, std::int64_t bar, double beats, double beatsPerSample, const Timing& timing);
+    void renderSwung (float& left, float& right, std::int64_t bar, double beats, double beatsPerSample, const Timing& timing, std::int64_t renderedExclusiveEnd);
     double physicalDistance (double phraseUnits, std::int64_t bar, double beats, const Timing& timing) const;
     void startEffectsCut();
+    void selectTransform (std::int64_t renderFrame);
     void applyStructuralChanges();
 
     struct BlockPlan
@@ -132,6 +164,10 @@ private:
         int unitsPerBar = 8;
         std::array<double, 6> effects {};
         CombParameters comb;
+        TransformParameters transform;
+        AttackCandidates attacks;
+        std::uint64_t transportEpoch = 0;
+        std::uint32_t transformSeed = 1;
     };
     // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
     // 1/32-bar block starts plus a boundary/recovery plan await activation.
@@ -142,6 +178,10 @@ private:
     std::size_t queueHead = 0, queued = 0, maximumQueued = 0;
     bool hasActivePlan = false;
     SourceRegion planningSource {};
+    TransformParameters transformParameters;
+    TransformStats transforms;
+    const OnsetDetector* onsetDetector = nullptr;
+    const SourceContext* sourceContext = nullptr;
     Error processingError = Error::none;
     double swing = 50.0, pendingSwing = 50.0;
     float accent = 0.0f;
@@ -178,6 +218,11 @@ private:
     std::int64_t expectedBar = 0;
     double expectedBeatsIntoBar = 0.0;
     double previousBeatsPerBar = 4.0;
+
+    Timing renderTiming;
+    std::int64_t renderBar = 0, renderCursor = 0;
+    double renderBeats = 0.0, renderBeatsPerSample = 0.0;
+    bool renderContextActive = false;
 
     std::int64_t phraseBar = 0;
     int phraseBars = 0;

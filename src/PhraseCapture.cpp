@@ -58,7 +58,7 @@ std::span<const float> PhraseCapture::Lease::channel (std::size_t index) const
 }
 double PhraseCapture::Lease::sampleRate() const { return owner != nullptr ? owner->sampleRate : 0.0; }
 
-void PhraseCapture::prepare (double sampleRate, std::size_t capacityFrames)
+PhraseCapture::Prepared PhraseCapture::prepareStorage (double sampleRate, std::size_t capacityFrames)
 {
     assert (std::isfinite (sampleRate) && sampleRate > 0.0);
     auto prepared = std::make_shared<Storage>();
@@ -69,12 +69,26 @@ void PhraseCapture::prepare (double sampleRate, std::size_t capacityFrames)
         for (auto& channel : slot.channels)
             channel.resize (prepared->capacity);
     prepared->slots[0].ownership.store (Storage::Ownership::writing, std::memory_order_relaxed);
+    Prepared result;
+    result.storage = std::move (prepared);
+    return result;
+}
+
+PhraseCapture::Prepared PhraseCapture::installPrepared (Prepared prepared)
+{
+    assert (prepared.storage != nullptr);
     const std::lock_guard lock (preparationMutex);
-    storage = std::move (prepared);
+    storage.swap (prepared.storage);
     active = storage.get();
     available.store (false, std::memory_order_release);
-    seconds.store (static_cast<double> (active->capacity) / sampleRate, std::memory_order_relaxed);
+    seconds.store (static_cast<double> (active->capacity) / active->sampleRate, std::memory_order_relaxed);
     currentStatus.store (Status::empty, std::memory_order_relaxed);
+    return prepared;
+}
+
+void PhraseCapture::prepare (double sampleRate, std::size_t capacityFrames)
+{
+    auto retired = installPrepared (prepareStorage (sampleRate, capacityFrames));
 }
 
 void PhraseCapture::interrupt()

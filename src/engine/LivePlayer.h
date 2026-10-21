@@ -6,6 +6,7 @@
 #include "engine/AudioHistory.h"
 
 #include <span>
+#include <optional>
 #include <vector>
 
 namespace livecut::engine
@@ -31,6 +32,8 @@ public:
         int start = 0;    // samples after the block starts
         int size = 0;     // samples until the next cut starts
         int playable = 0; // samples that sound before the gate closes
+        int soundingFrames = 0; // physical musical gate, independent of classic availability
+        bool transformDecided = false;
         double units = 0.0;
         double logicalStart = 0.0;
         double gate = 1.0;
@@ -40,7 +43,7 @@ public:
     };
 
     // Declares the classic source extent; retains eight such extents plus two guards.
-    void prepare (int capacity);
+    void prepare (int capacity, std::size_t retainedFrames = 0);
 
     void setFadeSamples (int samples);
 
@@ -59,9 +62,22 @@ public:
     void resetSource();
     void resetRendering();
     std::optional<StereoFrame> readSourceFrame (double relativeFrame) const;
+    std::optional<StereoFrame> rawFrame (std::int64_t frame) const
+    {
+        return history.read ({ history.retainedRegion().epoch, frame, 1 }, 0);
+    }
     bool hasSourceError() const { return sourceError; }
+    // Activation only: use the physical gate, not classic live-read availability.
+    int currentSoundingFrames() const;
+    void markCurrentTransformDecided();
+    // Only at the first sample of an undecided cut. The complete fixed source
+    // must cover its entire planned physical gate and fit the classic extent.
+    // Success freezes source/direction/rate AND the original output-frame budget.
+    bool setCurrentTransform (SourceRegion completeFixedSpan, bool reverse);
+    bool sourceAvailable (SourceRegion completeFixedSpan) const;
+    SourceRegion retainedSource() const;
     void advanceToUnits (double logicalUnits);
-    void retimeMusicalCut (int samplesToEnd, int samplesToGate);
+    void retimeMusicalCut (int samplesToEnd, int samplesToGate, std::int64_t renderedExclusiveEnd);
 
     // Records one input frame and replaces it with the output frame.
     void process (float& left, float& right);
@@ -78,6 +94,15 @@ public:
 private:
     int playableFor (const PlayingCut& cut, int soundingLength) const;
     void skipFinishedCuts();
+
+    struct Transform
+    {
+        SourceRegion source;
+        double rate;
+        int outputFrames;
+        bool reverse;
+    };
+    std::optional<Transform> transform;
 
     AudioHistory history;
     SourceRegion source {};
