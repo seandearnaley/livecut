@@ -3,6 +3,7 @@
 // Ported from Livecut, Copyright 2003-2004 Remy Muller.
 
 #include "engine/LivePlayer.h"
+#include "engine/TransformSpan.h"
 
 #include <algorithm>
 #include <cassert>
@@ -60,6 +61,7 @@ void LivePlayer::prepare (int newCapacity, std::size_t retainedFrames)
     if (! history.prepare (retainedFrames != 0 ? retainedFrames : 8 * static_cast<std::size_t> (capacity) + 2))
         throw std::runtime_error ("Cannot prepare source history");
     sourceError = false;
+    transform.reset();
     playing.clear();
     playing.reserve (maxCutsPerBlock);
     current = 0;
@@ -89,6 +91,7 @@ void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit
 void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit, SourceRegion newSource)
 {
     source = newSource;
+    transform.reset();
     assert (cuts.size() <= maxCutsPerBlock);
     playing.clear();
     current = 0;
@@ -117,6 +120,7 @@ void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit
             playingCut.pitched = std::abs (cut.cents) > 1.0e-3f && (i > 0 || cut.cents < 0.0f);
             playingCut.rate = playingCut.pitched ? std::pow (2.0, cut.cents / 1200.0) : 1.0;
             playingCut.playable = playableFor (playingCut, std::min (static_cast<int> (std::lround (size * cut.gate)), size));
+            playingCut.soundingFrames = std::min (static_cast<int> (std::lround (size * cut.gate)), size);
 
             // Livecut's pan rotates the stereo pair: the input on the far side
             // folds into the near channel as the cut moves away from centre.
@@ -157,6 +161,7 @@ void LivePlayer::setSamplesPerUnit (double newSamplesPerUnit)
 
     if (soundingUnitsLeft > 0.0)
         now.playable = playableFor (now, samplesFromCutStart (soundingUnitsLeft));
+    now.soundingFrames = samplesFromCutStart (soundingUnitsLeft);
 
     auto unitsFromNow = now.units - elapsedUnits;
     auto end = samplesFromCutStart (unitsFromNow);
@@ -170,6 +175,7 @@ void LivePlayer::setSamplesPerUnit (double newSamplesPerUnit)
         cut.start = now.start + end;
         cut.size = nextEnd - end;
         cut.playable = playableFor (cut, std::min (static_cast<int> (std::lround (cut.size * cut.gate)), cut.size));
+        cut.soundingFrames = std::min (static_cast<int> (std::lround (cut.size * cut.gate)), cut.size);
         assert (cut.size <= capacity);
         end = nextEnd;
     }
@@ -185,6 +191,7 @@ void LivePlayer::skipFinishedCuts()
     {
         ++current;
         position = 0;
+        transform.reset();
     }
 }
 
@@ -201,6 +208,7 @@ SourceRegion LivePlayer::sourceForNextFrame() const
 
 void LivePlayer::resetRendering()
 {
+    transform.reset();
     playing.clear();
     current = 0;
     position = 0;
@@ -241,7 +249,43 @@ void LivePlayer::advanceToUnits (double logicalUnits)
     {
         ++current;
         position = 0;
+        transform.reset();
     }
+}
+
+int LivePlayer::currentSoundingFrames() const
+{
+    return current < playing.size() ? playing[current].soundingFrames : 0;
+}
+
+void LivePlayer::markCurrentTransformDecided()
+{
+    if (current < playing.size() && position == 0)
+        playing[current].transformDecided = true;
+}
+
+bool LivePlayer::setCurrentTransform (SourceRegion completeFixedSpan, bool reverse)
+{
+    if (current >= playing.size() || position != 0 || playing[current].transformDecided
+        || sourceError || completeFixedSpan.frameCount > capacity || ! sourceAvailable (completeFixedSpan))
+        return false;
+    auto& cut = playing[current];
+    const auto required = requiredSourceFrames (cut.soundingFrames, cut.rate, capacity);
+    if (! required || completeFixedSpan.frameCount < *required)
+        return false;
+    transform = Transform { completeFixedSpan, cut.rate, cut.soundingFrames, reverse };
+    cut.transformDecided = true;
+    return true;
+}
+
+bool LivePlayer::sourceAvailable (SourceRegion completeFixedSpan) const
+{
+    return history.isAvailable (completeFixedSpan);
+}
+
+SourceRegion LivePlayer::retainedSource() const
+{
+    return history.retainedRegion();
 }
 
 void LivePlayer::retimeMusicalCut (int samplesToEnd, int samplesToGate, std::int64_t renderedExclusiveEnd)
@@ -255,6 +299,7 @@ void LivePlayer::retimeMusicalCut (int samplesToEnd, int samplesToGate, std::int
     const auto recordedAtStart = static_cast<int> (std::clamp<std::int64_t> (progress - position - 1, 0, capacity));
     cut.playable = cut.pitched ? (cut.start == 0 && cut.rate < 1.0 ? sounding : playableSamples (sounding, cut.rate, recordedAtStart, capacity))
                                : std::min (sounding, capacity);
+    cut.soundingFrames = sounding;
 }
 
 void LivePlayer::renderFrame (float& left, float& right, bool advanceBySamples)
@@ -269,14 +314,25 @@ void LivePlayer::renderFrame (float& left, float& right, bool advanceBySamples)
     const auto& cut = playing[current];
     auto outLeft = 0.0f;
     auto outRight = 0.0f;
+    const auto sounding = transform ? std::min ({ cut.soundingFrames, cut.size, transform->outputFrames }) : cut.playable;
 
-    if (position < cut.playable)
+    if (position < sounding)
     {
         float inLeft;
         float inRight;
 
-        const auto read = cut.pitched ? static_cast<double> (position) * cut.rate : static_cast<double> (position);
-        const auto frame = readSourceFrame (read);
+        std::optional<StereoFrame> frame;
+        if (transform)
+        {
+            if (const auto coordinate = readCoordinate (position, transform->rate, transform->source.frameCount, transform->reverse);
+                coordinate && sourceAvailable (transform->source))
+                frame = history.readFractional (transform->source, coordinate->index, coordinate->fraction);
+        }
+        else
+        {
+            const auto read = cut.pitched ? static_cast<double> (position) * cut.rate : static_cast<double> (position);
+            frame = readSourceFrame (read);
+        }
         if (! frame)
         {
             sourceError = true;
@@ -286,7 +342,7 @@ void LivePlayer::renderFrame (float& left, float& right, bool advanceBySamples)
         inLeft = frame->left;
         inRight = frame->right;
 
-        const auto envelope = fadeEnvelope (position, fade, cut.playable);
+        const auto envelope = fadeEnvelope (position, fade, sounding);
         outLeft = envelope * (cut.leftToLeft * inLeft + cut.rightToLeft * inRight);
         outRight = envelope * (cut.leftToRight * inLeft + cut.rightToRight * inRight);
     }

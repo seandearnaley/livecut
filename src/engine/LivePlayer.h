@@ -6,6 +6,7 @@
 #include "engine/AudioHistory.h"
 
 #include <span>
+#include <optional>
 #include <vector>
 
 namespace livecut::engine
@@ -31,6 +32,8 @@ public:
         int start = 0;    // samples after the block starts
         int size = 0;     // samples until the next cut starts
         int playable = 0; // samples that sound before the gate closes
+        int soundingFrames = 0; // physical musical gate, independent of classic availability
+        bool transformDecided = false;
         double units = 0.0;
         double logicalStart = 0.0;
         double gate = 1.0;
@@ -64,6 +67,15 @@ public:
         return history.read ({ history.retainedRegion().epoch, frame, 1 }, 0);
     }
     bool hasSourceError() const { return sourceError; }
+    // Activation only: use the physical gate, not classic live-read availability.
+    int currentSoundingFrames() const;
+    void markCurrentTransformDecided();
+    // Only at the first sample of an undecided cut. The complete fixed source
+    // must cover its entire planned physical gate and fit the classic extent.
+    // Success freezes source/direction/rate AND the original output-frame budget.
+    bool setCurrentTransform (SourceRegion completeFixedSpan, bool reverse);
+    bool sourceAvailable (SourceRegion completeFixedSpan) const;
+    SourceRegion retainedSource() const;
     void advanceToUnits (double logicalUnits);
     void retimeMusicalCut (int samplesToEnd, int samplesToGate, std::int64_t renderedExclusiveEnd);
 
@@ -82,6 +94,15 @@ public:
 private:
     int playableFor (const PlayingCut& cut, int soundingLength) const;
     void skipFinishedCuts();
+
+    struct Transform
+    {
+        SourceRegion source;
+        double rate;
+        int outputFrames;
+        bool reverse;
+    };
+    std::optional<Transform> transform;
 
     AudioHistory history;
     SourceRegion source {};

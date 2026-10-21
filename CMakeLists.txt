@@ -139,6 +139,7 @@ if(LIVECUT_BUILD_TESTS)
 
     add_executable(LivecutEngineTests
         tests/engine/AttackCandidatesTests.cpp
+        tests/engine/TransformPlaybackTests.cpp
         tests/legacy/LegacyCutter.cpp
         tests/legacy/LegacyPlayer.cpp
         tests/engine/LegacyEquivalenceTests.cpp
