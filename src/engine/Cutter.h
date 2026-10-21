@@ -69,8 +69,22 @@ public:
     // passes through; cutting then resumes in the current bar.
     void reset();
 
+    // Synchronous sample events; implementations must never allocate or wait.
+    // phraseStarted precedes that phrase's first output sample. fullStart is
+    // false for the initial partial phrase after a mid-bar start/seek.
+    struct Observer
+    {
+        virtual ~Observer() = default;
+        virtual void discontinuity (int sampleOffset) = 0;
+        // Exclusive end, including numSamples when a phrase ends exactly at
+        // the host buffer boundary. Does not generate the next phrase's cuts.
+        virtual void phraseCompleted (int sampleOffset) = 0;
+        virtual void phraseStarted (int sampleOffset, bool fullStart) = 0;
+        virtual void processOutput (int sampleOffset, float dryLeft, float dryRight, float& left, float& right) = 0;
+    };
+
     // Cuts a stereo buffer in place. `position` is the host's position at its first sample.
-    void process (float* left, float* right, int numSamples, const Timing& timing, const Position& position);
+    void process (float* left, float* right, int numSamples, const Timing& timing, const Position& position, Observer* observer = nullptr);
 
     bool isCutting() const { return cutting; }
     bool isTimingSupported() const { return timingSupported; }
@@ -118,9 +132,11 @@ private:
 
     bool timingSupported = true;
     bool cutting = false;
+    bool phraseCompletionNotified = false;
     bool havePosition = false;
     std::int64_t expectedBar = 0;
     double expectedBeatsIntoBar = 0.0;
+    double previousBeatsPerBar = 4.0;
 
     std::int64_t phraseBar = 0;
     int phraseBars = 0;

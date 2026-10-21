@@ -3,12 +3,14 @@
 #pragma once
 
 #include "DisplayState.h"
+#include "CaptureService.h"
+#include "OutputMixer.h"
 #include "Parameters.h"
 #include "engine/Cutter.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
-class LivecutAudioProcessor final : public juce::AudioProcessor
+class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut::engine::Cutter::Observer
 {
 public:
     LivecutAudioProcessor();
@@ -40,14 +42,21 @@ public:
     juce::AudioProcessorValueTreeState& getParameterState() { return parameters; }
     const livecut::engine::Cutter& getCutter() const { return cutter; }
     const livecut::DisplayState& getDisplayState() const { return display; }
+    livecut::CaptureService& getCaptureService() { return capture; }
 
 private:
     void publishDisplay();
+    void discontinuity (int) override { capture.rolling().interrupt(); }
+    void phraseCompleted (int) override { capture.rolling().completePhrase(); }
+    void phraseStarted (int, bool fullStart) override { capture.rolling().startPhrase (fullStart); }
+    void processOutput (int, float dryLeft, float dryRight, float& left, float& right) override;
 
     juce::AudioProcessorValueTreeState parameters;
     livecut::SettingsReader settingsReader;
     livecut::engine::Cutter cutter;
     livecut::DisplayState display;
+    livecut::OutputMixer mixer;
+    livecut::CaptureService capture;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivecutAudioProcessor)
 };

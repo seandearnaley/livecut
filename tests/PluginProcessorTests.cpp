@@ -2,8 +2,10 @@
 
 #include "Parameters.h"
 #include "PluginProcessor.h"
+#include "engine/AllocationCounter.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
@@ -287,4 +289,250 @@ TEST_CASE ("The display says when a bar is too long to cut", "[processor][displa
     processor.processBlock (buffer, midi);
 
     CHECK (processor.getDisplayState().status.load() == livecut::DisplayState::Status::barTooLong);
+}
+
+TEST_CASE ("Saved state identifies the schema and unchanged cutting algorithm", "[processor][state][capture]")
+{
+    LivecutAudioProcessor processor;
+    juce::MemoryBlock state;
+    processor.getStateInformation (state);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), static_cast<int> (state.getSize()));
+    REQUIRE (xml != nullptr);
+    CHECK (xml->getIntAttribute ("schemaVersion") == 3);
+    CHECK (xml->getIntAttribute ("algorithmVersion") == 2);
+}
+
+TEST_CASE ("Old state resets new controls even on a previously adjusted instance", "[processor][state][capture]")
+{
+    LivecutAudioProcessor processor;
+    juce::MemoryBlock state;
+    processor.getStateInformation (state);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), static_cast<int> (state.getSize()));
+    REQUIRE (xml != nullptr);
+    xml->removeAttribute ("schemaVersion");
+    xml->removeAttribute ("algorithmVersion");
+    for (const auto* id : { livecut::ids::wet, livecut::ids::outputTrim })
+    {
+        auto* child = xml->getChildByAttribute ("id", id);
+        REQUIRE (child != nullptr);
+        xml->removeChildElement (child, true);
+        auto* parameter = processor.getParameterState().getParameter (id);
+        parameter->setValueNotifyingHost (parameter->convertTo0to1 (id == livecut::ids::wet ? 0.0f : 12.0f));
+    }
+    juce::AudioProcessor::copyXmlToBinary (*xml, state);
+    processor.setStateInformation (state.getData(), static_cast<int> (state.getSize()));
+    CHECK (processor.getParameterState().getRawParameterValue (livecut::ids::wet)->load() == 1.0f);
+    CHECK (processor.getParameterState().getRawParameterValue (livecut::ids::outputTrim)->load() == 0.0f);
+}
+
+TEST_CASE ("Default mixer preserves exact classic output across host buffers", "[processor][capture][mixer]")
+{
+    LivecutAudioProcessor processor;
+    TestPlayHead playHead;
+    playFromBarOne (playHead);
+    processor.setPlayHead (&playHead);
+    processor.prepareToPlay (8000.0, 137);
+    const auto procedure = GENERATE (0.0f, 1.0f, 2.0f, 3.0f);
+    auto* choice = processor.getParameterState().getParameter (livecut::ids::procedure);
+    choice->setValueNotifyingHost (choice->convertTo0to1 (procedure));
+    livecut::engine::Cutter classic;
+    classic.prepare (8000.0);
+    const auto settings = livecut::SettingsReader (processor.getParameterState()).read();
+    livecut::applySettings (classic, settings);
+    juce::MidiBuffer midi;
+    for (int block = 0; block < 500; ++block)
+    {
+        const auto beats = block * 137.0 / 4000.0;
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+        playHead.info.setPpqPosition (beats);
+        playHead.info.setPpqPositionOfLastBarStart (static_cast<double> (bar) * 4.0);
+        playHead.info.setBarCount (bar);
+        juce::AudioBuffer<float> actual (2, 137);
+        fillWithTestSignal (actual);
+        juce::AudioBuffer<float> expected (actual);
+        classic.process (expected.getWritePointer (0), expected.getWritePointer (1), 137, { 120.0, 4.0 }, { bar, beats - static_cast<double> (bar) * 4.0 });
+        processor.processBlock (actual, midi);
+        REQUIRE (sameAudio (actual, expected));
+    }
+}
+
+TEST_CASE ("Final output capture spans multiple phrases in one host buffer and survives stop", "[processor][capture]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    for (const auto* id : { livecut::ids::minPhraseBars, livecut::ids::maxPhraseBars })
+    {
+        auto* parameter = state.getParameter (id);
+        parameter->setValueNotifyingHost (parameter->convertTo0to1 (1.0f));
+    }
+    auto* wet = state.getParameter (livecut::ids::wet);
+    auto* trim = state.getParameter (livecut::ids::outputTrim);
+    wet->setValueNotifyingHost (wet->convertTo0to1 (0.0f));
+    trim->setValueNotifyingHost (trim->convertTo0to1 (-6.0f));
+    TestPlayHead playHead;
+    playFromBarOne (playHead);
+    processor.setPlayHead (&playHead);
+    processor.prepareToPlay (100.0, 550); // 200 samples/bar, two boundaries inside the host buffer
+    juce::AudioBuffer<float> buffer (2, 550);
+    fillWithTestSignal (buffer);
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+    auto phrase = processor.getCaptureService().rolling().acquireLatest();
+    REQUIRE (phrase);
+    REQUIRE (phrase.channel (0).size() == 200);
+    for (int i = 0; i < 200; ++i)
+    {
+        REQUIRE (phrase.channel (0)[static_cast<std::size_t> (i)] == buffer.getSample (0, 200 + i));
+        REQUIRE (phrase.channel (1)[static_cast<std::size_t> (i)] == buffer.getSample (1, 200 + i));
+    }
+    phrase = {};
+    playHead.info.setIsPlaying (false);
+    fillWithTestSignal (buffer);
+    processor.processBlock (buffer, midi);
+    CHECK (processor.getCaptureService().rolling().hasLatest());
+    CHECK_THAT (buffer.getSample (0, 100), Catch::Matchers::WithinAbs (std::sin (1.0f) * juce::Decibels::decibelsToGain (-6.0f), 1.0e-6));
+    auto stopped = processor.getCaptureService().rolling().acquireLatest();
+    REQUIRE (stopped);
+    CHECK (stopped.channel (0).size() == 200);
+}
+
+TEST_CASE ("A phrase completed at the buffer end is retained before stop or loop", "[processor][capture][exact-end]")
+{
+    for (const auto blockSize : { 1, 73, 200 })
+    {
+        INFO (blockSize);
+        LivecutAudioProcessor processor;
+        auto& state = processor.getParameterState();
+        for (const auto* id : { livecut::ids::minPhraseBars, livecut::ids::maxPhraseBars })
+        {
+            auto* parameter = state.getParameter (id);
+            parameter->setValueNotifyingHost (parameter->convertTo0to1 (1.0f));
+        }
+        TestPlayHead playHead;
+        playFromBarOne (playHead);
+        processor.setPlayHead (&playHead);
+        processor.prepareToPlay (100.0, blockSize);
+        juce::MidiBuffer midi;
+        for (int done = 0; done < 200; done += blockSize)
+        {
+            const auto count = std::min (blockSize, 200 - done);
+            playHead.info.setPpqPosition (done / 50.0);
+            juce::AudioBuffer<float> buffer (2, count);
+            fillWithTestSignal (buffer);
+            processor.processBlock (buffer, midi);
+        }
+        CHECK (processor.getCaptureService().rolling().hasLatest());
+        juce::AudioBuffer<float> buffer (2, 32);
+        playHead.info.setIsPlaying (false);
+        processor.processBlock (buffer, midi);
+        auto stopped = processor.getCaptureService().rolling().acquireLatest();
+        REQUIRE (stopped);
+        CHECK (stopped.channel (0).size() == 200);
+        stopped = {};
+        playHead.info.setIsPlaying (true);
+        playHead.info.setPpqPosition (0.25); // loop/seek into a partial phrase
+        processor.processBlock (buffer, midi);
+        auto looped = processor.getCaptureService().rolling().acquireLatest();
+        REQUIRE (looped);
+        CHECK (looped.channel (0).size() == 200);
+    }
+}
+
+TEST_CASE ("Processing with mix capture boundaries and a leased export never allocates", "[processor][capture][allocations]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    for (const auto* id : { livecut::ids::minPhraseBars, livecut::ids::maxPhraseBars })
+    {
+        auto* parameter = state.getParameter (id);
+        parameter->setValueNotifyingHost (parameter->convertTo0to1 (1.0f));
+    }
+    processor.prepareToPlay (1000.0, 127);
+    TestPlayHead playHead;
+    playFromBarOne (playHead);
+    processor.setPlayHead (&playHead);
+    juce::AudioBuffer<float> buffer (2, 127);
+    fillWithTestSignal (buffer);
+    juce::MidiBuffer midi;
+    livecut::PhraseCapture::Lease exportLease;
+    std::size_t allocationCount = 0;
+    for (int block = 0; block < 100; ++block)
+    {
+        const auto ppq = block * 127.0 / 500.0;
+        playHead.info.setPpqPosition (ppq);
+        playHead.info.setPpqPositionOfLastBarStart (std::floor (ppq / 4.0) * 4.0);
+        playHead.info.setBarCount (static_cast<std::int64_t> (ppq / 4.0));
+        if (block == 25)
+            exportLease = processor.getCaptureService().rolling().acquireLatest();
+        const livecut::engine::testing::AllocationCounter allocations;
+        processor.processBlock (buffer, midi);
+        allocationCount += allocations.count();
+    }
+    CHECK (allocationCount == 0);
+    CHECK (processor.getCaptureService().rolling().status() == livecut::PhraseCapture::Status::busy);
+    REQUIRE (exportLease);
+    CHECK (exportLease.channel (0).size() == 2000);
+}
+
+TEST_CASE ("Capture follows real-rate tempo changes and discards meter-interrupted candidates", "[processor][capture][timing]")
+{
+    const auto rate = GENERATE (44100, 48000, 96000);
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    for (const auto* id : { livecut::ids::minPhraseBars, livecut::ids::maxPhraseBars })
+    {
+        auto* parameter = state.getParameter (id);
+        parameter->setValueNotifyingHost (parameter->convertTo0to1 (1.0f));
+    }
+    TestPlayHead playHead;
+    playFromBarOne (playHead);
+    processor.setPlayHead (&playHead);
+    processor.prepareToPlay (rate, 511);
+    juce::MidiBuffer midi;
+    double ppq = 0.0;
+    std::array<std::vector<float>, 2> heard;
+    auto render = [&] (int count, double bpm, int meter, double meterOrigin, int originBar, bool remember)
+    {
+        for (int done = 0; done < count; done += 511)
+        {
+            const auto frames = std::min (511, count - done);
+            const auto bars = std::floor ((ppq - meterOrigin) / meter);
+            playHead.info.setBpm (bpm);
+            playHead.info.setTimeSignature (juce::AudioPlayHead::TimeSignature { meter, 4 });
+            playHead.info.setPpqPosition (ppq);
+            playHead.info.setPpqPositionOfLastBarStart (meterOrigin + bars * meter);
+            playHead.info.setBarCount (originBar + static_cast<std::int64_t> (bars));
+            juce::AudioBuffer<float> buffer (2, frames);
+            fillWithTestSignal (buffer);
+            processor.processBlock (buffer, midi);
+            if (remember)
+                for (std::size_t channel = 0; channel < 2; ++channel)
+                    heard[channel].insert (heard[channel].end(), buffer.getReadPointer (static_cast<int> (channel)),
+                                          buffer.getReadPointer (static_cast<int> (channel)) + frames);
+            ppq += frames * bpm / 60.0 / rate;
+        }
+    };
+    render (rate, 120.0, 4, 0.0, 0, true); // first two beats
+    render (rate * 4 / 3, 90.0, 4, 0.0, 0, true); // remaining two beats at the new tempo
+    auto complete = processor.getCaptureService().rolling().acquireLatest();
+    REQUIRE (complete);
+    REQUIRE (complete.channel (0).size() == heard[0].size());
+    CHECK (complete.sampleRate() == rate);
+    for (std::size_t channel = 0; channel < 2; ++channel)
+        CHECK (std::memcmp (complete.channel (channel).data(), heard[channel].data(), heard[channel].size() * sizeof (float)) == 0);
+    complete = {};
+
+    ppq = 4.0;
+    render (rate / 2, 120.0, 4, 0.0, 0, false); // first beat of the next candidate
+    ppq = 5.0;
+    render (rate, 120.0, 3, 4.0, 1, false); // meter changes mid-phrase; discard the candidate
+    auto retained = processor.getCaptureService().rolling().acquireLatest();
+    REQUIRE (retained);
+    CHECK (retained.channel (0).size() == heard[0].size());
+    retained = {};
+    ppq = 7.0;
+    render (rate * 3 / 2, 120.0, 3, 4.0, 1, false); // next whole 3/4 phrase
+    auto newMeter = processor.getCaptureService().rolling().acquireLatest();
+    REQUIRE (newMeter);
+    CHECK (newMeter.channel (0).size() == static_cast<std::size_t> (rate * 3 / 2));
 }

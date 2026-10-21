@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures to build")
 
-project(Livecut VERSION 0.2.0 LANGUAGES C CXX)
+project(Livecut VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -63,6 +63,11 @@ target_compile_definitions(Livecut
 add_library(LivecutCode INTERFACE)
 target_sources(LivecutCode
     INTERFACE
+        src/CaptureService.cpp
+        src/CaptureService.h
+        src/OutputMixer.h
+        src/PhraseCapture.cpp
+        src/PhraseCapture.h
         src/DisplayState.h
         src/HostSync.cpp
         src/HostSync.h
@@ -105,6 +110,8 @@ if(LIVECUT_BUILD_TESTS)
     endfunction()
 
     add_executable(LivecutTests
+        tests/engine/AllocationCounter.cpp
+        tests/CaptureTests.cpp
         tests/EditorTests.cpp
         tests/HostSyncTests.cpp
         tests/ParametersTests.cpp

@@ -20,7 +20,7 @@ on Apple Silicon, Intel Macs and Windows.
 
 The LCD across the top shows the phrase being cut: its bars and units, the
 block playing now and the playhead. Livecut follows the host's transport; while
-the host is stopped, audio passes through untouched.
+the host is stopped, dry audio passes through the output trim.
 
 ## Status
 
@@ -37,6 +37,11 @@ Work in progress, landing as a stack of small pull requests:
 7. **Release**: signed and notarised installers.
 8. **0.2.0 / Bounce**: a fourth cut procedure, with triplet bounces, climbing
    ratchets and halftime bars.
+9. **0.3.0 / Capture**: keep the last completed phrase, save stereo float WAV,
+   and blend dry/wet audio with a smoothed output trim.
+
+See [the 0.3.0 release notes](docs/releases/0.3.0.md) for capture behavior,
+capacity, memory use and compatibility.
 
 ## Building
 

@@ -73,10 +73,11 @@ void Cutter::setFadeMilliseconds (double milliseconds)
 void Cutter::reset()
 {
     cutting = false;
+    phraseCompletionNotified = false;
     havePosition = false;
 }
 
-void Cutter::process (float* left, float* right, int numSamples, const Timing& timing, const Position& position)
+void Cutter::process (float* left, float* right, int numSamples, const Timing& timing, const Position& position, Observer* observer)
 {
     timingSupported = timing.bpm > 0.0
                    && timing.beatsPerBar > 0.0
@@ -85,6 +86,12 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
     if (! timingSupported)
     {
         reset();
+        if (observer != nullptr)
+        {
+            observer->discontinuity (0);
+            for (int i = 0; i < numSamples; ++i)
+                observer->processOutput (i, left[i], right[i], left[i], right[i]);
+        }
         return; // the input passes through untouched
     }
 
@@ -102,6 +109,10 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
             reset();
     }
 
+    if (observer != nullptr && (! havePosition || std::abs (previousBeatsPerBar - timing.beatsPerBar) > 1.0e-9))
+        observer->discontinuity (0);
+    previousBeatsPerBar = timing.beatsPerBar;
+
     if (cutting)
     {
         livePlayer.setSamplesPerUnit (samplesPerUnit (timing));
@@ -116,6 +127,9 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
 
     for (int i = 0; i < numSamples; ++i)
     {
+        const auto dryLeft = left[i];
+        const auto dryRight = right[i];
+
         // A sample within half a sample of the bar line starts the next bar.
         if (beats >= timing.beatsPerBar - halfSampleBeats)
         {
@@ -138,7 +152,11 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
             const auto boundary = std::ceil (unitsIntoBar - halfSample);
 
             if (boundary < unitsIntoBar + halfSample)
+            {
                 startPhrase (bar, static_cast<int> (boundary), timing);
+                if (observer != nullptr)
+                    observer->phraseStarted (i, boundary == 0.0);
+            }
         }
         else
         {
@@ -148,7 +166,11 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
 
             if (unitsIntoPhrase >= phraseBars * unitsPerBar - halfSample)
             {
+                if (observer != nullptr && ! phraseCompletionNotified)
+                    observer->phraseCompleted (i);
                 startPhrase (bar, 0, timing);
+                if (observer != nullptr)
+                    observer->phraseStarted (i, true);
             }
             else if (structuralChange && unitsIntoBar < halfSample)
             {
@@ -192,6 +214,9 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
                 startEffectsCut();
         }
 
+        if (observer != nullptr)
+            observer->processOutput (i, dryLeft, dryRight, left[i], right[i]);
+
         beats += beatsPerSample;
     }
 
@@ -206,7 +231,15 @@ void Cutter::process (float* left, float* right, int numSamples, const Timing& t
     expectedBeatsIntoBar = beats;
 
     if (cutting)
+    {
         phrasePosition = static_cast<double> ((bar - phraseBar) * unitsPerBar) + beats * unitsPerBar / timing.beatsPerBar;
+        if (! phraseCompletionNotified && phrasePosition >= phraseBars * unitsPerBar - halfSampleBeats * unitsPerBar / timing.beatsPerBar)
+        {
+            if (observer != nullptr)
+                observer->phraseCompleted (numSamples);
+            phraseCompletionNotified = true;
+        }
+    }
 }
 
 double Cutter::samplesPerUnit (const Timing& timing) const
@@ -250,6 +283,7 @@ void Cutter::startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timi
     assert (phraseBars >= 1);
 
     cutting = true;
+    phraseCompletionNotified = false;
     blockEnd = unitsIntoBar;
     startBlock (timing);
 }

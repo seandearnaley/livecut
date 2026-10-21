@@ -192,7 +192,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 number (ids::bounceChance, "Bounce", FloatRange (0.0f, 1.0f), 0.4f, percent(), 2),
                 number (ids::ratchetChance, "Ratchet", FloatRange (0.0f, 1.0f), 0.7f, percent(), 2),
                 integer (ids::climb, "Climb", 0, 12, 7, "", 2, semitones()),
-                number (ids::halftimeChance, "Halftime", FloatRange (0.0f, 1.0f), 0.15f, percent(), 2));
+                number (ids::halftimeChance, "Halftime", FloatRange (0.0f, 1.0f), 0.15f, percent(), 2),
+                number (ids::wet, "Wet", FloatRange (0.0f, 1.0f), 1.0f, percent(), 3),
+                number (ids::outputTrim, "Output Trim", FloatRange (-24.0f, 24.0f), 0.0f, decimals (1, "dB"), 3));
 
     return layout;
 }
@@ -234,7 +236,9 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       bounceChance (state, ids::bounceChance),
       ratchetChance (state, ids::ratchetChance),
       climb (state, ids::climb),
-      halftimeChance (state, ids::halftimeChance)
+      halftimeChance (state, ids::halftimeChance),
+      wet (state, ids::wet),
+      outputTrim (state, ids::outputTrim)
 {
 }
 
@@ -245,6 +249,8 @@ Settings SettingsReader::read() const
     settings.unitsPerBar = subdivisions[static_cast<std::size_t> (subdivision.readIndex())];
     settings.seed = static_cast<std::uint32_t> (seed.readIndex());
     settings.fadeMilliseconds = fade.read();
+    settings.wet = wet.read();
+    settings.outputTrimDb = outputTrim.read();
 
     auto& cut = settings.cut;
     cut.minPhraseBars = minPhraseBars.readIndex();

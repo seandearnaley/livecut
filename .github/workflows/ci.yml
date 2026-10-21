@@ -52,6 +52,9 @@ jobs:
         with:
           submodules: true
 
+      - name: Test release version checks
+        run: cmake -P tests/release/ReleaseVersionTests.cmake
+
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 

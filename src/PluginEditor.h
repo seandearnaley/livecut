@@ -14,7 +14,7 @@ class LivecutAudioProcessorEditor final : public juce::AudioProcessorEditor, pri
 public:
     // Everything is laid out once at this size and scaled as a whole when the window is resized.
     static constexpr int baseWidth = 880;
-    static constexpr int baseHeight = 590;
+    static constexpr int baseHeight = 660;
 
     explicit LivecutAudioProcessorEditor (LivecutAudioProcessor& p);
     ~LivecutAudioProcessorEditor() override;
@@ -34,6 +34,7 @@ private:
     LivecutAudioProcessor& livecutProcessor;
     livecut::ui::LivecutLookAndFeel lookAndFeel; // outlives the panel, which is destroyed first
     std::unique_ptr<Panel> panel;
+    juce::TooltipWindow tooltips { this, 600 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LivecutAudioProcessorEditor)
 };

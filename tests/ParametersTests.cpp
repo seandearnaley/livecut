@@ -21,7 +21,7 @@ constexpr std::array allIds {
     ids::straightChance, ids::regularChance, ids::ritardChance, ids::accel, ids::activity,
     ids::crusher, ids::minBits, ids::maxBits, ids::minRate, ids::maxRate, ids::comb, ids::combType,
     ids::combFeedback, ids::minDelay, ids::maxDelay,
-    ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance
+    ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance, ids::wet, ids::outputTrim
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -261,7 +261,8 @@ TEST_CASE ("Parameters added for Bounce carry version hint 2", "[parameters]")
         const juce::String name (id);
         const auto isBounce = name == ids::bounceChance || name == ids::ratchetChance
                            || name == ids::climb || name == ids::halftimeChance;
-        CHECK (parameter (state, id).getVersionHint() == (isBounce ? 2 : 1));
+        const auto isMixer = name == ids::wet || name == ids::outputTrim;
+        CHECK (parameter (state, id).getVersionHint() == (isMixer ? 3 : isBounce ? 2 : 1));
     }
 }
 
@@ -276,7 +277,7 @@ TEST_CASE ("Bounce parameters have the specified names and ranges and are append
     {
         auto& p = parameter (state, bounceIds[i]);
         CHECK (p.getName (32) == names[i]);
-        CHECK (p.getParameterIndex() == static_cast<int> (allIds.size() - bounceIds.size() + i));
+        CHECK (p.getParameterIndex() == static_cast<int> (allIds.size() - bounceIds.size() - 2 + i));
         CHECK_THAT (p.convertFrom0to1 (0.0f), WithinAbs (0.0, 1.0e-6));
         CHECK_THAT (p.convertFrom0to1 (1.0f), WithinAbs (i == 2 ? 12.0 : 1.0, 1.0e-6));
     }
@@ -316,4 +317,20 @@ TEST_CASE ("Bounce settings validate host values and round Climb", "[parameters]
     CHECK (reader.read().cut.climb == 8);
     state.getRawParameterValue (ids::climb)->store (7.4f);
     CHECK (reader.read().cut.climb == 7);
+}
+
+TEST_CASE ("Capture release appends version-three mixer parameters", "[parameters][capture]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    auto* wet = state.getParameter ("wet");
+    auto* trim = state.getParameter ("outputTrim");
+    REQUIRE (wet != nullptr);
+    REQUIRE (trim != nullptr);
+    CHECK (wet->getVersionHint() == 3);
+    CHECK (trim->getVersionHint() == 3);
+    CHECK (wet->getParameterIndex() == 37);
+    CHECK (trim->getParameterIndex() == 38);
+    CHECK_THAT (wet->convertFrom0to1 (wet->getDefaultValue()), WithinAbs (1.0, 0.0));
+    CHECK_THAT (trim->convertFrom0to1 (trim->getDefaultValue()), WithinAbs (0.0, 0.0));
 }
