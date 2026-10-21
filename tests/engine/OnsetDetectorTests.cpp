@@ -53,6 +53,29 @@ Signal percussion (int rate)
         }
     return audio;
 }
+
+std::optional<OnsetMarker> queryEpoch (const OnsetDetector& detector, std::uint64_t epoch,
+                                     std::int64_t epochFirst, std::int64_t epochEnd,
+                                     std::int64_t target, std::int64_t first, std::int64_t end)
+{
+    return detector.nearest ({ epoch, epochFirst, epochEnd }, target, first, end);
+}
+
+std::optional<OnsetMarker> queryCurrent (const OnsetDetector& detector, std::uint64_t epoch,
+                                       std::int64_t target, std::int64_t first, std::int64_t end,
+                                       double minimumRise = 0.0)
+{
+    return detector.nearest ({ epoch, detector.epochFirstFrame(), detector.nextFrame() }, target, first, end, minimumRise);
+}
+
+void feedWindow (OnsetDetector& detector, bool impulse = true)
+{
+    const auto first = detector.nextFrame();
+    bool accepted = true;
+    for (int offset = 0; offset < detector.windowFrames(); ++offset)
+        accepted &= detector.process (first + offset, impulse && offset == 0 ? 1.0f : 0.0f, 0.0f);
+    REQUIRE (accepted);
+}
 } // namespace
 
 TEST_CASE ("Onset markers timestamp linked stereo impulses with bounded publication delay", "[onset]")
@@ -204,27 +227,27 @@ TEST_CASE ("Nearest onset query respects epoch window strength and missing analy
     feed (detector, audio);
     REQUIRE (detector.markerCount() == 2);
     const auto epoch = detector.epoch();
-    REQUIRE (detector.nearest (epoch, 1440, 0, 4800));
-    CHECK (detector.nearest (epoch, 1440, 0, 4800)->frame == 960); // ties choose earlier
-    const auto closer = detector.nearest (epoch, 1700, 0, 4800);
+    REQUIRE (queryCurrent (detector, epoch, 1440, 0, 4800));
+    CHECK (queryCurrent (detector, epoch, 1440, 0, 4800)->frame == 960); // ties choose earlier
+    const auto closer = queryCurrent (detector, epoch, 1700, 0, 4800);
     REQUIRE (closer);
     CHECK (closer->frame == 1920);
-    const auto exact = detector.nearest (epoch, 960, 960, 961);
+    const auto exact = queryCurrent (detector, epoch, 960, 960, 961);
     REQUIRE (exact);
     CHECK (exact->frame == 960);
-    CHECK_FALSE (detector.nearest (epoch, 960, 0, 960));
-    CHECK_FALSE (detector.nearest (epoch, 1700, 1000, 1900));
-    CHECK_FALSE (detector.nearest (epoch, 1700, 0, 4800, 1000.0));
-    CHECK_FALSE (detector.nearest (epoch + 1, 1700, 0, 4800));
-    CHECK_FALSE (detector.nearest (epoch, 1700, 0, 4801));
-    CHECK_FALSE (detector.nearest (epoch, 1700, -1, 4800));
-    CHECK_FALSE (detector.nearest (epoch, -1, 0, 4800));
-    CHECK_FALSE (detector.nearest (epoch, 1700, 2000, 1000));
-    CHECK_FALSE (detector.nearest (epoch, 1700, 0, 4800, std::numeric_limits<double>::quiet_NaN()));
+    CHECK_FALSE (queryCurrent (detector, epoch, 960, 0, 960));
+    CHECK_FALSE (queryCurrent (detector, epoch, 1700, 1000, 1900));
+    CHECK_FALSE (queryCurrent (detector, epoch, 1700, 0, 4800, 1000.0));
+    CHECK_FALSE (queryCurrent (detector, epoch + 1, 1700, 0, 4800));
+    CHECK_FALSE (queryCurrent (detector, epoch, 1700, 0, 4801));
+    CHECK_FALSE (queryCurrent (detector, epoch, 1700, -1, 4800));
+    CHECK_FALSE (queryCurrent (detector, epoch, -1, 0, 4800));
+    CHECK_FALSE (queryCurrent (detector, epoch, 1700, 2000, 1000));
+    CHECK_FALSE (queryCurrent (detector, epoch, 1700, 0, 4800, std::numeric_limits<double>::quiet_NaN()));
     REQUIRE (detector.reset());
     CHECK (detector.epoch() == epoch + 1);
     CHECK (detector.markerCount() == 0);
-    CHECK_FALSE (detector.nearest (epoch, 960, 0, 4800));
+    CHECK_FALSE (queryCurrent (detector, epoch, 960, 0, 4800));
 }
 
 TEST_CASE ("Marker history visibly overwrites oldest candidates and reset clears partial windows", "[onset]")
@@ -237,7 +260,7 @@ TEST_CASE ("Marker history visibly overwrites oldest candidates and reset clears
     REQUIRE (detector.marker (0));
     CHECK (detector.marker (0)->frame >= 1536);
     CHECK_FALSE (detector.marker (2));
-    CHECK_FALSE (detector.nearest (detector.epoch(), 960, 960, 1000));
+    CHECK_FALSE (queryCurrent (detector, detector.epoch(), 960, 960, 1000));
     REQUIRE (detector.reset());
     CHECK (detector.overwrittenMarkers() == 0);
     REQUIRE (detector.process (0, 1.0f, -1.0f));
@@ -267,7 +290,7 @@ TEST_CASE ("Onset analysis rejects invalid preparation samples and timestamp dis
     CHECK_FALSE (detector.process (0, 0.0f, 0.0f));
     CHECK (detector.nextFrame() == 1);
     CHECK (detector.analyzedFrames() == 0);
-    CHECK_FALSE (detector.nearest (detector.epoch(), 0, 0, 1));
+    CHECK_FALSE (queryCurrent (detector, detector.epoch(), 0, 0, 1));
 }
 
 TEST_CASE ("Onset processing queries and reset allocate nothing after preparation", "[onset]")
@@ -282,11 +305,162 @@ TEST_CASE ("Onset processing queries and reset allocate nothing after preparatio
         for (std::size_t i = 0; i < audio.size(); ++i)
         {
             accepted &= detector.process (static_cast<std::int64_t> (i), audio[i][0], audio[i][1]);
-            (void) detector.nearest (detector.epoch(), static_cast<std::int64_t> (i), 0, detector.nextFrame());
+            (void) queryCurrent (detector, detector.epoch(), static_cast<std::int64_t> (i), 0, detector.nextFrame());
         }
         accepted &= detector.reset();
         allocations = counter.count();
     }
     CHECK (accepted);
     CHECK (allocations == 0);
+}
+
+TEST_CASE ("A future transport epoch preserves queries for the delayed renderer", "[onset][epochs]")
+{
+    OnsetDetector detector;
+    REQUIRE (detector.prepare (48000, 8, 3.0));
+    const auto oldEpoch = detector.epoch();
+    feedWindow (detector);
+    feedWindow (detector, false);
+    REQUIRE (detector.beginTransportEpoch (oldEpoch + 10));
+    CHECK (detector.nextFrame() == 96);
+    feedWindow (detector);
+    REQUIRE (detector.markerCount() == 2);
+    const auto old = queryEpoch (detector, oldEpoch, 0, 96, 0, 0, 96);
+    REQUIRE (old);
+    CHECK (old->epoch == oldEpoch);
+    CHECK (old->frame == 0);
+    const auto current = queryEpoch (detector, oldEpoch + 10, 96, 144, 96, 96, 144);
+    REQUIRE (current);
+    CHECK (current->epoch == oldEpoch + 10);
+    CHECK (current->frame == 96);
+    CHECK_FALSE (queryEpoch (detector, oldEpoch, 0, 96, 96, 96, 144));
+    CHECK_FALSE (queryEpoch (detector, oldEpoch + 10, 96, 144, 0, 0, 96));
+}
+
+TEST_CASE ("Discarded partial windows never bridge epochs or become analyzed later", "[onset][epochs]")
+{
+    OnsetDetector detector;
+    REQUIRE (detector.prepare (48000, 8, 3.0));
+    const auto oldEpoch = detector.epoch();
+    feedWindow (detector);
+    for (std::int64_t frame = 48; frame < 70; ++frame)
+        REQUIRE (detector.process (frame, frame == 69 ? 1.0f : 0.0f, 0.0f));
+    REQUIRE (detector.beginTransportEpoch (oldEpoch + 1));
+    feedWindow (detector, false);
+    CHECK (detector.nextFrame() == 118);
+    CHECK (detector.analyzedFrames() == 118);
+    CHECK (detector.markerCount() == 1);
+    REQUIRE (queryEpoch (detector, oldEpoch, 0, 70, 0, 0, 48));
+    CHECK_FALSE (queryEpoch (detector, oldEpoch, 0, 70, 0, 0, 49));
+    CHECK_FALSE (queryEpoch (detector, oldEpoch, 0, 70, 69, 48, 70));
+    CHECK_FALSE (queryEpoch (detector, oldEpoch + 1, 70, 118, 70, 70, 118));
+}
+
+TEST_CASE ("Transport epochs retain absolute time and reset the refractory envelope", "[onset][epochs]")
+{
+    OnsetDetector detector;
+    REQUIRE (detector.prepare (48000, 8, 3.0));
+    const auto epoch = detector.epoch();
+    feedWindow (detector);
+    REQUIRE (detector.beginTransportEpoch (epoch + 1));
+    feedWindow (detector);
+    REQUIRE (detector.markerCount() == 2);
+    CHECK (detector.marker (1)->frame == 48); // Within the old epoch's 480-frame refractory interval.
+    CHECK (detector.marker (1)->detectedAt == 95);
+    CHECK_FALSE (detector.process (0, 1.0f, 0.0f));
+    CHECK (detector.nextFrame() == 96);
+    CHECK_FALSE (detector.beginTransportEpoch (epoch + 1));
+    CHECK_FALSE (detector.beginTransportEpoch (epoch));
+    CHECK_FALSE (detector.beginTransportEpoch (0));
+    CHECK (detector.epoch() == epoch + 1);
+    CHECK (detector.nextFrame() == 96);
+    CHECK (detector.markerCount() == 2);
+}
+
+TEST_CASE ("Physical reset and preparation invalidate every old transport epoch", "[onset][epochs]")
+{
+    OnsetDetector detector;
+    REQUIRE (detector.prepare (48000, 8, 3.0));
+    const auto firstEpoch = detector.epoch();
+    feedWindow (detector);
+    REQUIRE (detector.beginTransportEpoch (firstEpoch + 10));
+    feedWindow (detector);
+    const auto previous = detector.epoch();
+    REQUIRE (detector.reset());
+    CHECK (detector.epoch() == previous + 1);
+    CHECK (detector.nextFrame() == 0);
+    CHECK (detector.markerCount() == 0);
+    feedWindow (detector);
+    CHECK_FALSE (queryEpoch (detector, firstEpoch, 0, 48, 0, 0, 48));
+    CHECK_FALSE (queryEpoch (detector, previous, 48, 96, 48, 48, 96));
+    REQUIRE (queryEpoch (detector, detector.epoch(), 0, 48, 0, 0, 48));
+    const auto resetEpoch = detector.epoch();
+    REQUIRE (detector.prepare (96000, 8, 3.0));
+    CHECK (detector.epoch() == resetEpoch + 1);
+    CHECK (detector.nextFrame() == 0);
+    CHECK (detector.markerCount() == 0);
+    CHECK_FALSE (detector.beginTransportEpoch (resetEpoch));
+}
+
+TEST_CASE ("Marker overwrite is visible across retained transport epochs", "[onset][epochs]")
+{
+    OnsetDetector detector;
+    REQUIRE (detector.prepare (48000, 2, 3.0));
+    const auto firstEpoch = detector.epoch();
+    feedWindow (detector);
+    REQUIRE (detector.beginTransportEpoch (firstEpoch + 1));
+    feedWindow (detector);
+    REQUIRE (detector.beginTransportEpoch (firstEpoch + 2));
+    feedWindow (detector);
+    CHECK (detector.markerCount() == 2);
+    CHECK (detector.overwrittenMarkers() == 1);
+    CHECK_FALSE (queryEpoch (detector, firstEpoch, 0, 48, 0, 0, 48));
+    REQUIRE (queryEpoch (detector, firstEpoch + 1, 48, 96, 48, 48, 96));
+    REQUIRE (queryEpoch (detector, firstEpoch + 2, 96, 144, 96, 96, 144));
+}
+
+TEST_CASE ("Epoch boundaries queries and processing allocate nothing", "[onset][epochs]")
+{
+    OnsetDetector detector;
+    REQUIRE (detector.prepare (48000, 8192, 3.0));
+    bool accepted = true;
+    std::size_t allocations = 0;
+    {
+        testing::AllocationCounter counter;
+        for (int epochIndex = 0; epochIndex < 1000; ++epochIndex)
+        {
+            const auto first = detector.nextFrame();
+            accepted &= detector.beginTransportEpoch (detector.epoch() + 1);
+            for (int frame = 0; frame < detector.windowFrames(); ++frame)
+                accepted &= detector.process (first + frame, frame == 0 ? 1.0f : 0.0f, 0.0f);
+            accepted &= queryEpoch (detector, detector.epoch(), first, detector.nextFrame(),
+                                    first, first, detector.nextFrame()).has_value();
+        }
+        accepted &= detector.reset();
+        allocations = counter.count();
+    }
+    CHECK (accepted);
+    CHECK (allocations == 0);
+}
+
+TEST_CASE ("8192 markers retain a full render epoch plus rapid future epoch changes", "[onset][epochs]")
+{
+    OnsetDetector detector;
+    REQUIRE (detector.prepare (48000, 8192, 3.0));
+    const auto renderEpoch = detector.epoch();
+    constexpr std::int64_t renderFrames = 64 * 48000;
+    bool accepted = true;
+    for (std::int64_t frame = 0; frame < renderFrames; ++frame)
+        accepted &= detector.process (frame, frame % 480 == 0 ? 1.0f : 0.0f, 0.0f);
+    REQUIRE (accepted);
+    CHECK (detector.markerCount() == 6400);
+    for (int futureEpoch = 0; futureEpoch < 500; ++futureEpoch)
+    {
+        REQUIRE (detector.beginTransportEpoch (detector.epoch() + 1));
+        feedWindow (detector);
+    }
+    CHECK (detector.nextFrame() == renderFrames + 24000);
+    CHECK (detector.markerCount() == 6900);
+    CHECK (detector.overwrittenMarkers() == 0);
+    REQUIRE (queryEpoch (detector, renderEpoch, 0, renderFrames, 0, 0, 48));
 }

@@ -41,11 +41,31 @@ struct OnsetMarker
 // is not bounded by the publication delay. This class adds no audio delay; a
 // renderer needing retrospective alignment must buffer.
 // Single audio thread only: prepare allocates; process/query/reset never do.
-// Epochs/markers are local to this instance and must be coordinated with source
-// history by its owner. reset is required on seeks, loops or discontinuities.
+// The owner coordinates strictly increasing transport epoch IDs with its audio
+// timeline. A seek/loop uses beginTransportEpoch(): future input must not erase
+// markers still needed by a delayed renderer. reset/prepare start a new physical
+// stream, clear all markers and advance the ID; never reuse IDs after a reset.
+//
+// 8192 markers cover a <=64s voice lifetime plus <=22ms source margin within
+// the current render epoch (<=6403 at the 10ms minimum gap), plus <=500ms ahead
+// ingestion. Epoch restarts can defeat the refractory gap, but every additional
+// marker needs a complete ~1ms window: <=534 future markers over supported
+// sample rates. 6403 + 534 < 8192. This is NOT a promise to retain every marker
+// from 64s of rapid loops. Queries/source reads must stay in the current render
+// epoch; older epochs outside it must not be referenced.
 class OnsetDetector
 {
 public:
+    struct SourceBounds
+    {
+        std::uint64_t epoch;
+        // Exact transport-epoch start, NOT the oldest retained audio frame:
+        // analysis windows are aligned to this position.
+        std::int64_t firstFrame;
+        // Exclusive transport-epoch end, or nextFrame() for the current epoch.
+        std::int64_t endFrame;
+    };
+
     OnsetDetector() = default;
     OnsetDetector (const OnsetDetector&) = delete;
     OnsetDetector& operator= (const OnsetDetector&) = delete;
@@ -73,13 +93,10 @@ public:
     // Epoch exhaustion explicitly disables processing rather than reusing IDs.
     bool reset() noexcept
     {
-        written = analyzedEnd = 0;
+        written = 0;
         count = writeSlot = 0;
         overwritten = 0;
-        inWindow = 0;
-        energySum = peakEnergy = smoothedEnergy = 0.0;
-        peakFrame = 0;
-        previousOnset.reset();
+        resetAnalysis();
         if (currentEpoch == maximumEpoch)
         {
             active = false;
@@ -87,6 +104,18 @@ public:
         }
         ++currentEpoch;
         active = ! history.empty();
+        return true;
+    }
+
+    // Begin exactly at nextFrame(). Keep old published markers and absolute
+    // input time, but never combine analysis or refractory state across epochs.
+    // Invalid/old IDs leave all state intact. Zero is never a valid epoch ID.
+    bool beginTransportEpoch (std::uint64_t epoch) noexcept
+    {
+        if (! active || epoch <= currentEpoch)
+            return false;
+        currentEpoch = epoch;
+        resetAnalysis();
         return true;
     }
 
@@ -136,8 +165,10 @@ public:
 
     std::uint64_t epoch() const noexcept { return currentEpoch; }
     std::int64_t nextFrame() const noexcept { return written; }
-    // Exclusive end of completed analysis; the unfinished window has no result.
+    // Current epoch's analysed interval is [epochFirstFrame(), analyzedFrames()).
+    // This is not a continuous prefix across discarded partial epoch windows.
     std::int64_t analyzedFrames() const noexcept { return analyzedEnd; }
+    std::int64_t epochFirstFrame() const noexcept { return epochFirst; }
     int windowFrames() const noexcept { return hop; }
     std::size_t markerCount() const noexcept { return count; }
     // Since reset; saturates at UINT64_MAX. Old marker loss is never hidden.
@@ -152,17 +183,29 @@ public:
         return history[(oldest + index) % history.size()];
     }
 
-    // Search only [first, end), intersected by the caller with retained AUDIO.
-    // Reject unanalysed/future domains. No qualifying retained marker => nullopt,
-    // never a grid point or unrelated attack. Equal distances choose earlier.
+    // Bounds come from the owning transport timeline. The caller intersects the
+    // search [first,end) with retained AUDIO and this epoch, without moving the
+    // epoch's true firstFrame. Search end must not include a discarded partial analysis
+    // window, even after newer epochs have advanced global input time.
+    // No qualifying retained marker => nullopt, never a grid point or unrelated
+    // epoch's attack. Equal distances choose earlier.
     // minimumRiseDb filters measured energy rise, not perceptual confidence.
-    std::optional<OnsetMarker> nearest (std::uint64_t requestedEpoch, std::int64_t target,
+    std::optional<OnsetMarker> nearest (SourceBounds source, std::int64_t target,
                                        std::int64_t first, std::int64_t end,
                                        double minimumRiseDb = 0.0) const noexcept
     {
-        if (! active || requestedEpoch != currentEpoch || target < 0 || first < 0
-            || end <= first || end > analyzedEnd
+        if (! active || source.epoch == 0 || source.epoch > currentEpoch
+            || source.firstFrame < 0 || source.endFrame <= source.firstFrame
+            || source.firstFrame > written
+            || (source.epoch == currentEpoch && source.firstFrame != epochFirst)
+            || target < 0 || first < source.firstFrame || end <= first
+            || end > source.endFrame
             || ! std::isfinite (minimumRiseDb) || minimumRiseDb < 0.0)
+            return std::nullopt;
+
+        const auto arrived = std::min (source.endFrame, written) - source.firstFrame;
+        const auto analysisEnd = source.firstFrame + (arrived / hop) * hop;
+        if (end > analysisEnd)
             return std::nullopt;
 
         std::optional<OnsetMarker> best;
@@ -170,7 +213,8 @@ public:
         for (std::size_t i = 0; i < count; ++i)
         {
             const auto candidate = *marker (i);
-            if (candidate.frame < first || candidate.frame >= end || candidate.riseDb < minimumRiseDb)
+            if (candidate.epoch != source.epoch || candidate.frame < first
+                || candidate.frame >= end || candidate.riseDb < minimumRiseDb)
                 continue;
             const auto distance = candidate.frame >= target ? candidate.frame - target : target - candidate.frame;
             if (! best || distance < bestDistance)
@@ -183,12 +227,21 @@ public:
     }
 
 private:
+    void resetAnalysis() noexcept
+    {
+        epochFirst = analyzedEnd = written;
+        inWindow = 0;
+        energySum = peakEnergy = smoothedEnergy = 0.0;
+        peakFrame = written;
+        previousOnset.reset();
+    }
+
     static constexpr auto maximumFrame = std::numeric_limits<std::int64_t>::max();
     static constexpr auto maximumEpoch = std::numeric_limits<std::uint64_t>::max();
     static constexpr double energyFloor = 1.0e-8;
     std::vector<OnsetMarker> history;
     std::uint64_t currentEpoch = 0, overwritten = 0;
-    std::int64_t written = 0, analyzedEnd = 0, peakFrame = 0, minimumGap = 0;
+    std::int64_t written = 0, analyzedEnd = 0, epochFirst = 0, peakFrame = 0, minimumGap = 0;
     std::optional<std::int64_t> previousOnset;
     std::size_t count = 0, writeSlot = 0;
     int hop = 0, inWindow = 0;
