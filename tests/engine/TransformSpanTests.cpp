@@ -42,7 +42,7 @@ TEST_CASE ("Transform spans reject invalid rates lengths and integer conversion 
     CHECK_FALSE (requiredSourceFrames (3, std::numeric_limits<double>::max(), maximum));
     CHECK_FALSE (requiredSourceFrames (2, std::ldexp (1.0, 63), maximum));
     const auto belowLimit = std::nextafter (std::ldexp (1.0, 63), 0.0);
-    CHECK (requiredSourceFrames (2, belowLimit, maximum) == maximum - 1022);
+    CHECK_FALSE (requiredSourceFrames (2, belowLimit, maximum));
     CHECK_FALSE (readCoordinate (-1, 1.0, 2, false));
     CHECK_FALSE (readCoordinate (0, 1.0, 0, false));
     CHECK_FALSE (readCoordinate (0, 1.0, -1, true));
@@ -65,6 +65,26 @@ TEST_CASE ("Transform coordinate integers must survive conversion to double exac
     REQUIRE (forward);
     CHECK (forward->index == exactLimit / 2);
     CHECK_THAT (forward->fraction, WithinAbs (0.0, 0.0));
+}
+
+TEST_CASE ("A fixed transform span cannot skip unrepresentable integer source identities", "[transform][span][source-domain]")
+{
+    constexpr auto exactLimit = std::int64_t { 1 } << 53;
+    // Both input integers round-trip, but (2^53+2)-1 rounds to 2^53 rather
+    // than addressing the intervening source frame. Reject the entire span.
+    CHECK_FALSE (readCoordinate (1, 1.0, exactLimit + 3, true));
+    CHECK_FALSE (readCoordinate (0, 1.0, exactLimit + 3, false));
+    CHECK_FALSE (requiredSourceFrames (2, static_cast<double> (exactLimit + 2), std::numeric_limits<std::int64_t>::max()));
+
+    // A last source index of exactly 2^53 still has every integer neighbor.
+    CHECK (requiredSourceFrames (2, static_cast<double> (exactLimit), exactLimit + 1) == exactLimit + 1);
+    const auto last = readCoordinate (0, 1.0, exactLimit + 1, true);
+    REQUIRE (last);
+    CHECK (last->index == exactLimit);
+    const auto previous = readCoordinate (1, 1.0, exactLimit + 1, true);
+    REQUIRE (previous);
+    CHECK (previous->index == exactLimit - 1);
+    CHECK_THAT (previous->fraction, WithinAbs (0.0, 0.0));
 }
 
 TEST_CASE ("Forward coordinates address the fixed source at the effective rate", "[transform][span]")

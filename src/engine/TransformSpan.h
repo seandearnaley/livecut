@@ -31,9 +31,9 @@ inline std::optional<double> exactInteger (std::int64_t value) noexcept
 // fractional last read needs its ceil. The owner supplies its declared source
 // bound (for example, the classic eight seconds); exceeding it is ineligible,
 // never a request to substitute that whole bound or shorten the voice silently.
-// Every planned output integer must be exactly representable as a double, so
-// N-1 cannot exceed 2^53. This excludes ambiguous enormous output identities
-// without restricting practical audio spans.
+// Every planned output and source integer must be exactly representable as a
+// double, so N-1 and the resulting last source index cannot exceed 2^53. This
+// excludes ambiguous enormous identities without restricting audio spans.
 inline std::optional<std::int64_t> requiredSourceFrames (std::int64_t outputFrames, double rate,
                                                         std::int64_t maxSourceFrames) noexcept
 {
@@ -46,7 +46,7 @@ inline std::optional<std::int64_t> requiredSourceFrames (std::int64_t outputFram
     if (! std::isfinite (lastRead))
         return std::nullopt;
     const auto neededIndex = std::ceil (lastRead);
-    if (neededIndex >= 0x1p63)
+    if (neededIndex > 0x1p53)
         return std::nullopt;
     const auto index = static_cast<std::int64_t> (neededIndex);
     if (index >= maxSourceFrames)
@@ -60,12 +60,15 @@ inline std::optional<std::int64_t> requiredSourceFrames (std::int64_t outputFram
 // No clamping, looping, source selection or tempo calculation occurs here.
 // A later tempo extension may ask for more output, but reads stop when this
 // fixed source is consumed. The owner separately enforces its voice deadline.
+// All integer identities within the fixed source must be representable, not
+// just its endpoint: fixedFrameCount-1 cannot exceed 2^53 in either direction.
 // Keep fraction as double: one just below 1 can round to float 1 and still
 // requires the next source frame. Exact integer reads require only that frame.
 inline std::optional<ReadCoordinate> readCoordinate (std::int64_t outputFrame, double rate,
                                                     std::int64_t fixedFrameCount, bool reverse) noexcept
 {
-    if (fixedFrameCount <= 0 || ! std::isfinite (rate) || rate <= 0.0)
+    if (fixedFrameCount <= 0 || fixedFrameCount - 1 > (std::int64_t { 1 } << 53)
+        || ! std::isfinite (rate) || rate <= 0.0)
         return std::nullopt;
     const auto output = transform_span_detail::exactInteger (outputFrame);
     if (! output)
