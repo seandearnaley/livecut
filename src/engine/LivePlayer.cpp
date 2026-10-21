@@ -112,6 +112,7 @@ void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit
         {
             assert (size <= capacity);
             PlayingCut playingCut;
+            playingCut.requested = cut;
             playingCut.start = start;
             playingCut.size = size;
             playingCut.units = cut.units;
@@ -237,6 +238,14 @@ std::optional<StereoFrame> LivePlayer::readSourceFrame (double relativeFrame) co
     return history.readFractional (source, index, relativeFrame - static_cast<double> (index));
 }
 
+std::optional<StereoFrame> LivePlayer::readSourceFrame (SourceRegion region, double relativeFrame) const
+{
+    if (! std::isfinite (relativeFrame) || relativeFrame < 0.0 || relativeFrame >= static_cast<double> (region.frameCount))
+        return std::nullopt;
+    const auto index = static_cast<std::int64_t> (relativeFrame);
+    return history.readFractional (region, index, relativeFrame - static_cast<double> (index));
+}
+
 void LivePlayer::process (float& left, float& right)
 {
     ingestFrame (left, right);
@@ -300,6 +309,15 @@ void LivePlayer::retimeMusicalCut (int samplesToEnd, int samplesToGate, std::int
     cut.playable = cut.pitched ? (cut.start == 0 && cut.rate < 1.0 ? sounding : playableSamples (sounding, cut.rate, recordedAtStart, capacity))
                                : std::min (sounding, capacity);
     cut.soundingFrames = sounding;
+}
+
+void LivePlayer::advanceFrame (bool advanceBySamples)
+{
+    if (current >= playing.size())
+        return;
+    ++position;
+    if (advanceBySamples)
+        skipFinishedCuts();
 }
 
 void LivePlayer::renderFrame (float& left, float& right, bool advanceBySamples)

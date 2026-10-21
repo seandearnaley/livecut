@@ -12,6 +12,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <limits>
 
 namespace livecut::engine
 {
@@ -44,6 +45,8 @@ void Cutter::prepare (double newSampleRate, std::int64_t latencyFrames)
     bitCrusher.prepare (sampleRate);
     combFilter.prepare (sampleRate);
     impactEffects.prepare (sampleRate);
+    fractureReader.prepare (sampleRate);
+    frequencyEffects.prepare (sampleRate);
     setFadeMilliseconds (fadeMilliseconds);
     reset();
 }
@@ -77,6 +80,16 @@ void Cutter::setComb (const CombParameters& parameters)
 void Cutter::setImpact (const ImpactParameters& parameters)
 {
     impactParams = parameters;
+}
+
+void Cutter::setFracture (const FractureParameters& parameters)
+{
+    fractureParams = parameters;
+}
+
+void Cutter::setFrequency (const FrequencyParameters& parameters)
+{
+    frequencyParams = parameters;
 }
 
 void Cutter::setSeed (std::uint32_t newSeed)
@@ -128,6 +141,12 @@ void Cutter::resetRendering()
     processingError = Error::none;
     livePlayer.resetRendering();
     impactEffects.reset();
+    fractureReader.reset();
+    frequencyEffects.reset();
+    fractureCut.reset();
+    frequencySelected = false;
+    fractureBpm = 0;
+    fractureOrdinal = 0;
     impactCut.reset();
     renderContextActive = false;
 }
@@ -289,7 +308,8 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
     {
         const auto barsIntoPhrase = static_cast<int> (bar - phraseBar);
         const auto unitsIntoPhrase = barsIntoPhrase * unitsPerBar + unitsIntoBar;
-        const auto structuralChange = pendingProcedure != procedure || pendingUnitsPerBar != unitsPerBar || std::abs (pendingSwing - swing) > 1.0e-9;
+        const auto structuralChange = pendingProcedure != procedure || pendingUnitsPerBar != unitsPerBar || std::abs (pendingSwing - swing) > 1.0e-9
+                                   || fractureParams.procedure != fractureProcedure;
 
         if (unitsIntoPhrase >= phraseBars * unitsPerBar - halfSample)
         {
@@ -318,9 +338,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             renderSwung (left, right, bar, beats, beatsPerSample, timing, frame + 1);
         else
         {
-            selectTransform (frame);
-            startImpactCut();
-            livePlayer.renderFrame (left, right);
+            renderSource (frame,left,right,true);
         }
         if (livePlayer.hasSourceError())
         {
@@ -351,6 +369,8 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
         }
 
         impactEffects.process (left, right);
+        frequencyEffects.process (left,right,impactEffects.diagnostics().envelope,
+                                  impactEffects.diagnostics().repeatProgress,frequencySelected);
 
         if (livePlayer.currentCut() != effectsCut)
             startEffectsCut();
@@ -427,6 +447,7 @@ void Cutter::applyStructuralChanges()
 
     unitsPerBar = pendingUnitsPerBar;
     swing = pendingSwing;
+    fractureProcedure = fractureParams.procedure;
 }
 
 void Cutter::startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timing)
@@ -437,7 +458,14 @@ void Cutter::startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timi
     random.reseed (phraseSeed (seed, bar));
     phraseImpactSeed = seed;
     phraseBar = bar;
-    phraseBars = procedureFor (procedure).choosePhraseBars (random, params);
+    if (fractureProcedure == FractureProcedure::classic)
+        phraseBars = procedureFor (procedure).choosePhraseBars (random, params);
+    else
+    {
+        const CutIdentity id { seed,bar,0,0,0,1 };
+        const auto [minimum, maximum] = std::minmax (params.minPhraseBars, params.maxPhraseBars);
+        phraseBars = minimum + static_cast<int> (fractureDraw(id,0x46504852415345ULL)*(maximum-minimum+1));
+    }
     cutOrdinal = 0;
     assert (phraseBars >= 1);
 
@@ -457,7 +485,10 @@ void Cutter::planBlock (const Timing& timing)
     context.unitsPerBar = unitsPerBar;
     context.beatsPerBar = timing.beatsPerBar;
 
-    procedureFor (procedure).chooseBlock (random, params, context, cuts);
+    if (fractureProcedure == FractureProcedure::classic)
+        procedureFor (procedure).chooseBlock (random, params, context, cuts);
+    else
+        chooseFractureBlock (context);
     blockEnd = blockStart + totalUnits (cuts);
 
     if (queued == plans.size())
@@ -474,9 +505,12 @@ void Cutter::planBlock (const Timing& timing)
     plan.unitsPerBar = unitsPerBar;
     plan.transform = transformParameters;
     plan.transformSeed = seed;
+    plan.fracture = fractureParams;
+    plan.fracture.procedure = fractureProcedure;
+    plan.frequency = frequencyParams;
     plan.transportEpoch = 0;
     plan.attacks = {};
-    if (plan.transform.attackAlign || plan.transform.reverseChance > 0.0)
+    if (plan.transform.attackAlign || plan.transform.reverseChance > 0.0 || fractureProcedure != FractureProcedure::classic)
     {
         if (sourceContext != nullptr)
             if (const auto bounds = sourceContext->sourceBoundsAt (planningSource.firstFrame))
@@ -489,6 +523,7 @@ void Cutter::planBlock (const Timing& timing)
     const auto intoBar = blockStart - std::floor (blockStart / unitsPerBar) * unitsPerBar;
     plan.activationBar = phraseBar + static_cast<std::int64_t> (std::floor (blockStart / unitsPerBar));
     plan.activationBeat = *SwingGrid::toPhysical (std::clamp (intoBar * timing.beatsPerBar / unitsPerBar, 0.0, timing.beatsPerBar), timing.beatsPerBar, swing);
+    plan.firstCutOrdinal = fractureProcedure==FractureProcedure::classic ? cutOrdinal : fractureOrdinal;
     for (std::size_t i = 0; i < cuts.size(); ++i)
     {
         plan.cuts[i] = cuts[i];
@@ -496,6 +531,8 @@ void Cutter::planBlock (const Timing& timing)
             plan.cuts[i].amp *= accentGain (accent, seed, phraseBar, cutOrdinal);
         ++cutOrdinal;
     }
+    if(fractureProcedure!=FractureProcedure::classic)
+        fractureOrdinal+=cuts.size();
 
     // The effects get their settings before the block's first cut starts. They
     // are drawn whether or not an effect is on, so toggling one never changes the cuts.
@@ -511,6 +548,197 @@ void Cutter::planBlock (const Timing& timing)
     plan.impactSeed = phraseImpactSeed;
     ++queued;
     maximumQueued = std::max (maximumQueued, queued);
+}
+
+void Cutter::chooseFractureBlock (const BlockContext& context)
+{
+    cuts.clear();
+    const auto intoBar = blockStart-std::floor(blockStart/unitsPerBar)*unitsPerBar;
+    const auto remaining = std::min(unitsPerBar-intoBar,context.phraseUnits-blockStart);
+    const auto unitsPerBeat = unitsPerBar/context.beatsPerBar;
+    const CutIdentity blockId {phraseImpactSeed,phraseBar,blockStart,0,0,1};
+    double length=remaining,cutLength=remaining;
+    if(fractureProcedure==FractureProcedure::grainCut)
+    {
+        length=std::min(remaining,unitsPerBeat);
+        const auto activity=2*static_cast<double>(fractureParams.activity);
+        const auto lower=static_cast<int>(std::floor(activity));
+        const auto exponent=std::min(2,lower+(fractureDraw(blockId,0x464143544956ULL)<activity-lower?1:0));
+        cutLength=length/static_cast<double>(1<<exponent);
+    }
+    else
+    {
+        constexpr std::array<double,4> beats{.5,1,2,4};
+        cutLength=std::min(remaining,unitsPerBeat*beats[static_cast<std::size_t>(fractureParams.tape.cycle)]);
+    }
+    const auto count=static_cast<std::size_t>(std::ceil(length/cutLength-1e-10));
+    if(count>maxCutsPerBlock)
+    {
+        processingError=Error::planOverflow;
+        return;
+    }
+    auto done=0.0;
+    for(std::size_t i=0;i<count;++i)
+    {
+        const CutIdentity id{phraseImpactSeed,phraseBar,blockStart,done,i,count};
+        const auto uniform=[&](double lo,double hi,std::uint64_t tag)
+        { return lo+(hi-lo)*fractureDraw(id,tag); };
+        Cut cut;
+        cut.units=std::min(cutLength,length-done);
+        cut.gate=params.dutyCycle;
+        cut.amp=static_cast<float>(uniform(params.minAmp,params.maxAmp,0x46414d50ULL));
+        cut.pan=static_cast<float>(uniform(params.minPan,params.maxPan,0x4650414eULL));
+        cut.cents=fractureProcedure==FractureProcedure::tapeCut ? 0.0f
+                  :static_cast<float>(uniform(params.minCents,params.maxCents,0x465049544348ULL));
+        cuts.push_back(cut);
+        done+=cut.units;
+    }
+}
+
+void Cutter::startFractureCut (std::int64_t frame)
+{
+    const auto index=livePlayer.currentCut();
+    if(index>=livePlayer.cuts().size() || (fractureCut && *fractureCut==index))
+        return;
+    fractureCut=index;
+    fractureBpm=renderTiming.bpm;
+    const auto& playing=livePlayer.cuts()[index];
+    FractureCutContext context;
+    context.identity={activePlan.impactSeed,activePlan.phraseBar,activePlan.start,playing.logicalStart,index,livePlayer.cuts().size()};
+    context.cut=playing.requested;
+    context.outputFrames=playing.soundingFrames;
+    context.fadeFrames=std::max(1,static_cast<int>(std::lround(fadeMilliseconds*sampleRate/1000)));
+    context.transportEpoch=activePlan.transportEpoch;
+    context.ordinal=activePlan.firstCutOrdinal+index;
+    context.source=activePlan.source;
+    const auto bounds=sourceContext!=nullptr?sourceContext->sourceBoundsAt(frame):std::nullopt;
+    const auto invalid=[&](FractureState reason)
+    {
+        fractureReader.startCut(context);
+        fractureReader.fail(reason);
+    };
+    if(!bounds || bounds->epoch!=activePlan.transportEpoch)
+    {
+        invalid(FractureState::contextUnavailable);
+        return;
+    }
+    const auto grain=activePlan.fracture.procedure==FractureProcedure::grainCut;
+    std::int64_t required=1;
+    if(grain)
+    {
+        required=FractureReader::grainPoolFrames(activePlan.fracture.grain,context.cut.cents,sampleRate);
+        context.source.firstFrame=std::max(bounds->first,activePlan.source.firstFrame+1-required);
+        context.source.frameCount=required;
+    }
+    else
+    {
+        TapeTrajectory trajectory;
+        auto start=activePlan.fracture.tape.startSpeed,end=activePlan.fracture.tape.endSpeed;
+        if(activePlan.fracture.tape.alternate && context.ordinal%2!=0) std::swap(start,end);
+        trajectory.start(start,end,context.outputFrames,activePlan.fracture.tape.curve);
+        required=trajectory.sourceFrames();
+        context.source.frameCount=bounds->end ? *bounds->end-context.source.firstFrame
+                                  :std::numeric_limits<std::int64_t>::max()-context.source.firstFrame;
+    }
+    if(context.source.firstFrame<bounds->first || (bounds->end && (context.source.firstFrame>=*bounds->end
+        || (grain && required>*bounds->end-context.source.firstFrame))))
+    {
+        invalid(FractureState::sourceLost);
+        return;
+    }
+    const auto& transform=activePlan.transform;
+    auto reverse=fractureDraw(context.identity,0x4652455645525345ULL)<transform.reverseChance;
+    const auto eligible=[&](std::int64_t start,std::int64_t count)
+    {
+        return start>=bounds->first && (!bounds->end || (start<*bounds->end && count<=*bounds->end-start))
+            && livePlayer.sourceAvailable({activePlan.source.epoch,start,count});
+    };
+    auto selectedStart=context.source.firstFrame;
+    auto transformReady=true;
+    if(transform.attackAlign)
+    {
+        transformReady=false;
+        transforms.reason=TransformReason::analysisError;
+        if(onsetDetector!=nullptr)
+        {
+            const auto state=activePlan.attacks.update(*onsetDetector,bounds->end);
+            if(state==AttackCandidates::State::ready)
+            {
+                if(const auto chosen=activePlan.attacks.nearestEligible(required,eligible))
+                {
+                    selectedStart=chosen->sourceStart;
+                    transformReady=true;
+                }
+                else transforms.reason=activePlan.attacks.count()==0?TransformReason::noAttack:TransformReason::sourceIncomplete;
+            }
+            else transforms.reason=state==AttackCandidates::State::pending?TransformReason::searchPending:TransformReason::analysisError;
+        }
+    }
+    // Grain's complete fixed pool may arrive later. Tape transforms need the
+    // complete frozen trajectory now; a rejected optional transform is explicit.
+    if(!grain && (reverse || transform.attackAlign) && !eligible(selectedStart,required))
+    {
+        transformReady=false;
+        transforms.reason=TransformReason::sourceIncomplete;
+    }
+    if(transformReady)
+    {
+        context.reverse=reverse;
+        if(transform.attackAlign || (!grain && reverse))
+        {
+            context.source.firstFrame=selectedStart;
+            context.source.frameCount=required;
+            context.completeTapeSource=!grain;
+        }
+        if(transform.attackAlign || reverse)
+        {
+            ++transforms.eligible;
+            transforms.attackAligned+=transform.attackAlign?1:0;
+            transforms.reversed+=reverse?1:0;
+            transforms.lastSourceStart=context.source.firstFrame;
+            transforms.reason=TransformReason::applied;
+        }
+        else transforms.reason=TransformReason::off;
+    }
+    else ++transforms.ineligible;
+    fractureReader.startCut(context);
+}
+
+void Cutter::renderSource (std::int64_t frame,float& left,float& right,bool advanceBySamples)
+{
+    if(activePlan.fracture.procedure==FractureProcedure::classic)
+    {
+        selectTransform(frame);
+        startImpactCut();
+        livePlayer.renderFrame(left,right,advanceBySamples);
+        return;
+    }
+    startFractureCut(frame);
+    const auto age=livePlayer.currentCutAge();
+    const auto sounding=livePlayer.currentSoundingFrames();
+    // Only an actual BPM value change retargets Tape. A one-frame musical
+    // gate rounding change at a host boundary is not a tempo edit.
+    if(std::abs(fractureBpm-renderTiming.bpm)>0)
+    {
+        fractureReader.retimeTape(age,std::max(sounding-age,0));
+        fractureBpm=renderTiming.bpm;
+    }
+    const auto& diagnostics=fractureReader.diagnostics();
+    if(sourceContext!=nullptr && diagnostics.source.frameCount>0)
+    {
+        // Historical PCM outlives its original callback metadata. Query the
+        // current original render context, whose epoch bounds still describe
+        // the entire frozen source; never require a retired metadata lookup.
+        const auto bounds=sourceContext->sourceBoundsAt(frame);
+        if(!bounds || bounds->epoch!=diagnostics.transportEpoch || diagnostics.source.firstFrame<bounds->first)
+            fractureReader.fail(FractureState::sourceLost);
+        else if(activePlan.fracture.procedure==FractureProcedure::grainCut && bounds->end
+                && diagnostics.source.frameCount>*bounds->end-diagnostics.source.firstFrame)
+            fractureReader.fail(FractureState::sourceLost);
+    }
+    if(fractureReader.process(livePlayer,age,sounding,left,right))
+        startImpactCut();
+    livePlayer.advanceFrame(advanceBySamples);
 }
 
 void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, const Timing& timing)
@@ -529,7 +757,11 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         bitCrusher.setBlock (fx[0], fx[1], fx[2], fx[3]);
         combFilter.setBlock (activePlan.comb, fx[4], fx[5]);
         impactEffects.setParameters (activePlan.impact);
+        fractureReader.setParameters (activePlan.fracture);
+        frequencyEffects.setParameters (activePlan.frequency);
         impactCut.reset();
+        fractureCut.reset();
+        fractureBpm = 0;
         startEffectsCut();
     }
 }
@@ -559,9 +791,7 @@ void Cutter::renderSwung (float& left, float& right, std::int64_t bar, double be
         const auto toGate = physicalDistance (start + cut.units * cut.gate, bar, beats, timing);
         livePlayer.retimeMusicalCut (static_cast<int> (std::lround (toEnd / beatsPerSample)), static_cast<int> (std::lround (toGate / beatsPerSample)), renderedExclusiveEnd);
     }
-    selectTransform (renderedExclusiveEnd - 1);
-    startImpactCut();
-    livePlayer.renderFrame (left, right, false);
+    renderSource (renderedExclusiveEnd-1,left,right,false);
 }
 
 void Cutter::selectTransform (std::int64_t frame)
@@ -681,6 +911,10 @@ void Cutter::startImpactCut()
     impactEffects.startCut ({ activePlan.impactSeed, activePlan.phraseBar,
                               activePlan.start, cut.logicalStart, index,
                               livePlayer.cuts().size() });
+    const CutIdentity id { activePlan.impactSeed,activePlan.phraseBar,activePlan.start,
+                           cut.logicalStart,index,livePlayer.cuts().size() };
+    frequencySelected = activePlan.frequency.enabled && (activePlan.frequency.chance >= 1
+                     || fractureDraw(id,0x4652455155454e43ULL) < activePlan.frequency.chance);
 }
 
 } // namespace livecut::engine

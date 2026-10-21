@@ -458,6 +458,11 @@ void LivecutAudioProcessor::publishDisplay()
     using Status = livecut::DisplayState::Status;
     display.hold = wetHold.state();
     const auto& cutter = stream->cutter;
+    const auto& fracture = cutter.fractureDiagnostics();
+    display.fractureFamily = fracture.family;
+    display.fractureState = fracture.state;
+    display.fractureVoices = static_cast<int> (fracture.activeVoices);
+    display.fractureTapeSpeed = fracture.tapeSpeed;
     if (! processingRunning)
     {
         display.status = Status::waitingForHost;
@@ -512,7 +517,7 @@ void LivecutAudioProcessor::changeProgramName (int, const juce::String&) {}
 void LivecutAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = parameters.copyState();
-    state.setProperty ("schemaVersion", 6, nullptr);
+    state.setProperty ("schemaVersion", 7, nullptr);
     state.setProperty ("algorithmVersion", 2, nullptr);
     if (const auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);

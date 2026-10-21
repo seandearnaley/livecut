@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures to build")
 
-project(Livecut VERSION 0.6.0 LANGUAGES C CXX)
+project(Livecut VERSION 0.7.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,6 +30,8 @@ add_library(LivecutEngine STATIC
     src/engine/Cutter.cpp
     src/engine/Effects.cpp
     src/engine/ImpactEffects.cpp
+    src/engine/FrequencyEffects.cpp
+    src/engine/Fracture.cpp
     src/engine/LivePlayer.cpp
     src/engine/PhraseSeed.cpp
     src/engine/Random.cpp
@@ -125,6 +127,8 @@ if(LIVECUT_BUILD_TESTS)
         tests/HostSyncTests.cpp
         tests/ParametersTests.cpp
         tests/PluginProcessorTests.cpp
+        tests/FractureStateTests.cpp
+        tests/FractureProcessorTests.cpp
         tests/ImpactStateTests.cpp
         tests/ImpactProcessorTests.cpp
         tests/RecutProcessorTests.cpp)
@@ -160,7 +164,10 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/CutterTests.cpp
         tests/engine/EffectsTests.cpp
         tests/engine/ImpactEffectsTests.cpp
+        tests/engine/FrequencyEffectsTests.cpp
         tests/engine/ImpactIntegrationTests.cpp
+        tests/engine/FractureIntegrationTests.cpp
+        tests/engine/FractureTests.cpp
         tests/engine/LivePlayerTests.cpp
         tests/engine/PhraseSeedTests.cpp
         tests/engine/RandomTests.cpp

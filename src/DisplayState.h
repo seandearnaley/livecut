@@ -5,6 +5,7 @@
 #include <atomic>
 #include "engine/WetHold.h"
 #include "engine/Cutter.h"
+#include "engine/Fracture.h"
 
 namespace livecut
 {
@@ -37,6 +38,11 @@ struct DisplayState
     using TransformReason = engine::Cutter::TransformReason;
     std::atomic<TransformReason> transformReason { TransformReason::off };
     std::atomic<std::uint64_t> transformEligible { 0 }, attackApplied { 0 }, reverseApplied { 0 }, transformIneligible { 0 };
+
+    std::atomic<engine::FractureProcedure> fractureFamily { engine::FractureProcedure::classic };
+    std::atomic<engine::FractureState> fractureState { engine::FractureState::off };
+    std::atomic<int> fractureVoices { 0 };
+    std::atomic<double> fractureTapeSpeed { 0.0 };
 
     static_assert (std::atomic<Status>::is_always_lock_free);
     static_assert (std::atomic<double>::is_always_lock_free);

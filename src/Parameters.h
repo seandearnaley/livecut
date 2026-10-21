@@ -4,6 +4,8 @@
 
 #include "engine/Cutter.h"
 #include "engine/ImpactEffects.h"
+#include "engine/Fracture.h"
+#include "engine/FrequencyEffects.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -86,6 +88,25 @@ inline constexpr auto impactTransientTimeMs = "impactTransientTimeMs";
 inline constexpr auto impactTransientMix = "impactTransientMix";
 inline constexpr auto impactAttackMs = "impactAttackMs";
 inline constexpr auto impactDecayMs = "impactDecayMs";
+inline constexpr auto fractureProcedure = "fractureProcedure";
+inline constexpr auto fractureActivity = "fractureActivity";
+inline constexpr auto fractureGrainSizeMs = "fractureGrainSizeMs";
+inline constexpr auto fractureGrainDensity = "fractureGrainDensity";
+inline constexpr auto fractureGrainPositionSpreadMs = "fractureGrainPositionSpreadMs";
+inline constexpr auto fractureGrainPitchSpreadCents = "fractureGrainPitchSpreadCents";
+inline constexpr auto fractureGrainPanSpread = "fractureGrainPanSpread";
+inline constexpr auto fractureTapeStartSpeed = "fractureTapeStartSpeed";
+inline constexpr auto fractureTapeEndSpeed = "fractureTapeEndSpeed";
+inline constexpr auto fractureTapeCurve = "fractureTapeCurve";
+inline constexpr auto fractureTapeCycle = "fractureTapeCycle";
+inline constexpr auto fractureTapeAlternate = "fractureTapeAlternate";
+inline constexpr auto fractureFrequencyEnabled = "fractureFrequencyEnabled";
+inline constexpr auto fractureFrequencyMode = "fractureFrequencyMode";
+inline constexpr auto fractureFrequencyChance = "fractureFrequencyChance";
+inline constexpr auto fractureFrequencyHz = "fractureFrequencyHz";
+inline constexpr auto fractureFrequencyEnvHz = "fractureFrequencyEnvHz";
+inline constexpr auto fractureFrequencyRepeatHz = "fractureFrequencyRepeatHz";
+inline constexpr auto fractureFrequencyMix = "fractureFrequencyMix";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
@@ -113,6 +134,8 @@ struct Settings
     engine::CrusherParameters crusher;
     engine::CombParameters comb;
     engine::ImpactParameters impact;
+    engine::FractureParameters fracture;
+    engine::FrequencyParameters frequency;
 };
 
 // Reads every parameter's current value. It caches each parameter's atomic
@@ -205,6 +228,26 @@ private:
     Source impactTransientMix;
     Source impactAttackMs;
     Source impactDecayMs;
+    Source fractureProcedure;
+    Source fractureActivity;
+    Source fractureGrainSizeMs;
+    Source fractureGrainDensity;
+    Source fractureGrainPositionSpreadMs;
+    Source fractureGrainPitchSpreadCents;
+    Source fractureGrainPanSpread;
+    Source fractureTapeStartSpeed;
+    Source fractureTapeEndSpeed;
+    Source fractureTapeCurve;
+    Source fractureTapeCycle;
+    Source fractureTapeAlternate;
+    Source fractureFrequencyEnabled;
+    Source fractureFrequencyMode;
+    Source fractureFrequencyChance;
+    Source fractureFrequencyHz;
+    Source fractureFrequencyEnvHz;
+    Source fractureFrequencyRepeatHz;
+    Source fractureFrequencyMix;
+
 
 };
 

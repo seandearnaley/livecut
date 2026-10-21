@@ -5,6 +5,8 @@
 #include "engine/CutProcedures.h"
 #include "engine/Effects.h"
 #include "engine/ImpactEffects.h"
+#include "engine/Fracture.h"
+#include "engine/FrequencyEffects.h"
 #include "engine/LivePlayer.h"
 #include "engine/AttackCandidates.h"
 
@@ -63,6 +65,8 @@ public:
     void setCrusher (const CrusherParameters& parameters);
     void setComb (const CombParameters& parameters);
     void setImpact (const ImpactParameters& parameters);
+    void setFracture (const FractureParameters& parameters);
+    void setFrequency (const FrequencyParameters& parameters);
 
     // Takes effect from the next phrase.
     void setSeed (std::uint32_t seed);
@@ -144,6 +148,7 @@ public:
     const BitCrusher& crusher() const { return bitCrusher; }
     const Comb& comb() const { return combFilter; }
     const ImpactEffects& impact() const { return impactEffects; }
+    const FractureDiagnostics& fractureDiagnostics() const { return fractureReader.diagnostics(); }
 
 private:
     CutProcedure& procedureFor (Procedure p);
@@ -155,6 +160,9 @@ private:
     double physicalDistance (double phraseUnits, std::int64_t bar, double beats, const Timing& timing) const;
     void startEffectsCut();
     void startImpactCut();
+    void chooseFractureBlock (const BlockContext&);
+    void startFractureCut (std::int64_t frame);
+    void renderSource (std::int64_t frame, float& left, float& right, bool advanceBySamples);
     void selectTransform (std::int64_t renderFrame);
     void applyStructuralChanges();
 
@@ -169,9 +177,12 @@ private:
         std::array<double, 6> effects {};
         CombParameters comb;
         ImpactParameters impact;
+        FractureParameters fracture;
+        FrequencyParameters frequency;
         TransformParameters transform;
         AttackCandidates attacks;
         std::uint64_t transportEpoch = 0;
+        std::uint64_t firstCutOrdinal = 0;
         std::uint32_t transformSeed = 1;
         std::uint32_t impactSeed = 1;
     };
@@ -192,6 +203,7 @@ private:
     double swing = 50.0, pendingSwing = 50.0;
     float accent = 0.0f;
     std::uint64_t cutOrdinal = 0;
+    std::uint64_t fractureOrdinal = 0; // independent of the phrase-local legacy accent ordinal
     bool emittedBar = false;
     std::int64_t lastEmittedBar = 0;
 
@@ -205,10 +217,18 @@ private:
     BitCrusher bitCrusher;
     Comb combFilter;
     ImpactEffects impactEffects;
+    FractureReader fractureReader;
+    FrequencyEffects frequencyEffects;
     CutParameters params;
     CrusherParameters crusherParams;
     CombParameters combParams;
     ImpactParameters impactParams;
+    FractureParameters fractureParams;
+    FrequencyParameters frequencyParams;
+    FractureProcedure fractureProcedure = FractureProcedure::classic;
+    std::optional<std::size_t> fractureCut;
+    bool frequencySelected = false;
+    double fractureBpm = 0.0;
     std::size_t effectsCut = 0; // the cut the effects were last set for
     std::optional<std::size_t> impactCut;
     std::uint32_t phraseImpactSeed = 1;
