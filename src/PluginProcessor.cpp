@@ -26,7 +26,7 @@ void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
         const juce::ScopedLock guard (getCallbackLock());
         suspendProcessing (true);
         operation = ++configurationGeneration;
-        haveAudioObservation = false;
+        observedTransport = AudioObservation::unknown;
         retired = std::move (stream);
         processingSampleRate = sampleRate;
         preparationFailed = false;
@@ -82,8 +82,7 @@ void LivecutAudioProcessor::releaseResources()
         capture.rolling().interrupt();
         wetHold.interrupt();
         display.hold = wetHold.state();
-        lastAudioRunning = false;
-        haveAudioObservation = true;
+        observedTransport = AudioObservation::unknown;
         preparationFailed = false;
         publishedModeState = ModeState::unprepared;
     }
@@ -122,6 +121,7 @@ void LivecutAudioProcessor::reconcileLatency()
             if (getLatencySamples() != desired)
                 continue;
             publishedLatency.store (desired, std::memory_order_release);
+            publishedGeneration = configurationGeneration;
             if (stream != nullptr)
             {
                 publishedMode.store (stream->mode, std::memory_order_release);
@@ -158,34 +158,41 @@ void LivecutAudioProcessor::timerCallback()
 void LivecutAudioProcessor::tryApplyMode()
 {
     const auto requested = settingsReader.read();
-    double rate;
-    std::uint64_t generation;
-    bool latencyOnly = false;
+    double rate = 0.0;
+    std::uint64_t generation = 0;
+    bool reconcile = false;
     {
         const juce::ScopedLock guard (getCallbackLock());
         if (latencyUpdateInProgress)
-            return; // the current publisher reconciles the newest configuration
-        if (stream == nullptr)
+            return; // the setter owner must publish or leave reconciliation pending
+        // Configuration coherence precedes EVERY mode-choice eligibility return,
+        // including null/error resources and unavailable transport evidence.
+        reconcile = publishedGeneration != configurationGeneration;
+        if (! reconcile)
         {
-            publishedModeState = preparationFailed ? ModeState::error : ModeState::unprepared;
-            return;
+            if (stream == nullptr)
+            {
+                publishedModeState = preparationFailed ? ModeState::error : ModeState::unprepared;
+                applyPending = false; // a future prepare applies the persisted request
+                return;
+            }
+            if (stream->mode == requested.requestedMode)
+            {
+                publishedModeState = ModeState::active;
+                applyPending = false;
+                return;
+            }
+            const auto observation = observedTransport.load (std::memory_order_acquire);
+            if (observation != AudioObservation::stopped)
+            {
+                publishedModeState = observation == AudioObservation::playing ? ModeState::pendingPlaying : ModeState::pendingObservation;
+                return;
+            }
+            generation = configurationGeneration;
+            rate = processingSampleRate;
         }
-        if (stream->mode == requested.requestedMode)
-            latencyOnly = true; // always reconcile publication/suspension, not just the numeric delay
-        if (! latencyOnly && ! haveAudioObservation.load (std::memory_order_acquire))
-        {
-            publishedModeState = ModeState::pendingObservation;
-            return;
-        }
-        if (! latencyOnly && lastAudioRunning.load (std::memory_order_acquire))
-        {
-            publishedModeState = ModeState::pendingPlaying;
-            return;
-        }
-        generation = configurationGeneration;
-        rate = processingSampleRate;
     }
-    if (latencyOnly)
+    if (reconcile)
     {
         reconcileLatency();
         return;
@@ -194,29 +201,36 @@ void LivecutAudioProcessor::tryApplyMode()
     try { prepared = std::make_unique<livecut::StreamResources> (rate, requested.requestedMode); }
     catch (const std::exception&)
     {
-        publishedModeState = ModeState::error;
-        applyPending = false;
+        const juce::ScopedLock guard (getCallbackLock());
+        if (generation == configurationGeneration)
+        {
+            publishedModeState = ModeState::error;
+            applyPending = false;
+        }
+        else
+            publishedModeState = ModeState::pendingHostChange;
         return;
     }
     std::unique_ptr<livecut::StreamResources> retired;
     {
         const juce::ScopedLock guard (getCallbackLock());
-        if (generation != configurationGeneration || rate != processingSampleRate
-            || requested.requestedMode != settingsReader.read().requestedMode)
+        if (generation != configurationGeneration || publishedGeneration != configurationGeneration
+            || rate != processingSampleRate || requested.requestedMode != settingsReader.read().requestedMode)
         {
             publishedModeState = ModeState::pendingHostChange;
             return; // stale prebuild freed after this guard
         }
-        if (lastAudioRunning.load (std::memory_order_acquire))
+        const auto observation = observedTransport.load (std::memory_order_acquire);
+        if (observation != AudioObservation::stopped)
         {
-            publishedModeState = ModeState::pendingPlaying;
+            publishedModeState = observation == AudioObservation::playing ? ModeState::pendingPlaying : ModeState::pendingObservation;
             return;
         }
         suspendProcessing (true);
         retired = std::move (stream);
         stream = std::move (prepared);
         ++configurationGeneration;
-        haveAudioObservation = false;
+        observedTransport = AudioObservation::unknown;
         capture.rolling().interrupt();
         wetHold.interrupt();
         wetHold.request (requested.hold);
@@ -232,8 +246,14 @@ void LivecutAudioProcessor::observeTransport()
 {
     const auto* head = getPlayHead();
     const auto info = head != nullptr ? head->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo> {};
-    lastAudioRunning.store (info && info->getIsPlaying(), std::memory_order_release);
-    haveAudioObservation.store (true, std::memory_order_release);
+    observeTransport (info);
+}
+
+void LivecutAudioProcessor::observeTransport (const juce::Optional<juce::AudioPlayHead::PositionInfo>& info)
+{
+    observedTransport.store (! info ? AudioObservation::unknown
+                                   : info->getIsPlaying() ? AudioObservation::playing : AudioObservation::stopped,
+                             std::memory_order_release);
 }
 
 bool LivecutAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -291,8 +311,7 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float>& buffer, bool bypa
     input.resetHold = resetHoldRequested.exchange (false, std::memory_order_acq_rel);
     const auto* head = getPlayHead();
     const auto info = head != nullptr ? head->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo> {};
-    lastAudioRunning.store (info && info->getIsPlaying(), std::memory_order_release);
-    haveAudioObservation.store (true, std::memory_order_release);
+    observeTransport (info);
     const auto sync = info ? livecut::hostSync (*info) : std::nullopt;
     if (sync)
     {
@@ -528,7 +547,7 @@ juce::String LivecutAudioProcessor::modeStatusText() const
     {
         case ModeState::unprepared: return "Awaiting audio preparation";
         case ModeState::error: return "Cannot configure audio; check sample rate and available memory, then prepare again";
-        case ModeState::pendingObservation: return "Apply pending: waiting for a stopped audio callback";
+        case ModeState::pendingObservation: return "Apply pending: waiting for explicit stopped transport or audio preparation";
         case ModeState::pendingPlaying: return "Apply pending: stop host playback first";
         case ModeState::pendingHostChange: return "Apply pending: host audio configuration is changing";
         case ModeState::active: break;

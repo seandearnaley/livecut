@@ -13,8 +13,9 @@ namespace
 {
 struct RecutHead final : juce::AudioPlayHead
 {
-    juce::Optional<PositionInfo> getPosition() const override { return info; }
+    juce::Optional<PositionInfo> getPosition() const override { return available ? juce::Optional<PositionInfo> { info } : juce::Optional<PositionInfo> {}; }
     PositionInfo info;
+    bool available = true;
     void at (double beats, bool running = true)
     {
         info.setIsPlaying (running);
@@ -592,4 +593,99 @@ TEST_CASE ("Bounded latency reconciliation retries publish even when the numeric
     CHECK_FALSE (processor.isSuspended());
     CHECK (processor.activeMode() == livecut::ProcessingMode::studio);
     CHECK (processor.reportedLatencySamples() == 8000);
+}
+
+TEST_CASE ("Missing host transport never provides stopped evidence for Apply", "[processor][recut][missing-transport]")
+{
+    const auto bypass = GENERATE (false, true);
+    const auto keepHead = GENERATE (false, true);
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    processor.prepareToPlay (8000.0, 32);
+    RecutHead head;
+    head.at (0.0);
+    processor.setPlayHead (&head);
+    juce::AudioBuffer<float> buffer (2, 32);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    const auto render = [&]
+    {
+        if (bypass)
+            processor.processBlockBypassed (buffer, midi);
+        else
+            processor.processBlock (buffer, midi);
+    };
+    render();
+    setRecut (processor, "mode", 1.0f);
+    if (keepHead)
+        head.available = false;
+    else
+        processor.setPlayHead (nullptr);
+    render();
+    processor.applyRequestedMode();
+    CHECK (processor.modeState() == LivecutAudioProcessor::ModeState::pendingObservation);
+    CHECK (processor.reportedLatencySamples() == 0);
+    head.available = true;
+    head.at (.016, false);
+    processor.setPlayHead (&head);
+    render();
+    processor.applyRequestedMode();
+    CHECK (processor.activeMode() == livecut::ProcessingMode::studio);
+    CHECK (processor.reportedLatencySamples() == 4000);
+}
+
+TEST_CASE ("Bounded notifications reconcile empty and failed configurations on retry", "[processor][recut][empty-retry]")
+{
+    const auto failPreparation = GENERATE (false, true);
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    processor.prepareToPlay (8000.0, 32);
+    RecutHead head;
+    head.at (0.0, false);
+    processor.setPlayHead (&head);
+    juce::AudioBuffer<float> buffer (2, 32);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+    struct PrepareRelease final : juce::AudioProcessorListener
+    {
+        PrepareRelease (LivecutAudioProcessor& p, bool fail) : processor (p), failPreparation (fail) {}
+        void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override {}
+        void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails& details) override
+        {
+            if (! details.latencyChanged)
+                return;
+            if (++notifications == 1)
+                processor.prepareToPlay (16000.0, 32);
+            else if (notifications == 2)
+            {
+                if (failPreparation)
+                    processor.prepareToPlay (1000.0, 32);
+                else
+                    processor.releaseResources();
+            }
+        }
+        LivecutAudioProcessor& processor;
+        int notifications = 0;
+        bool failPreparation;
+    } sequence (processor, failPreparation);
+    processor.addListener (&sequence);
+    setRecut (processor, "mode", 1.0f);
+    processor.applyRequestedMode();
+    processor.removeListener (&sequence);
+    REQUIRE (sequence.notifications == 2);
+    CHECK (processor.modeState() == LivecutAudioProcessor::ModeState::pendingHostChange);
+    CHECK (processor.isSuspended());
+    processor.applyRequestedMode();
+    CHECK (processor.modeState() == (failPreparation ? LivecutAudioProcessor::ModeState::error
+                                                    : LivecutAudioProcessor::ModeState::unprepared));
+    CHECK_FALSE (processor.isSuspended());
+    CHECK (processor.getLatencySamples() == 0);
+    CHECK (processor.reportedLatencySamples() == 0);
+    juce::FloatVectorOperations::fill (buffer.getWritePointer (0), .5f, 32);
+    processor.processBlockBypassed (buffer, midi);
+    CHECK (buffer.getMagnitude (0, 32) == 0.0f);
+    juce::FloatVectorOperations::fill (buffer.getWritePointer (0), .5f, 32);
+    processor.processBlock (buffer, midi);
+    CHECK (buffer.getMagnitude (0, 32) == 0.0f);
 }
