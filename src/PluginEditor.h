@@ -14,7 +14,7 @@ class LivecutAudioProcessorEditor final : public juce::AudioProcessorEditor, pri
 public:
     // Everything is laid out once at this size and scaled as a whole when the window is resized.
     static constexpr int baseWidth = 880;
-    static constexpr int baseHeight = 660;
+    static constexpr int baseHeight = 724;
 
     explicit LivecutAudioProcessorEditor (LivecutAudioProcessor& p);
     ~LivecutAudioProcessorEditor() override;

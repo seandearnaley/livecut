@@ -83,12 +83,15 @@ public:
           delay (parameter (state, ids::minDelay), parameter (state, ids::maxDelay), "Delay"),
           wet (parameter (state, ids::wet), "Wet"),
           trim (parameter (state, ids::outputTrim), "Trim"),
+          swing (parameter (state, ids::swing), "Swing"),
+          accent (parameter (state, ids::accent), "Accent"),
+          hold (parameter (state, ids::hold), "Audio Hold"),
           captures (captureService)
     {
         for (auto* component : std::initializer_list<juce::Component*> {
                  &procedureSwitch, &ruler, &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty,
                  &amp, &pan, &pitch, &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay,
-                 &wet, &trim, &captureButton, &saveButton, &captureStatus })
+                 &wet, &trim, &captureButton, &saveButton, &captureStatus, &swing, &accent, &hold, &holdStatus })
             addAndMakeVisible (component);
 
         for (auto* component : std::initializer_list<juce::Component*> { &repeats, &stutter, &stutterArea })
@@ -105,6 +108,11 @@ public:
         for (auto* controls : { &cutProc11Controls, &warpCutControls, &sqPusherControls, &bounceControls })
             addChildComponent (controls);
 
+        holdStatus.setComponentID ("holdStatus");
+        holdStatus.setFont (ui::uiFont (12.0f));
+        holdStatus.setColour (juce::Label::textColourId, ui::palette::inkMuted);
+        swing.setTooltip ("50% is straight; 75% delays each paired eighth. Changes apply at the next bar.");
+        accent.setTooltip ("Deterministic amplitude variation, attenuation only, up to 25%");
         captureButton.setComponentID ("capture");
         saveButton.setComponentID ("saveCapture");
         captureStatus.setComponentID ("captureStatus");
@@ -244,6 +252,10 @@ public:
         captureButton.setBounds (536, 566, 156, 30);
         saveButton.setBounds (702, 566, 158, 30);
         captureStatus.setBounds (margin, 604, baseWidth - 2 * margin, 24);
+        swing.setBounds (margin, 638, 240, sliderRowHeight);
+        accent.setBounds (270, 638, 240, sliderRowHeight);
+        hold.setBounds (536, 644, 156, 28);
+        holdStatus.setBounds (margin, 678, baseWidth - 2 * margin, 22);
     }
 
     void refreshCapture()
@@ -254,6 +266,8 @@ public:
         saveButton.setAlpha (saveButton.isEnabled() ? 1.0f : 0.5f);
         captureStatus.setText (captures.statusText(), juce::dontSendNotification);
     }
+
+    void showHoldStatus (const juce::String& text) { holdStatus.setText (text, juce::dontSendNotification); }
 
     ui::ProcedureSwitch procedureSwitch;
     ui::PhraseRuler ruler;
@@ -303,7 +317,9 @@ private:
     ui::ChoiceRow combType;
     ui::SliderRow combFeedback;
     ui::RangeSlider delay;
-    ui::SliderRow wet, trim;
+    ui::SliderRow wet, trim, swing, accent;
+    ui::PowerSwitch hold;
+    juce::Label holdStatus;
     livecut::CaptureService& captures;
     juce::TextButton captureButton { "Capture last phrase" }, saveButton { "Save WAV..." };
     juce::Label captureStatus;
@@ -351,6 +367,7 @@ void LivecutAudioProcessorEditor::resized()
 void LivecutAudioProcessorEditor::refreshDisplay()
 {
     panel->refreshCapture();
+    panel->showHoldStatus (livecutProcessor.holdStatusText());
     panel->ruler.show (livecut::ui::PhraseRuler::Snapshot::of (livecutProcessor.getDisplayState()));
 }
 

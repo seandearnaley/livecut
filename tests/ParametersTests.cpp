@@ -21,7 +21,7 @@ constexpr std::array allIds {
     ids::straightChance, ids::regularChance, ids::ritardChance, ids::accel, ids::activity,
     ids::crusher, ids::minBits, ids::maxBits, ids::minRate, ids::maxRate, ids::comb, ids::combType,
     ids::combFeedback, ids::minDelay, ids::maxDelay,
-    ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance, ids::wet, ids::outputTrim
+    ids::bounceChance, ids::ratchetChance, ids::climb, ids::halftimeChance, ids::wet, ids::outputTrim, ids::swing, ids::accent, ids::hold
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -262,7 +262,8 @@ TEST_CASE ("Parameters added for Bounce carry version hint 2", "[parameters]")
         const auto isBounce = name == ids::bounceChance || name == ids::ratchetChance
                            || name == ids::climb || name == ids::halftimeChance;
         const auto isMixer = name == ids::wet || name == ids::outputTrim;
-        CHECK (parameter (state, id).getVersionHint() == (isMixer ? 3 : isBounce ? 2 : 1));
+        const auto isPerform = name == ids::swing || name == ids::accent || name == ids::hold;
+        CHECK (parameter (state, id).getVersionHint() == (isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
     }
 }
 
@@ -277,7 +278,7 @@ TEST_CASE ("Bounce parameters have the specified names and ranges and are append
     {
         auto& p = parameter (state, bounceIds[i]);
         CHECK (p.getName (32) == names[i]);
-        CHECK (p.getParameterIndex() == static_cast<int> (allIds.size() - bounceIds.size() - 2 + i));
+        CHECK (p.getParameterIndex() == static_cast<int> (37 - bounceIds.size() + i));
         CHECK_THAT (p.convertFrom0to1 (0.0f), WithinAbs (0.0, 1.0e-6));
         CHECK_THAT (p.convertFrom0to1 (1.0f), WithinAbs (i == 2 ? 12.0 : 1.0, 1.0e-6));
     }
@@ -333,4 +334,20 @@ TEST_CASE ("Capture release appends version-three mixer parameters", "[parameter
     CHECK (trim->getParameterIndex() == 38);
     CHECK_THAT (wet->convertFrom0to1 (wet->getDefaultValue()), WithinAbs (1.0, 0.0));
     CHECK_THAT (trim->convertFrom0to1 (trim->getDefaultValue()), WithinAbs (0.0, 0.0));
+}
+
+TEST_CASE ("Perform appends neutral groove and Hold parameters", "[parameters][perform]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    for (const auto* id : { "swing", "accent", "hold" })
+    {
+        INFO (id);
+        auto* parameter = state.getParameter (id);
+        REQUIRE (parameter != nullptr);
+        CHECK (parameter->getVersionHint() == 4);
+    }
+    CHECK_THAT (state.getParameter ("swing")->convertFrom0to1 (state.getParameter ("swing")->getDefaultValue()), WithinAbs (50.0, 0.0));
+    CHECK_THAT (state.getParameter ("accent")->convertFrom0to1 (state.getParameter ("accent")->getDefaultValue()), WithinAbs (0.0, 0.0));
+    CHECK (state.getParameter ("hold")->isBoolean());
 }

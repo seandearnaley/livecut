@@ -53,6 +53,8 @@ juce::String PhraseRuler::describe (const Snapshot& snapshot)
         case Status::barTooLong:
             return "Bars longer than " + juce::String (engine::Cutter::maxBarSeconds, 0)
                  + " seconds pass through uncut. Raise the tempo to cut them.";
+        case Status::planOverflow: return "Cut plan queue exhausted; restart transport";
+        case Status::sourceUnavailable: return "Source audio unavailable; restart transport";
         case Status::startingSoon:
             return "Starting on the next unit";
         case Status::cutting:

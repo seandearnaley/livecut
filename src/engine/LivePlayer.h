@@ -3,6 +3,7 @@
 #pragma once
 
 #include "engine/Cut.h"
+#include "engine/AudioHistory.h"
 
 #include <span>
 #include <vector>
@@ -31,13 +32,14 @@ public:
         int size = 0;     // samples until the next cut starts
         int playable = 0; // samples that sound before the gate closes
         double units = 0.0;
+        double logicalStart = 0.0;
         double gate = 1.0;
         bool pitched = false;
         double rate = 1.0;
         float leftToLeft = 1.0f, leftToRight = 0.0f, rightToLeft = 0.0f, rightToRight = 1.0f;
     };
 
-    // Allocates room to record `capacity` samples per channel, the longest a cut can be.
+    // Declares the classic source extent; retains eight such extents plus two guards.
     void prepare (int capacity);
 
     void setFadeSamples (int samples);
@@ -46,6 +48,20 @@ public:
     // block's length in samples exactly. The first cut plays the input live,
     // so it honours only a pitch below the original.
     void startBlock (std::span<const Cut> cuts, double samplesPerUnit);
+    void startBlock (std::span<const Cut> cuts, double samplesPerUnit, SourceRegion source);
+
+    // Raw ingestion and rendering are separate: a future delayed renderer can
+    // address an explicit older frame without ingesting that audio twice.
+    SourceRegion sourceAtFrame (std::int64_t frame) const;
+    SourceRegion sourceForNextFrame() const;
+    bool ingestFrame (float left, float right);
+    void renderFrame (float& left, float& right, bool advanceBySamples = true);
+    void resetSource();
+    void resetRendering();
+    std::optional<StereoFrame> readSourceFrame (double relativeFrame) const;
+    bool hasSourceError() const { return sourceError; }
+    void advanceToUnits (double logicalUnits);
+    void retimeMusicalCut (int samplesToEnd, int samplesToGate);
 
     // Records one input frame and replaces it with the output frame.
     void process (float& left, float& right);
@@ -63,10 +79,11 @@ private:
     int playableFor (const PlayingCut& cut, int soundingLength) const;
     void skipFinishedCuts();
 
-    std::vector<float> recordedLeft, recordedRight;
+    AudioHistory history;
+    SourceRegion source {};
+    bool sourceError = false;
     std::vector<PlayingCut> playing;
     int capacity = 0;
-    int recorded = 0;
     std::size_t current = 0;
     int position = 0; // samples into the current cut
     int fade = 1;

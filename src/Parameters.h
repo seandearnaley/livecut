@@ -55,6 +55,9 @@ inline constexpr auto climb = "climb";
 inline constexpr auto halftimeChance = "halftimeChance";
 inline constexpr auto wet = "wet";
 inline constexpr auto outputTrim = "outputTrim";
+inline constexpr auto swing = "swing";
+inline constexpr auto accent = "accent";
+inline constexpr auto hold = "hold";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
@@ -70,6 +73,9 @@ struct Settings
     double fadeMilliseconds = 0.0;
     float wet = 1.0f;
     float outputTrimDb = 0.0f;
+    double swingPercent = 50.0;
+    float accent = 0.0f;
+    bool hold = false;
     engine::CutParameters cut;
     engine::CrusherParameters crusher;
     engine::CombParameters comb;
@@ -139,6 +145,9 @@ private:
     Source halftimeChance;
     Source wet;
     Source outputTrim;
+    Source swing;
+    Source accent;
+    Source hold;
 };
 
 void applySettings (engine::Cutter& cutter, const Settings& settings);

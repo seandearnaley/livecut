@@ -70,7 +70,7 @@ TEST_CASE ("Processor reports a tail as long as the longest bar it cuts", "[proc
 {
     LivecutAudioProcessor processor;
 
-    CHECK_THAT (processor.getTailLengthSeconds(), Catch::Matchers::WithinAbs (livecut::engine::Cutter::maxBarSeconds, 0.0));
+    CHECK (std::isinf (processor.getTailLengthSeconds()));
 }
 
 // Steinberg's VST3 validator rejects a program list containing an unnamed program.
@@ -298,7 +298,7 @@ TEST_CASE ("Saved state identifies the schema and unchanged cutting algorithm", 
     processor.getStateInformation (state);
     auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), static_cast<int> (state.getSize()));
     REQUIRE (xml != nullptr);
-    CHECK (xml->getIntAttribute ("schemaVersion") == 3);
+    CHECK (xml->getIntAttribute ("schemaVersion") == 4);
     CHECK (xml->getIntAttribute ("algorithmVersion") == 2);
 }
 
@@ -535,4 +535,147 @@ TEST_CASE ("Capture follows real-rate tempo changes and discards meter-interrupt
     auto newMeter = processor.getCaptureService().rolling().acquireLatest();
     REQUIRE (newMeter);
     CHECK (newMeter.channel (0).size() == static_cast<std::size_t> (rate * 3 / 2));
+}
+
+TEST_CASE ("Hold-capable processor advertises an infinite tail", "[processor][perform]")
+{
+    LivecutAudioProcessor processor;
+    CHECK (std::isinf (processor.getTailLengthSeconds()));
+}
+
+TEST_CASE ("Audio Hold uses pre-mix wet audio and current live dry then releases on a bar", "[processor][perform][hold]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const auto set = [&] (const char* id, float value)
+    {
+        auto* parameter = state.getParameter (id);
+        parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+    };
+    set (livecut::ids::procedure, 1.0f);
+    set (livecut::ids::straightChance, 1.0f);
+    set (livecut::ids::minPhraseBars, 1.0f);
+    set (livecut::ids::maxPhraseBars, 1.0f);
+    set (livecut::ids::wet, 0.5f);
+    set (livecut::ids::outputTrim, -6.0f);
+    processor.prepareToPlay (1000.0, 2000);
+    TestPlayHead head;
+    playFromBarOne (head);
+    processor.setPlayHead (&head);
+    juce::MidiBuffer midi;
+    const auto render = [&] (int frame, int count, float input)
+    {
+        const auto beats = frame / 500.0;
+        head.info.setPpqPosition (beats);
+        head.info.setPpqPositionOfLastBarStart (std::floor (beats / 4.0) * 4.0);
+        head.info.setBarCount (static_cast<std::int64_t> (beats / 4.0));
+        juce::AudioBuffer<float> buffer (2, count);
+        for (int channel = 0; channel < 2; ++channel)
+            juce::FloatVectorOperations::fill (buffer.getWritePointer (channel), input, count);
+        processor.processBlock (buffer, midi);
+        return buffer;
+    };
+    render (0, 2000, 0.25f);
+    set (livecut::ids::hold, 1.0f);
+    const auto held = render (2000, 1100, 0.75f);
+    CHECK (processor.getDisplayState().hold.load() == livecut::engine::WetHold::State::held);
+    const auto gain = juce::Decibels::decibelsToGain (-6.0f);
+    CHECK_THAT (held.getSample (0, 1053), Catch::Matchers::WithinAbs (0.5f * gain, 1.0e-6));
+    set (livecut::ids::hold, 0.0f);
+    render (3100, 900, 0.75f);
+    CHECK (processor.getDisplayState().hold.load() == livecut::engine::WetHold::State::pendingRelease);
+    const auto released = render (4000, 100, 0.75f);
+    CHECK (processor.getDisplayState().hold.load() == livecut::engine::WetHold::State::live);
+    CHECK_THAT (released.getSample (0, 53), Catch::Matchers::WithinAbs (0.75f * gain, 1.0e-6));
+    set (livecut::ids::hold, 1.0f);
+    head.info.setIsPlaying (false);
+    render (4100, 100, 0.75f);
+    CHECK (processor.getDisplayState().hold.load() == livecut::engine::WetHold::State::waiting);
+    CHECK (processor.holdStatusText().contains ("fresh complete"));
+}
+
+TEST_CASE ("Restoring a Hold request waits for fresh PCM and older state resets all Perform controls", "[processor][state][perform]")
+{
+    LivecutAudioProcessor processor;
+    auto& parameters = processor.getParameterState();
+    for (const auto* id : { livecut::ids::swing, livecut::ids::accent, livecut::ids::hold })
+        parameters.getParameter (id)->setValueNotifyingHost (1.0f);
+    juce::MemoryBlock saved;
+    processor.getStateInformation (saved);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (saved.getData(), static_cast<int> (saved.getSize()));
+    REQUIRE (xml != nullptr);
+    for (const auto* id : { livecut::ids::swing, livecut::ids::accent, livecut::ids::hold })
+    {
+        auto* child = xml->getChildByAttribute ("id", id);
+        REQUIRE (child != nullptr);
+        xml->removeChildElement (child, true);
+    }
+    xml->setAttribute ("schemaVersion", 3);
+    juce::AudioProcessor::copyXmlToBinary (*xml, saved);
+    processor.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
+    const auto settings = livecut::SettingsReader (parameters).read();
+    CHECK_THAT (settings.swingPercent, Catch::Matchers::WithinAbs (50.0, 0.0));
+    CHECK_THAT (settings.accent, Catch::Matchers::WithinAbs (0.0, 0.0));
+    CHECK_FALSE (settings.hold);
+    parameters.getParameter (livecut::ids::hold)->setValueNotifyingHost (1.0f);
+    processor.getStateInformation (saved);
+    processor.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
+    processor.prepareToPlay (1000.0, 127);
+    juce::AudioBuffer<float> buffer (2, 127);
+    juce::MidiBuffer midi;
+    buffer.clear();
+    processor.processBlock (buffer, midi);
+    CHECK (processor.getDisplayState().hold.load() == livecut::engine::WetHold::State::waiting);
+}
+
+TEST_CASE ("Swing Hold entry release and leased final capture do not allocate in the callback", "[processor][perform][allocations]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const auto set = [&] (const char* id, float value)
+    {
+        auto* parameter = state.getParameter (id);
+        parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+    };
+    set (livecut::ids::minPhraseBars, 1.0f);
+    set (livecut::ids::maxPhraseBars, 1.0f);
+    set (livecut::ids::swing, 75.0f);
+    set (livecut::ids::accent, 1.0f);
+    processor.prepareToPlay (1000.0, 128);
+    TestPlayHead head;
+    playFromBarOne (head);
+    processor.setPlayHead (&head);
+    juce::AudioBuffer<float> buffer (2, 128);
+    juce::MidiBuffer midi;
+    livecut::PhraseCapture::Lease lease;
+    std::size_t total = 0;
+    bool pending = false, held = false, release = false;
+    for (int block = 0; block < 90; ++block)
+    {
+        const auto beats = block * 128.0 / 500.0;
+        head.info.setPpqPosition (beats);
+        head.info.setPpqPositionOfLastBarStart (std::floor (beats / 4.0) * 4.0);
+        head.info.setBarCount (static_cast<std::int64_t> (beats / 4.0));
+        fillWithTestSignal (buffer);
+        if (block == 20)
+            set (livecut::ids::hold, 1.0f);
+        if (block == 25)
+            lease = processor.getCaptureService().rolling().acquireLatest();
+        if (block == 60)
+            set (livecut::ids::hold, 0.0f);
+        {
+            const livecut::engine::testing::AllocationCounter allocations;
+            processor.processBlock (buffer, midi);
+            total += allocations.count();
+        }
+        const auto status = processor.getDisplayState().hold.load();
+        pending |= status == livecut::engine::WetHold::State::pendingEntry;
+        held |= status == livecut::engine::WetHold::State::held;
+        release |= status == livecut::engine::WetHold::State::pendingRelease;
+    }
+    CHECK (total == 0);
+    CHECK (pending);
+    CHECK (held);
+    CHECK (release);
+    REQUIRE (lease);
 }

@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures to build")
 
-project(Livecut VERSION 0.3.0 LANGUAGES C CXX)
+project(Livecut VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,6 +18,10 @@ add_subdirectory(libs/JUCE)
 
 # The cutting engine is plain C++ with no JUCE dependency, so it can be tested in isolation.
 add_library(LivecutEngine STATIC
+    src/engine/Accent.h
+    src/engine/WetHold.h
+    src/engine/AudioHistory.h
+    src/engine/SwingGrid.h
     src/engine/Bounce.cpp
     src/engine/CutProc11.cpp
     src/engine/Cutter.cpp
@@ -129,7 +133,13 @@ if(LIVECUT_BUILD_TESTS)
     catch_discover_tests(LivecutTests DISCOVERY_MODE PRE_TEST)
 
     add_executable(LivecutEngineTests
+        tests/legacy/LegacyCutter.cpp
+        tests/legacy/LegacyPlayer.cpp
+        tests/engine/LegacyEquivalenceTests.cpp
+        tests/engine/PerformTests.cpp
         tests/engine/AllocationCounter.cpp
+        tests/engine/AudioHistoryTests.cpp
+        tests/engine/SwingGridTests.cpp
         tests/engine/BounceTests.cpp
         tests/engine/CutProc11Tests.cpp
         tests/engine/CutterTests.cpp
@@ -139,6 +149,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/RandomTests.cpp
         tests/engine/SQPusherTests.cpp
         tests/engine/WarpCutTests.cpp)
+    target_include_directories(LivecutEngineTests PRIVATE tests)
     livecut_build_for_host_only(LivecutEngineTests)
     target_link_libraries(LivecutEngineTests
         PRIVATE

@@ -4,6 +4,7 @@
 
 #include "HostSync.h"
 #include "PluginEditor.h"
+#include <limits>
 
 LivecutAudioProcessor::LivecutAudioProcessor()
     : AudioProcessor (BusesProperties()
@@ -16,13 +17,16 @@ LivecutAudioProcessor::LivecutAudioProcessor()
 
 void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
 {
+    processingSampleRate = sampleRate;
     cutter.prepare (sampleRate);
     const auto settings = settingsReader.read();
     mixer.prepare (sampleRate, settings.wet, settings.outputTrimDb);
     capture.rolling().prepare (sampleRate);
+    wetHold.prepare (sampleRate);
+    wetHold.request (settings.hold);
 }
 
-void LivecutAudioProcessor::releaseResources() { capture.rolling().interrupt(); }
+void LivecutAudioProcessor::releaseResources() { capture.rolling().interrupt(); wetHold.interrupt(); display.hold = wetHold.state(); }
 
 bool LivecutAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
@@ -37,6 +41,9 @@ void LivecutAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     const auto settings = settingsReader.read();
     livecut::applySettings (cutter, settings);
     mixer.setTargets (settings.wet, settings.outputTrimDb);
+    if (resetHoldRequested.exchange (false, std::memory_order_acq_rel))
+        wetHold.interrupt();
+    wetHold.request (settings.hold);
 
     const auto* playHead = getPlayHead();
     const auto position = playHead != nullptr ? playHead->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo> {};
@@ -47,6 +54,8 @@ void LivecutAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     {
         cutter.reset();
         capture.rolling().interrupt();
+        wetHold.interrupt();
+        display.hold = wetHold.state();
         for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
         {
             auto& left = buffer.getWritePointer (0)[sample];
@@ -57,12 +66,15 @@ void LivecutAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         return;
     }
 
+    processingBeatsPerSample = sync->timing.bpm / 60.0 / processingSampleRate;
+    processingBeatsPerBar = sync->timing.beatsPerBar;
     cutter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), sync->timing, sync->position, this);
     publishDisplay();
 }
 
 void LivecutAudioProcessor::processOutput (int, float dryLeft, float dryRight, float& left, float& right)
 {
+    wetHold.process (left, right, processingBeatsPerSample);
     mixer.process (dryLeft, dryRight, left, right);
     capture.rolling().push (left, right);
 }
@@ -70,6 +82,12 @@ void LivecutAudioProcessor::processOutput (int, float dryLeft, float dryRight, f
 void LivecutAudioProcessor::publishDisplay()
 {
     using Status = livecut::DisplayState::Status;
+    display.hold = wetHold.state();
+    if (cutter.error() != livecut::engine::Cutter::Error::none)
+    {
+        display.status = cutter.error() == livecut::engine::Cutter::Error::planOverflow ? Status::planOverflow : Status::sourceUnavailable;
+        return;
+    }
 
     if (! cutter.isTimingSupported())
     {
@@ -101,8 +119,8 @@ bool LivecutAudioProcessor::hasEditor() const { return true; }
 const juce::String LivecutAudioProcessor::getName() const { return JucePlugin_Name; }
 bool LivecutAudioProcessor::acceptsMidi() const { return false; }
 bool LivecutAudioProcessor::producesMidi() const { return false; }
-// Cuts can replay up to a bar of input after the input itself has gone quiet.
-double LivecutAudioProcessor::getTailLengthSeconds() const { return livecut::engine::Cutter::maxBarSeconds; }
+// A requested Hold can play indefinitely; JUCE maps infinity to VST3 kInfiniteTail.
+double LivecutAudioProcessor::getTailLengthSeconds() const { return std::numeric_limits<double>::infinity(); }
 
 // Some hosts misbehave when a plugin reports zero programs, so expose exactly one.
 int LivecutAudioProcessor::getNumPrograms() { return 1; }
@@ -114,7 +132,7 @@ void LivecutAudioProcessor::changeProgramName (int, const juce::String&) {}
 void LivecutAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = parameters.copyState();
-    state.setProperty ("schemaVersion", 3, nullptr);
+    state.setProperty ("schemaVersion", 4, nullptr);
     state.setProperty ("algorithmVersion", 2, nullptr);
     if (const auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -141,6 +159,22 @@ void LivecutAudioProcessor::setStateInformation (const void* data, int sizeInByt
         restored.appendChild (child, nullptr);
     }
     parameters.replaceState (restored);
+    resetHoldRequested.store (true, std::memory_order_release);
+}
+
+juce::String LivecutAudioProcessor::holdStatusText() const
+{
+    using State = livecut::engine::WetHold::State;
+    switch (display.hold.load (std::memory_order_relaxed))
+    {
+        case State::live: return "Live input";
+        case State::waiting: return "Hold waiting for a fresh complete wet phrase";
+        case State::pendingEntry: return "Hold enters on the next bar — varispeed";
+        case State::held: return "Audio held — varispeed follows tempo (pitch changes)";
+        case State::pendingRelease: return "Hold releases on the next bar";
+        case State::oversize: return "Hold unavailable: wet phrase exceeds prepared capacity";
+    }
+    return {};
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
