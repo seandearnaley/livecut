@@ -9,6 +9,16 @@ namespace livecut::engine::testing
 
 // Counts heap allocations made on this thread while it is alive. The test
 // binary replaces the global operator new to do the counting.
+// One-shot, thread-local allocation interleave for deterministic ownership tests.
+class NextAllocation
+{
+public:
+    NextAllocation (void (*callback) (void*), void* context);
+    ~NextAllocation();
+    NextAllocation (const NextAllocation&) = delete;
+    NextAllocation& operator= (const NextAllocation&) = delete;
+};
+
 class AllocationCounter
 {
 public:

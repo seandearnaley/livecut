@@ -202,21 +202,27 @@ void LivecutAudioProcessor::tryApplyMode()
     catch (const std::exception&)
     {
         const juce::ScopedLock guard (getCallbackLock());
-        if (generation == configurationGeneration)
+        if (generation != configurationGeneration)
+            return; // obsolete work cannot publish over the current generation
+        if (requested.requestedMode != settingsReader.read().requestedMode)
         {
-            publishedModeState = ModeState::error;
-            applyPending = false;
-        }
-        else
+            applyPending = true;
             publishedModeState = ModeState::pendingHostChange;
+            return;
+        }
+        publishedModeState = ModeState::error;
+        applyPending = false;
         return;
     }
     std::unique_ptr<livecut::StreamResources> retired;
     {
         const juce::ScopedLock guard (getCallbackLock());
-        if (generation != configurationGeneration || publishedGeneration != configurationGeneration
-            || rate != processingSampleRate || requested.requestedMode != settingsReader.read().requestedMode)
+        if (generation != configurationGeneration)
+            return; // the newer lifecycle owns both its state and retry flag
+        if (publishedGeneration != configurationGeneration || rate != processingSampleRate
+            || requested.requestedMode != settingsReader.read().requestedMode)
         {
+            applyPending = true;
             publishedModeState = ModeState::pendingHostChange;
             return; // stale prebuild freed after this guard
         }

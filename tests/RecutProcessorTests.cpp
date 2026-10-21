@@ -689,3 +689,37 @@ TEST_CASE ("Bounded notifications reconcile empty and failed configurations on r
     processor.processBlock (buffer, midi);
     CHECK (buffer.getMagnitude (0, 32) == 0.0f);
 }
+
+
+TEST_CASE ("Obsolete Apply prebuild cannot overwrite a newer published configuration", "[processor][recut][stale-prebuild]")
+{
+    const auto failObsoleteAllocation = GENERATE (false, true);
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    processor.prepareToPlay (8000.0, 32);
+    RecutHead head;
+    head.at (0.0, false);
+    processor.setPlayHead (&head);
+    juce::AudioBuffer<float> buffer (2, 32);
+    buffer.clear();
+    juce::MidiBuffer midi;
+    processor.processBlock (buffer, midi);
+    setRecut (processor, "mode", 1.0f);
+    struct Interleave { LivecutAudioProcessor& processor; bool fail, triggered = false; } interleave { processor, failObsoleteAllocation };
+    const livecut::engine::testing::NextAllocation pause ([] (void* state)
+    {
+        auto& operation = *static_cast<Interleave*> (state);
+        operation.triggered = true;
+        std::thread newer ([&] { operation.processor.prepareToPlay (16000.0, 32); });
+        newer.join();
+        if (operation.fail)
+            throw std::bad_alloc();
+    }, &interleave);
+    processor.applyRequestedMode();
+    REQUIRE (interleave.triggered);
+    // No extra Apply: it would mask stale work corrupting newer publication.
+    CHECK (processor.modeState() == LivecutAudioProcessor::ModeState::active);
+    CHECK (processor.activeMode() == livecut::ProcessingMode::studio);
+    CHECK (processor.reportedLatencySamples() == 8000);
+    CHECK_FALSE (processor.isSuspended());
+}

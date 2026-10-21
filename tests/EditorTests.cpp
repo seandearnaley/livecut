@@ -18,6 +18,11 @@ using Catch::Matchers::WithinAbs;
 
 namespace
 {
+struct StoppedHead final : juce::AudioPlayHead
+{
+    juce::Optional<PositionInfo> getPosition() const override { return PositionInfo {}; }
+};
+
 void collectIds (juce::Component& component, std::set<juce::String>& ids)
 {
     for (const auto& id : juce::StringArray::fromTokens (component.getComponentID(), ",", ""))
@@ -521,6 +526,8 @@ TEST_CASE ("Recut distinguishes requested and active mode and applies through th
     CHECK_FALSE (apply->isEnabled());
     CHECK_THAT (apply->getAlpha(), WithinAbs (0.5, 1.0 / 255.0));
     CHECK (summary->getText().containsIgnoreCase ("not prepared"));
+    StoppedHead stopped;
+    processor.setPlayHead (&stopped);
     processor.prepareToPlay (8000.0, 32);
     juce::AudioBuffer<float> buffer (2, 32);
     buffer.clear();
@@ -606,6 +613,8 @@ TEST_CASE ("Recut waits for host latency reconciliation before claiming the new 
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    StoppedHead stopped;
+    processor.setPlayHead (&stopped);
     processor.prepareToPlay (8000.0, 32);
     juce::AudioBuffer<float> buffer (2, 32);
     buffer.clear();
