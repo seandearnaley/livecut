@@ -22,6 +22,7 @@ add_library(LivecutEngine STATIC
     src/engine/WetHold.h
     src/engine/AudioHistory.h
     src/engine/SwingGrid.h
+    src/engine/DelayTimeline.h
     src/engine/Bounce.cpp
     src/engine/CutProc11.cpp
     src/engine/Cutter.cpp
@@ -140,6 +141,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/AllocationCounter.cpp
         tests/engine/AudioHistoryTests.cpp
         tests/engine/SwingGridTests.cpp
+        tests/engine/DelayTimelineTests.cpp
         tests/engine/BounceTests.cpp
         tests/engine/CutProc11Tests.cpp
         tests/engine/CutterTests.cpp
