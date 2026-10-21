@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures to build")
 
-project(Livecut VERSION 0.8.0 LANGUAGES C CXX)
+project(Livecut VERSION 0.9.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(LIVECUT_BUILD_TESTS "Build the unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(LIVECUT_COPY_PLUGIN_AFTER_BUILD "Install the plugins into the user's plug-in folders after building" OFF)
+option(LIVECUT_PERFORMANCE_PROTOTYPE "Build the separately identified performance prototype" OFF)
 
 add_subdirectory(libs/JUCE)
 
@@ -33,6 +34,7 @@ add_library(LivecutEngine STATIC
     src/engine/FrequencyEffects.cpp
     src/engine/Resonator.cpp
     src/engine/RouteRack.cpp
+    src/engine/PerformanceEngine.cpp
     src/engine/Fracture.cpp
     src/engine/LivePlayer.cpp
     src/engine/PhraseSeed.cpp
@@ -58,14 +60,23 @@ target_compile_features(LivecutSpectral PUBLIC cxx_std_20)
 target_link_libraries(LivecutSpectral PRIVATE juce::juce_dsp
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 
+set(LIVECUT_PRODUCT_NAME "Livecut")
+set(LIVECUT_BUNDLE_ID "com.seandearnaley.livecut")
+set(LIVECUT_PLUGIN_CODE Lvct)
+if(LIVECUT_PERFORMANCE_PROTOTYPE)
+    set(LIVECUT_PRODUCT_NAME "Livecut Perform Prototype")
+    set(LIVECUT_BUNDLE_ID "com.seandearnaley.livecut.performprototype")
+    set(LIVECUT_PLUGIN_CODE Lvp9)
+endif()
+
 juce_add_plugin(Livecut
-    PRODUCT_NAME "Livecut"
+    PRODUCT_NAME "${LIVECUT_PRODUCT_NAME}"
     DESCRIPTION "BBCut-style live beat slicer"
     COMPANY_NAME "Sean Dearnaley"
     COMPANY_WEBSITE "https://github.com/seandearnaley/livecut"
-    BUNDLE_ID "com.seandearnaley.livecut"
+    BUNDLE_ID "${LIVECUT_BUNDLE_ID}"
     PLUGIN_MANUFACTURER_CODE Sdrn
-    PLUGIN_CODE Lvct
+    PLUGIN_CODE ${LIVECUT_PLUGIN_CODE}
     FORMATS VST3 AU Standalone
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
@@ -109,7 +120,11 @@ target_sources(LivecutCode
         src/ui/PhraseRuler.cpp
         src/ui/PhraseRuler.h
         src/ui/RangeSlider.cpp
-        src/ui/RangeSlider.h)
+        src/ui/RangeSlider.h
+        src/ui/XYPad.cpp
+        src/ui/XYPad.h
+        src/ui/PerformancePage.cpp
+        src/ui/PerformancePage.h)
 target_include_directories(LivecutCode INTERFACE src)
 target_link_libraries(LivecutCode INTERFACE LivecutEngine LivecutSpectral juce::juce_audio_utils)
 
@@ -141,6 +156,8 @@ if(LIVECUT_BUILD_TESTS)
         tests/ResonanceStateTests.cpp
         tests/CaptureTests.cpp
         tests/EditorTests.cpp
+        tests/PerformanceEditorTests.cpp
+        tests/PerformanceProcessorTests.cpp
         tests/HostSyncTests.cpp
         tests/ParametersTests.cpp
         tests/PluginProcessorTests.cpp
@@ -186,6 +203,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/FractureIntegrationTests.cpp
         tests/engine/ResonatorTests.cpp
         tests/engine/RouteRackTests.cpp
+        tests/engine/PerformanceEngineTests.cpp
         tests/engine/ResonanceIntegrationTests.cpp
         tests/engine/FractureTests.cpp
         tests/engine/LivePlayerTests.cpp

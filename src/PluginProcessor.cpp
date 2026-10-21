@@ -402,7 +402,7 @@ void LivecutAudioProcessor::processBlockBypassed (juce::AudioBuffer<float> &buff
         buffer.clear ();
         return;
     }
-    if (stream->mode == livecut::ProcessingMode::studio || stream->spectralEnabled)
+    if (stream->mode == livecut::ProcessingMode::studio || stream->spectralEnabled || stream->performance)
         process (buffer, true);
     else if (buffer.getNumSamples () > 0)
         observeTransport ();
@@ -455,6 +455,11 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
         input.timing = sync->timing;
         input.position = sync->position;
         input.ppq = *info->getPpqPosition ();
+    }
+    if (resources.performance)
+    {
+        processPerformance (buffer, input);
+        return;
     }
     if (!resources.appendContext (input, frames, transportEpochCounter))
     {
@@ -628,6 +633,106 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
         publishDisplay ();
 }
 
+void LivecutAudioProcessor::processPerformance (juce::AudioBuffer<float>& buffer, const livecut::RenderContext& input)
+{
+    auto& resources = *stream;
+    if (input.resetHold)
+        resources.haveInput = false;
+    if (!resources.appendContext (input, buffer.getNumSamples(), transportEpochCounter))
+    {
+        failStream();
+        buffer.clear();
+        return;
+    }
+    processingRunning = input.running;
+    processingBeatsPerSample = input.timing.bpm / 60.0 / processingSampleRate;
+    processingBeatsPerBar = input.timing.beatsPerBar;
+    mixer.setTargets (input.settings.wet, input.settings.outputTrimDb);
+    if (input.resetHold)
+        wetHold.interrupt();
+    wetHold.request (input.settings.hold);
+    resources.performance->beginContext (input.timing, input.position, resources.inputEpoch, input.running,
+                                        input.settings.performance,
+                                        { performanceCaptureRequested.exchange (false, std::memory_order_acq_rel) });
+    auto* left = buffer.getWritePointer (0);
+    auto* right = buffer.getWritePointer (1);
+    for (int i = 0; i < buffer.getNumSamples(); ++i)
+    {
+        const livecut::engine::StereoFrame raw { left[i], right[i] };
+        const auto result = resources.performance->processOne (raw);
+        if (resources.performance->diagnostics().state == livecut::engine::PerformanceEngine::State::error)
+        {
+            failStream();
+            buffer.clear (i, buffer.getNumSamples() - i);
+            break;
+        }
+        if (result.discontinuity)
+            dispatchEvent ({ livecut::spectral::EventKind::discontinuity });
+        if (result.barCompleted)
+            dispatchEvent ({ livecut::spectral::EventKind::phraseCompleted });
+        if (result.barStarted)
+        {
+            dispatchEvent ({ livecut::spectral::EventKind::barStarted });
+            dispatchEvent ({ livecut::spectral::EventKind::phraseStarted, result.fullStart, 0, processingBeatsPerBar });
+        }
+        left[i] = result.frame.left;
+        right[i] = result.frame.right;
+        if (input.running)
+            wetHold.process (left[i], right[i], processingBeatsPerSample);
+        mixer.process (raw.left, raw.right, left[i], right[i]);
+        if (input.bypass)
+        {
+            left[i] = raw.left;
+            right[i] = raw.right;
+        }
+        if (input.running)
+            capture.rolling().push (left[i], right[i]);
+        if (result.barCompletedAfter)
+            dispatchEvent ({ livecut::spectral::EventKind::phraseCompleted });
+    }
+    resources.inputFrame += buffer.getNumSamples();
+    resources.nextRender = resources.inputFrame;
+    if (!resources.timeline.retireBefore (resources.nextRender))
+    {
+        failStream();
+        buffer.clear();
+        return;
+    }
+    publishPerformanceDisplay();
+}
+
+void LivecutAudioProcessor::publishPerformanceDisplay()
+{
+    if (!stream || !stream->performance)
+        return;
+    const auto& d = stream->performance->diagnostics();
+    display.performanceState = d.state;
+    display.performanceHasSource = d.hasSource;
+    display.performanceCaptureArmed = d.captureArmed;
+    display.performanceSeedPending = d.seedPending;
+    display.performancePlayhead = d.playhead;
+    display.performanceSourceBpm = d.sourceBpm;
+    display.performanceSourceFrames = static_cast<std::uint64_t> (d.sourceFrames);
+    display.performanceGrains = d.activeGrains;
+    display.performanceVariation = d.applied.variation;
+    display.performanceDensity = d.applied.density;
+    display.performanceGrain = d.applied.grain;
+    display.performanceCharacter = d.applied.character;
+    display.performanceSeed = d.applied.seed;
+    display.phraseBars = 1;
+    display.unitsPerBar = livecut::engine::PerformanceEngine::stepsPerBar;
+    display.blockStart = d.currentStep;
+    display.blockEnd = d.currentStep + 1;
+    display.position = d.playhead * livecut::engine::PerformanceEngine::stepsPerBar;
+    display.hold = wetHold.state();
+    using State = livecut::engine::PerformanceEngine::State;
+    using Status = livecut::DisplayState::Status;
+    display.status = d.state == State::playing ? Status::cutting
+                   : d.state == State::error ? Status::streamError
+                   : d.state == State::unsupportedTiming ? Status::barTooLong
+                   : d.state == State::waitingForHost ? Status::waitingForHost : Status::filling;
+}
+
 void LivecutAudioProcessor::dispatchEvent (const livecut::spectral::Event &event)
 {
     using Event = livecut::spectral::EventKind;
@@ -794,6 +899,11 @@ void LivecutAudioProcessor::publishSourceDisplay (const livecut::spectral::Displ
 
 void LivecutAudioProcessor::publishTransformDisplay ()
 {
+    if (stream->performance)
+    {
+        publishPerformanceDisplay();
+        return;
+    }
     if (stream->spectral)
     {
         if (haveDelayedDisplay)
@@ -880,8 +990,16 @@ void LivecutAudioProcessor::changeProgramName (int, const juce::String &) {}
 void LivecutAudioProcessor::getStateInformation (juce::MemoryBlock &destData)
 {
     auto state = parameters.copyState ();
-    state.setProperty ("schemaVersion", 8, nullptr);
+    state.setProperty ("schemaVersion", 9, nullptr);
     state.setProperty ("algorithmVersion", 2, nullptr);
+    {
+        const juce::ScopedLock guard (performanceHomeLock);
+        state.setProperty ("performanceHomeVariation", performanceHome.variation, nullptr);
+        state.setProperty ("performanceHomeDensity", performanceHome.density, nullptr);
+        state.setProperty ("performanceHomeGrain", performanceHome.grain, nullptr);
+        state.setProperty ("performanceHomeCharacter", performanceHome.character, nullptr);
+        state.setProperty ("performanceHomeSeed", static_cast<int> (performanceHome.seed), nullptr);
+    }
     if (const auto xml = state.createXml ())
         copyXmlToBinary (*xml, destData);
 }
@@ -906,9 +1024,106 @@ void LivecutAudioProcessor::setStateInformation (const void *data, int sizeInByt
         child.setProperty ("value", ranged->convertFrom0to1 (ranged->getDefaultValue ()), nullptr);
         restored.appendChild (child, nullptr);
     }
+    {
+        const auto readHome = [&restored] (const char* name, float defaultValue)
+        {
+            const auto value = static_cast<float> (restored.getProperty (name, defaultValue));
+            return std::isfinite (value) ? std::clamp (value, 0.0f, 1.0f) : defaultValue;
+        };
+        const juce::ScopedLock guard (performanceHomeLock);
+        performanceHome = { readHome ("performanceHomeVariation", 0), readHome ("performanceHomeDensity", .5f),
+                            readHome ("performanceHomeGrain", 0), readHome ("performanceHomeCharacter", .5f), false,
+                            static_cast<std::uint32_t> (std::clamp (static_cast<int> (restored.getProperty ("performanceHomeSeed", 1)), 1, 65535)) };
+    }
     parameters.replaceState (restored);
+    performanceCaptureRequested = false;
     resetHoldRequested.store (true, std::memory_order_release);
     applyPending.store (true, std::memory_order_release);
+}
+
+namespace
+{
+void editParameter (juce::AudioProcessorValueTreeState& state, const char* id, float value)
+{
+    auto& parameter = *state.getParameter (id);
+    parameter.beginChangeGesture();
+    parameter.setValueNotifyingHost (parameter.convertTo0to1 (value));
+    parameter.endChangeGesture();
+}
+}
+
+void LivecutAudioProcessor::requestPerformanceAction (PerformanceAction action)
+{
+    using namespace livecut;
+    if (action == PerformanceAction::capture)
+    {
+        performanceCaptureRequested.store (true, std::memory_order_release);
+        return;
+    }
+    const auto current = settingsReader.read().performance;
+    if (action == PerformanceAction::keep)
+    {
+        const juce::ScopedLock guard (performanceHomeLock);
+        performanceHome = current;
+        performanceHome.fill = false;
+        return;
+    }
+    if (action == PerformanceAction::mutate)
+    {
+        editParameter (parameters, ids::performanceSeed, static_cast<float> (current.seed % 65535 + 1));
+        return;
+    }
+    engine::PerformanceParameters home;
+    {
+        const juce::ScopedLock guard (performanceHomeLock);
+        home = performanceHome;
+    }
+    editParameter (parameters, ids::performanceVariation, home.variation);
+    editParameter (parameters, ids::performanceDensity, home.density);
+    editParameter (parameters, ids::performanceGrain, home.grain);
+    editParameter (parameters, ids::performanceCharacter, home.character);
+    editParameter (parameters, ids::performanceSeed, static_cast<float> (home.seed));
+    editParameter (parameters, ids::performanceFill, 0);
+}
+
+void LivecutAudioProcessor::preparePerformanceMode()
+{
+    editParameter (parameters, livecut::ids::resonanceSpectralEnabled, 0);
+    editParameter (parameters, livecut::ids::performanceEnabled, 1);
+    applyRequestedMode();
+}
+
+void LivecutAudioProcessor::leavePerformanceMode()
+{
+    editParameter (parameters, livecut::ids::performanceEnabled, 0);
+    applyRequestedMode();
+}
+
+juce::String LivecutAudioProcessor::performanceStatusText() const
+{
+    const auto requested = settingsReader.read();
+    if (requested.requestedMode == livecut::ProcessingMode::perform && requested.requestedSpectral)
+        return modeStatusText();
+    if (activeMode() != livecut::ProcessingMode::perform || modeState() != ModeState::active)
+        return "Perform uses a captured bar and zero added latency. " + modeStatusText();
+    using State = livecut::engine::PerformanceEngine::State;
+    juce::String status;
+    switch (display.performanceState.load())
+    {
+    case State::waitingForHost: return "Play the host to capture a complete bar; input is monitored.";
+    case State::waitingForBar: return "Waiting for the next full bar; input is monitored.";
+    case State::capturing:
+        return display.performanceHasSource.load() ? "Grabbing a new bar; the captured source keeps playing."
+                                                  : "Grabbing one complete bar; input is monitored.";
+    case State::unsupportedTiming: return "Perform unavailable: unsupported bar length or tempo ratio; input is monitored.";
+    case State::error: return "Perform source error. Stop and prepare again; no substitute source is selected.";
+    case State::playing: status = "Captured bar playing"; break;
+    }
+    if (display.performanceCaptureArmed.load())
+        status += "; Grab queued for the next bar";
+    if (display.performanceSeedPending.load())
+        status += "; new motif seed on the next bar";
+    return status + ". Rhythm: next 1/8 bar. Texture: smooth. Tempo changes pitch.";
 }
 
 juce::String LivecutAudioProcessor::holdStatusText () const
@@ -941,7 +1156,12 @@ juce::String LivecutAudioProcessor::modeStatusText () const
 {
     const auto settings = settingsReader.read ();
     const auto requested = settings.requestedMode;
-    const auto name = [] (livecut::ProcessingMode mode) { return mode == livecut::ProcessingMode::live ? "Live" : "Studio"; };
+    const auto name = [] (livecut::ProcessingMode mode)
+    {
+        return mode == livecut::ProcessingMode::perform ? "Perform" : mode == livecut::ProcessingMode::studio ? "Studio" : "Live";
+    };
+    if (settings.requestedMode == livecut::ProcessingMode::perform && settings.requestedSpectral)
+        return "Perform requires Spectral Engine off. Stop the host, disable Spectral and Apply.";
     switch (modeState ())
     {
     case ModeState::unprepared:

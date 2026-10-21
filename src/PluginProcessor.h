@@ -51,6 +51,12 @@ class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut
         return display.spectralDelay.load (std::memory_order_acquire);
     }
     juce::String spectralStatusText () const;
+    enum class PerformanceAction { capture, keep, mutate, returnToKept };
+    // UI/control-thread commands; audio only consumes the atomic capture request.
+    void requestPerformanceAction (PerformanceAction);
+    void preparePerformanceMode ();
+    void leavePerformanceMode ();
+    juce::String performanceStatusText () const;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources () override;
@@ -103,6 +109,8 @@ class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut
     void observeTransport ();
     void observeTransport (const juce::Optional<juce::AudioPlayHead::PositionInfo> &);
     void process (juce::AudioBuffer<float> &, bool bypass);
+    void processPerformance (juce::AudioBuffer<float>&, const livecut::RenderContext&);
+    void publishPerformanceDisplay ();
     void publishDisplay ();
     void publishTransformDisplay ();
     void discontinuity (int) override;
@@ -131,6 +139,11 @@ class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut
     livecut::engine::WetHold wetHold;
     double processingSampleRate = 48000.0, processingBeatsPerSample = 0.0, processingBeatsPerBar = 4.0;
     std::atomic<bool> resetHoldRequested{false};
+    std::atomic<bool> performanceCaptureRequested{false};
+    // Never acquired on the audio thread. Home contains public targets only;
+    // Return uses ordinary host-notified parameter edits rather than DSP overrides.
+    mutable juce::CriticalSection performanceHomeLock;
+    livecut::engine::PerformanceParameters performanceHome;
     std::uint64_t transportEpochCounter = 1;
     bool processingRunning = false;
     livecut::spectral::Packet *collectingPacket = nullptr;

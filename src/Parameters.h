@@ -8,6 +8,7 @@
 #include "engine/FrequencyEffects.h"
 #include "engine/Resonator.h"
 #include "engine/RouteRack.h"
+#include "engine/PerformanceEngine.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -127,13 +128,20 @@ inline constexpr auto resonanceSpectralEnabled = "resonanceSpectralEnabled";
 inline constexpr auto resonanceFreeze = "resonanceFreeze";
 inline constexpr auto resonanceSmearMs = "resonanceSmearMs";
 inline constexpr auto resonanceSpectralMix = "resonanceSpectralMix";
+inline constexpr auto performanceEnabled = "performanceEnabled";
+inline constexpr auto performanceVariation = "performanceVariation";
+inline constexpr auto performanceDensity = "performanceDensity";
+inline constexpr auto performanceGrain = "performanceGrain";
+inline constexpr auto performanceCharacter = "performanceCharacter";
+inline constexpr auto performanceFill = "performanceFill";
+inline constexpr auto performanceSeed = "performanceSeed";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
 
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-enum class ProcessingMode { live, studio };
+enum class ProcessingMode { live, studio, perform };
 
 // Everything the cutter needs from the parameters, read in one go.
 struct Settings
@@ -160,6 +168,7 @@ struct Settings
     engine::EffectRoute resonanceOrder = engine::EffectRoute::impactResonatorFrequency;
     bool requestedSpectral = false, spectralFreeze = false;
     float spectralSmearMs = 0.0f, spectralMix = 1.0f;
+    engine::PerformanceParameters performance;
 };
 
 // Reads every parameter's current value. It caches each parameter's atomic
@@ -289,6 +298,13 @@ private:
     Source resonanceFreeze;
     Source resonanceSmearMs;
     Source resonanceSpectralMix;
+    Source performanceEnabled;
+    Source performanceVariation;
+    Source performanceDensity;
+    Source performanceGrain;
+    Source performanceCharacter;
+    Source performanceFill;
+    Source performanceSeed;
 
 
 };

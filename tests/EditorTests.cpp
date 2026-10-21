@@ -186,6 +186,9 @@ TEST_CASE ("Only the active procedure's controls are shown", "[editor]")
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
     LivecutAudioProcessorEditor editor (processor);
+    auto* pattern = dynamic_cast<juce::TextButton*> (findById (editor, "patternTab"));
+    REQUIRE (pattern != nullptr);
+    pattern->onClick();
     auto& state = processor.getParameterState();
 
     auto shows = [&] (const char* id)
@@ -289,6 +292,9 @@ TEST_CASE ("Render the editor for design review", "[.screenshot]")
     }
 
     LivecutAudioProcessorEditor editor (processor);
+    auto* pattern = dynamic_cast<juce::TextButton*> (findById (editor, "patternTab"));
+    REQUIRE (pattern != nullptr);
+    pattern->onClick();
     editor.refreshDisplay();
     const auto saveImage = [&] (const char* name)
     {

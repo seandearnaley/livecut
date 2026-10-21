@@ -28,7 +28,7 @@ bool PhraseRuler::Snapshot::sameAs (const Snapshot& other) const
 {
     const auto bits = [] (double value) { return std::bit_cast<std::uint64_t> (value); };
 
-    return status == other.status && phraseBars == other.phraseBars && unitsPerBar == other.unitsPerBar
+    return performanceCapturing == other.performanceCapturing && performanceStatus == other.performanceStatus && status == other.status && phraseBars == other.phraseBars && unitsPerBar == other.unitsPerBar
         && bits (blockStart) == bits (other.blockStart) && bits (blockEnd) == bits (other.blockEnd)
         && bits (position) == bits (other.position);
 }
@@ -44,6 +44,9 @@ void PhraseRuler::show (const Snapshot& snapshot)
 
 juce::String PhraseRuler::describe (const Snapshot& snapshot)
 {
+    if (snapshot.performanceStatus.isNotEmpty())
+        return snapshot.performanceStatus;
+
     using Status = DisplayState::Status;
 
     switch (snapshot.status)
@@ -80,12 +83,13 @@ void PhraseRuler::paint (juce::Graphics& g)
     auto inner = bounds.reduced (16.0f, 12.0f);
     auto textLine = inner.removeFromTop (20.0f);
     const auto cutting = current.status == DisplayState::Status::cutting;
+    const auto capturing = current.performanceStatus.isNotEmpty() && current.performanceCapturing;
 
     g.setFont (lcdFont (15.0f));
     g.setColour (palette::lcdOn);
     g.drawText (describe (current), textLine, juce::Justification::centredLeft);
 
-    if (cutting)
+    if (cutting && current.performanceStatus.isEmpty())
     {
         g.setColour (palette::lcdDim.brighter (0.6f));
         g.drawText (juce::String (current.unitsPerBar) + " units per bar", textLine, juce::Justification::centredRight);
@@ -96,7 +100,7 @@ void PhraseRuler::paint (juce::Graphics& g)
     g.setColour (palette::lcdDim);
     g.fillRect (ruler.withTop (ruler.getBottom() - 1.0f));
 
-    if (! cutting || current.phraseBars < 1 || current.unitsPerBar < 1)
+    if ((! cutting && ! capturing) || current.phraseBars < 1 || current.unitsPerBar < 1)
         return;
 
     const auto totalUnits = static_cast<double> (current.phraseBars * current.unitsPerBar);
@@ -107,8 +111,8 @@ void PhraseRuler::paint (juce::Graphics& g)
 
     // The block being cut, lit behind the grid.
     g.setColour (palette::lcdOn.withAlpha (0.28f));
-    g.fillRect (juce::Rectangle<float>::leftTopRightBottom (xFor (current.blockStart), ruler.getY(),
-                                                            xFor (current.blockEnd), ruler.getBottom()));
+    g.fillRect (juce::Rectangle<float>::leftTopRightBottom (xFor (capturing ? 0.0 : current.blockStart), ruler.getY(),
+                                                            xFor (capturing ? current.position : current.blockEnd), ruler.getBottom()));
 
     for (int unit = 0; unit <= current.phraseBars * current.unitsPerBar; ++unit)
     {

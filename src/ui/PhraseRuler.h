@@ -22,6 +22,8 @@ public:
         double blockStart = 0.0;
         double blockEnd = 0.0;
         double position = 0.0;
+        bool performanceCapturing = false;
+        juce::String performanceStatus; // message-thread status override for the Perform source/plan
 
         static Snapshot of (const DisplayState& state);
 
