@@ -6,6 +6,7 @@
 #include "engine/WetHold.h"
 #include "engine/Cutter.h"
 #include "engine/Fracture.h"
+#include "engine/PerformanceEngine.h"
 #include "spectral/SpectralStage.h"
 
 namespace livecut
@@ -54,6 +55,14 @@ struct DisplayState
     std::atomic<spectral::Fault> spectralFault { spectral::Fault::none };
     std::atomic<bool> spectralConfigured { false };
     std::atomic<int> spectralFftSize { 0 }, spectralHop { 0 }, spectralDelay { 0 };
+
+    std::atomic<engine::PerformanceEngine::State> performanceState { engine::PerformanceEngine::State::waitingForHost };
+    std::atomic<bool> performanceHasSource { false }, performanceCaptureArmed { true }, performanceSeedPending { false };
+    std::atomic<double> performancePlayhead { 0.0 }, performanceSourceBpm { 0.0 };
+    std::atomic<int> performanceGrains { 0 };
+    std::atomic<float> performanceVariation { 0.0f }, performanceDensity { .5f }, performanceGrain { 0.0f }, performanceCharacter { .5f };
+    std::atomic<std::uint32_t> performanceSeed { 1 };
+    std::atomic<std::uint64_t> performanceSourceFrames { 0 };
 
     static_assert (std::atomic<Status>::is_always_lock_free);
     static_assert (std::atomic<double>::is_always_lock_free);

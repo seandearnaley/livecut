@@ -5,6 +5,7 @@
 #include "Parameters.h"
 #include "ui/Controls.h"
 #include "ui/PhraseRuler.h"
+#include "ui/PerformancePage.h"
 #include "ui/RangeSlider.h"
 
 #include <array>
@@ -35,6 +36,20 @@ constexpr std::array procedures {
     ProcedureInfo { "SQPusher", "Quaver and semiquaver cuts, with a Squarepusher fill on each phrase's last bar" },
     ProcedureInfo { "Bounce", "Straight hits and triplet bounces, a ratchet roll that climbs to close each phrase, and the odd halftime bar" },
 };
+
+livecut::ProcessingMode requestedModeOf (const juce::AudioProcessorValueTreeState& state)
+{
+    if (state.getRawParameterValue (ids::performanceEnabled)->load() > .5f)
+        return livecut::ProcessingMode::perform;
+    return state.getRawParameterValue (ids::mode)->load() > .5f
+        ? livecut::ProcessingMode::studio : livecut::ProcessingMode::live;
+}
+
+const char* modeName (livecut::ProcessingMode mode)
+{
+    if (mode == livecut::ProcessingMode::perform) return "Perform";
+    return mode == livecut::ProcessingMode::studio ? "Studio" : "Live";
+}
 
 // Stacks rows down a column, top to bottom.
 struct Column
@@ -239,10 +254,8 @@ public:
         const auto state = owner.modeState();
         const auto& parameters = owner.getParameterState();
         const auto requestedSpectral = parameters.getRawParameterValue (ids::resonanceSpectralEnabled)->load() > .5f;
-        const auto requestedMode = parameters.getRawParameterValue (ids::mode)->load() > .5f
-            ? livecut::ProcessingMode::studio : livecut::ProcessingMode::live;
+        const auto requestedMode = requestedModeOf (parameters);
         const auto fault = display.spectralFault.load() != livecut::spectral::Fault::none;
-        const auto modeName = [] (livecut::ProcessingMode mode) { return mode == livecut::ProcessingMode::studio ? "Studio" : "Live"; };
         juce::String summary = juce::String ("Requested: ") + modeName (requestedMode) + (requestedSpectral ? " / Spectral on" : " / Spectral off");
         if (state == LivecutAudioProcessor::ModeState::unprepared)
             summary += "\nActive: not prepared";
@@ -510,6 +523,7 @@ public:
           attackAlign (parameter (state, ids::attackAlign), "Attack align"),
           attackThreshold (parameter (state, ids::attackThreshold), "Attack threshold"),
           reverseChance (parameter (state, ids::reverseChance), "Reverse chance"),
+          performanceControls (processor),
           impactControls (state),
           fractureControls (state),
           resonanceControls (processor),
@@ -520,7 +534,7 @@ public:
                  &procedureSwitch, &ruler, &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty,
                  &amp, &pan, &pitch, &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay,
                  &wet, &trim, &captureButton, &saveButton, &captureStatus, &swing, &accent, &hold, &holdStatus,
-                 &patternTab, &recutTab, &impactTab, &fractureTab, &resonanceTab })
+                 &performanceTab, &patternTab, &recutTab, &impactTab, &fractureTab, &resonanceTab })
             addAndMakeVisible (component);
 
         for (auto* component : std::initializer_list<juce::Component*> {
@@ -528,6 +542,11 @@ public:
                  &applyMode, &modeSummary, &modeStatus, &modeHelp, &transformStatus })
             addChildComponent (component);
 
+        addChildComponent (performanceControls);
+        performanceTab.setComponentID ("performanceTab");
+        performanceTab.setTitle ("Performance XY controls");
+        performanceTab.setTooltip ("Play Rhythm and Texture with two XY pads, grab an input bar, and keep or return to a pattern");
+        performanceTab.onClick = [this] { showPage (Page::performance); };
         addChildComponent (impactControls);
         addChildComponent (fractureControls);
         addChildComponent (resonanceControls);
@@ -637,7 +656,7 @@ public:
         dim (crusher.isOn(), { &bits, &rate });
         dim (comb.isOn(), { &combType, &combFeedback, &delay });
         showProcedure (static_cast<int> (std::lround (state.getRawParameterValue (ids::procedure)->load())));
-        showPage (Page::pattern);
+        showPage (Page::performance);
         setSize (baseWidth, baseHeight);
     }
 
@@ -666,11 +685,18 @@ public:
         repaint();
     }
 
-    enum class Page { pattern, recut, impact, fracture, resonance };
+    enum class Page { performance, pattern, recut, impact, fracture, resonance };
 
     void showPage (Page page)
     {
+        performanceControls.cancelInteractions();
         selectedPage = page;
+        performanceControls.setVisible (page == Page::performance);
+        performanceTab.setToggleState (page == Page::performance, juce::dontSendNotification);
+        procedureSwitch.setVisible (page != Page::performance);
+        swing.setVisible (page != Page::performance);
+        accent.setVisible (page != Page::performance);
+        layoutGrooveFooter();
         for (auto* component : std::initializer_list<juce::Component*> {
                  &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty, &amp, &pan, &pitch })
             component->setVisible (page == Page::pattern);
@@ -696,8 +722,7 @@ public:
     {
         const auto modeState = hostProcessor.modeState();
         const auto active = hostProcessor.activeMode();
-        const auto requested = hostProcessor.getParameterState().getRawParameterValue (ids::mode)->load() > 0.5f
-                                   ? livecut::ProcessingMode::studio : livecut::ProcessingMode::live;
+        const auto requested = requestedModeOf (hostProcessor.getParameterState());
         juce::String summary;
         if (modeState == LivecutAudioProcessor::ModeState::unprepared)
             summary = "Active: not prepared";
@@ -708,7 +733,7 @@ public:
         else
         {
             summary = "Active: ";
-            summary += active == livecut::ProcessingMode::studio ? "Studio" : "Live";
+            summary += modeName (active);
             const auto latency = hostProcessor.reportedLatencySamples();
             summary += " | " + juce::String (latency) + " samples";
         }
@@ -786,12 +811,14 @@ public:
 
     void resized() override
     {
-        procedureSwitch.setBounds (510, 20, 350, 30);
-        patternTab.setBounds (122, 20, 67, 30);
-        recutTab.setBounds (193, 20, 55, 30);
-        impactTab.setBounds (252, 20, 62, 30);
-        fractureTab.setBounds (318, 20, 82, 30);
-        resonanceTab.setBounds (404, 20, 100, 30);
+        procedureSwitch.setBounds (572, 20, 288, 30);
+        performanceTab.setBounds (122, 20, 94, 30);
+        patternTab.setBounds (220, 20, 62, 30);
+        recutTab.setBounds (286, 20, 51, 30);
+        impactTab.setBounds (341, 20, 55, 30);
+        fractureTab.setBounds (400, 20, 73, 30);
+        resonanceTab.setBounds (477, 20, 89, 30);
+        performanceControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         resonanceControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         fractureControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         impactControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
@@ -867,8 +894,27 @@ public:
         captureStatus.setBounds (margin, 604, baseWidth - 2 * margin, 24);
         swing.setBounds (margin, 638, 240, sliderRowHeight);
         accent.setBounds (270, 638, 240, sliderRowHeight);
-        hold.setBounds (536, 644, 156, 28);
-        holdStatus.setBounds (margin, 678, baseWidth - 2 * margin, 22);
+        layoutGrooveFooter();
+    }
+
+    void layoutGrooveFooter()
+    {
+        const auto performance = selectedPage == Page::performance;
+        hold.setBounds (performance ? margin : 536, 644, 156, 28);
+        holdStatus.setBounds (performance ? 190 : margin, performance ? 644 : 678,
+                              performance ? baseWidth - margin - 190 : baseWidth - 2 * margin,
+                              performance ? 28 : 22);
+    }
+
+    void refreshPerformance()
+    {
+        performanceControls.refresh();
+        const auto grooveActive = hostProcessor.activeMode() != livecut::ProcessingMode::perform;
+        for (auto* control : { &swing, &accent })
+        {
+            control->setEnabled (grooveActive);
+            control->setAlpha (grooveActive ? 1.0f : .5f);
+        }
     }
 
     void refreshFracture() { fractureControls.refresh (hostProcessor.getDisplayState()); resonanceControls.refresh(); }
@@ -883,6 +929,13 @@ public:
     }
 
     void showHoldStatus (const juce::String& text) { holdStatus.setText (text, juce::dontSendNotification); }
+
+    void showPhrase (ui::PhraseRuler::Snapshot snapshot)
+    {
+        if (selectedPage != Page::performance && hostProcessor.activeMode() == livecut::ProcessingMode::perform)
+            snapshot.performanceStatus = "Legacy controls inactive in Perform. Turn Perform off and Apply while stopped.";
+        ruler.show (snapshot);
+    }
 
     ui::ProcedureSwitch procedureSwitch;
     ui::PhraseRuler ruler;
@@ -937,9 +990,10 @@ private:
     ui::ChoiceRow processingMode;
     ui::PowerSwitch attackAlign;
     ui::SliderRow attackThreshold, reverseChance;
-    juce::TextButton patternTab { "Pattern" }, recutTab { "Recut" }, impactTab { "Impact" }, fractureTab { "Fracture" }, resonanceTab { "Resonance" }, applyMode { "Apply while stopped" };
+    juce::TextButton performanceTab { "Perform" }, patternTab { "Pattern" }, recutTab { "Recut" }, impactTab { "Impact" }, fractureTab { "Fracture" }, resonanceTab { "Resonance" }, applyMode { "Apply while stopped" };
     juce::Label modeSummary, modeStatus, modeHelp, transformStatus;
     juce::Label holdStatus;
+    ui::PerformancePage performanceControls;
     ImpactPage impactControls;
     FracturePage fractureControls;
     ResonancePage resonanceControls;
@@ -953,7 +1007,7 @@ private:
     juce::Rectangle<int> phraseSection, cutsSection, procedureSection, crusherSection, combSection;
     juce::Rectangle<int> modeSection, transformSection;
     int activeProcedure = 0;
-    Page selectedPage = Page::pattern;
+    Page selectedPage = Page::performance;
 };
 
 LivecutAudioProcessorEditor::LivecutAudioProcessorEditor (LivecutAudioProcessor& p)
@@ -992,11 +1046,18 @@ void LivecutAudioProcessorEditor::resized()
 
 void LivecutAudioProcessorEditor::refreshDisplay()
 {
+    panel->refreshPerformance();
     panel->refreshCapture();
     panel->refreshRecut();
     panel->refreshFracture();
     panel->showHoldStatus (livecutProcessor.holdStatusText());
-    panel->ruler.show (livecut::ui::PhraseRuler::Snapshot::of (livecutProcessor.getDisplayState()));
+    auto phrase = livecut::ui::PhraseRuler::Snapshot::of (livecutProcessor.getDisplayState());
+    if (livecutProcessor.activeMode() == livecut::ProcessingMode::perform)
+    {
+        phrase.performanceStatus = livecutProcessor.performanceStatusText().upToFirstOccurrenceOf (";", false, false).upToFirstOccurrenceOf (".", false, false);
+        phrase.performanceCapturing = livecutProcessor.getDisplayState().performanceState.load() == livecut::engine::PerformanceEngine::State::capturing;
+    }
+    panel->showPhrase (phrase);
 }
 
 juce::String LivecutAudioProcessorEditor::statusText() const

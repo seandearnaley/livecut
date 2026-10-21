@@ -25,7 +25,9 @@ constexpr std::array allIds {
     ids::mode, ids::attackAlign, ids::attackThreshold, ids::reverseChance,
     ids::impactFilterEnabled, ids::impactFilterType, ids::impactFilterChance, ids::impactFilterCutoff, ids::impactFilterQ, ids::impactFilterEnvOctaves, ids::impactFilterRepeatOctaves, ids::impactFilterMix, ids::impactDriveEnabled, ids::impactDriveMode, ids::impactDriveChance, ids::impactDriveDb, ids::impactDriveEnvDb, ids::impactDriveRepeatDb, ids::impactDriveMix, ids::impactTransientEnabled, ids::impactTransientChance, ids::impactTransientAttackDb, ids::impactTransientSustainDb, ids::impactTransientTimeMs, ids::impactTransientMix, ids::impactAttackMs, ids::impactDecayMs,
     ids::fractureProcedure, ids::fractureActivity, ids::fractureGrainSizeMs, ids::fractureGrainDensity, ids::fractureGrainPositionSpreadMs, ids::fractureGrainPitchSpreadCents, ids::fractureGrainPanSpread, ids::fractureTapeStartSpeed, ids::fractureTapeEndSpeed, ids::fractureTapeCurve, ids::fractureTapeCycle, ids::fractureTapeAlternate, ids::fractureFrequencyEnabled, ids::fractureFrequencyMode, ids::fractureFrequencyChance, ids::fractureFrequencyHz, ids::fractureFrequencyEnvHz, ids::fractureFrequencyRepeatHz, ids::fractureFrequencyMix,
-    ids::resonanceEnabled, ids::resonanceRootHz, ids::resonanceDecayMs, ids::resonanceExcitationDb, ids::resonanceInterval1, ids::resonanceInterval2, ids::resonanceInterval3, ids::resonanceInterval4, ids::resonanceWeight1, ids::resonanceWeight2, ids::resonanceWeight3, ids::resonanceWeight4, ids::resonanceMix, ids::resonanceOrder, ids::resonanceSpectralEnabled, ids::resonanceFreeze, ids::resonanceSmearMs, ids::resonanceSpectralMix
+    ids::resonanceEnabled, ids::resonanceRootHz, ids::resonanceDecayMs, ids::resonanceExcitationDb, ids::resonanceInterval1, ids::resonanceInterval2, ids::resonanceInterval3, ids::resonanceInterval4, ids::resonanceWeight1, ids::resonanceWeight2, ids::resonanceWeight3, ids::resonanceWeight4, ids::resonanceMix, ids::resonanceOrder, ids::resonanceSpectralEnabled, ids::resonanceFreeze, ids::resonanceSmearMs, ids::resonanceSpectralMix,
+    ids::performanceEnabled, ids::performanceVariation, ids::performanceDensity, ids::performanceGrain,
+    ids::performanceCharacter, ids::performanceFill, ids::performanceSeed
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -272,7 +274,7 @@ TEST_CASE ("Parameters added for Bounce carry version hint 2", "[parameters]")
         const auto isMixer = name == ids::wet || name == ids::outputTrim;
         const auto isPerform = name == ids::swing || name == ids::accent || name == ids::hold;
         const auto isRecut = name == ids::mode || name == ids::attackAlign || name == ids::attackThreshold || name == ids::reverseChance;
-        CHECK (parameter (state, id).getVersionHint() == (name.startsWith ("resonance") ? 8 : name.startsWith ("fracture") ? 7 : name.startsWith ("impact") ? 6 : isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
+        CHECK (parameter (state, id).getVersionHint() == (name.startsWith ("performance") ? 9 : name.startsWith ("resonance") ? 8 : name.startsWith ("fracture") ? 7 : name.startsWith ("impact") ? 6 : isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
     }
 }
 

@@ -271,6 +271,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 number (ids::resonanceSmearMs, "Spectral Smear", FloatRange (0, 2000), 0, decimals (0, "ms"), 8),
                 number (ids::resonanceSpectralMix, "Spectral Mix", FloatRange (0, 1), 1, percent(), 8));
 
+    // A separate prepared switch preserves the original mode parameter's
+    // normalized Live/Studio values and all existing host parameter indices.
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { ids::performanceEnabled, 9 }, "Perform Engine", false,
+                    juce::AudioParameterBoolAttributes().withAutomatable (false)),
+                number (ids::performanceVariation, "Rhythm Variation", FloatRange (0, 1), 0, percent(), 9),
+                number (ids::performanceDensity, "Rhythm Density", FloatRange (0, 1), .5f, percent(), 9),
+                number (ids::performanceGrain, "Texture Grain", FloatRange (0, 1), 0, percent(), 9),
+                number (ids::performanceCharacter, "Texture Tail", FloatRange (0, 1), .5f, percent(), 9),
+                toggle (ids::performanceFill, "Performance Fill", false, 9),
+                integer (ids::performanceSeed, "Performance Seed", 1, 65535, 1, "", 9));
     return layout;
 }
 
@@ -380,7 +390,14 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       resonanceSpectralEnabled (state, ids::resonanceSpectralEnabled),
       resonanceFreeze (state, ids::resonanceFreeze),
       resonanceSmearMs (state, ids::resonanceSmearMs),
-      resonanceSpectralMix (state, ids::resonanceSpectralMix)
+      resonanceSpectralMix (state, ids::resonanceSpectralMix),
+      performanceEnabled (state, ids::performanceEnabled),
+      performanceVariation (state, ids::performanceVariation),
+      performanceDensity (state, ids::performanceDensity),
+      performanceGrain (state, ids::performanceGrain),
+      performanceCharacter (state, ids::performanceCharacter),
+      performanceFill (state, ids::performanceFill),
+      performanceSeed (state, ids::performanceSeed)
 {
 }
 
@@ -397,6 +414,11 @@ Settings SettingsReader::read() const
     settings.accent = accent.read();
     settings.hold = hold.read() > 0.5f;
     settings.requestedMode = mode.readIndex() == 0 ? ProcessingMode::live : ProcessingMode::studio;
+    if (performanceEnabled.read() > .5f)
+        settings.requestedMode = ProcessingMode::perform;
+    settings.performance = { performanceVariation.read(), performanceDensity.read(), performanceGrain.read(),
+                             performanceCharacter.read(), performanceFill.read() > .5f,
+                             static_cast<std::uint32_t> (performanceSeed.readIndex()) };
     settings.attackAlign = attackAlign.read() > 0.5f;
     settings.attackThresholdDb = attackThreshold.read();
     settings.reverseChance = reverseChance.read();

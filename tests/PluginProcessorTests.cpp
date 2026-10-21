@@ -60,7 +60,7 @@ TEST_CASE ("Processor reports its identity", "[processor]")
 {
     LivecutAudioProcessor processor;
 
-    CHECK (processor.getName() == "Livecut");
+    CHECK (processor.getName() == JucePlugin_Name);
     CHECK_FALSE (processor.acceptsMidi());
     CHECK_FALSE (processor.producesMidi());
 }
@@ -302,7 +302,7 @@ TEST_CASE ("Saved state identifies the schema and unchanged cutting algorithm", 
     processor.getStateInformation (state);
     auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), static_cast<int> (state.getSize()));
     REQUIRE (xml != nullptr);
-    CHECK (xml->getIntAttribute ("schemaVersion") == 8);
+    CHECK (xml->getIntAttribute ("schemaVersion") == 9);
     CHECK (xml->getIntAttribute ("algorithmVersion") == 2);
 }
 

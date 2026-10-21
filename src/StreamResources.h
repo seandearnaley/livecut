@@ -28,6 +28,8 @@ struct StreamResources : private engine::Cutter::SourceContext
     {
         if (!std::isfinite (rate) || rate < 8000.0 || rate > 384000.0)
             throw std::invalid_argument ("Unsupported processing rate");
+        if (mode == ProcessingMode::perform && spectralEnabled)
+            throw std::invalid_argument ("Perform mode requires Spectral Engine off");
         baseLatency = mode == ProcessingMode::studio ? static_cast<int> (std::lround (.5 * rate)) : 0;
         if (spectralEnabled)
         {
@@ -39,6 +41,11 @@ struct StreamResources : private engine::Cutter::SourceContext
         if (!detector.prepare (rate, 8192, 3.0) || !timeline.prepare (baseLatency))
             throw std::runtime_error ("Cannot prepare stream metadata");
         cutter.setTransformSource (detector, *this);
+        if (mode == ProcessingMode::perform)
+        {
+            performance = std::make_unique<engine::PerformanceEngine>();
+            performance->prepare (rate);
+        }
     }
 
     bool appendContext (RenderContext context, int frames, std::uint64_t &epochCounter)
@@ -74,6 +81,7 @@ struct StreamResources : private engine::Cutter::SourceContext
     }
 
     engine::Cutter cutter;
+    std::unique_ptr<engine::PerformanceEngine> performance;
     engine::OnsetDetector detector;
     Timeline timeline;
     std::optional<Timeline::Lookup> rendering;

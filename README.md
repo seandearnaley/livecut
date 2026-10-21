@@ -57,6 +57,11 @@ a saved request. The editor keeps its 880 × 724 layout with Pattern/Recut pages
 See [the 0.5.1 release notes](docs/releases/0.5.1.md) for the corrected host lifecycle and [the feature guide](docs/releases/0.5.0.md) for source eligibility,
 transport behavior, memory and validation limits.
 
+**0.9.0 / Perform prototype** explores a separate captured-bar performance path
+with Rhythm and Texture XY pads, momentary Fill, Keep, Mutate and Return. See
+[the prototype brief](docs/performance-prototype.md) for its timing, audio and
+listening contracts. This is an experimental build, not a published release.
+
 ## Building
 
 Requirements: CMake 3.25+, and a recent Xcode (macOS) or Visual Studio (Windows).
@@ -77,6 +82,8 @@ Useful options:
   plug-in folders after each build.
 - `-DCMAKE_OSX_ARCHITECTURES=arm64` builds for Apple Silicon only, which halves
   build times while developing. The default is a universal binary.
+- `-DLIVECUT_PERFORMANCE_PROTOTYPE=ON` builds as **Livecut Perform Prototype**
+  with separate app, VST3 and AU identities for side-by-side local testing.
 
 CI validates every build with [pluginval](https://github.com/Tracktion/pluginval)
 at strictness level 10 (including Steinberg's VST3 validator) and with `auval`.
