@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <numbers>
 #include <vector>
 
 namespace
@@ -310,9 +311,13 @@ TEST_CASE ("Legacy Audio Hold doesn't hold on the Pad surface", "[pad][processor
 
 TEST_CASE ("Output is identical for every host buffer size", "[pad][processor]")
 {
-    const auto render = [] (int size)
+    const auto program = GENERATE (0, 3); // Cut, Suction
+    CAPTURE (program);
+    const auto render = [program] (int size)
     {
         PadSession session;
+        set (session.processor, livecut::ids::padProgram, static_cast<float> (program));
+        set (session.processor, livecut::ids::padY, .75f);
         session.render (5000, size);
         set (session.processor, livecut::ids::padTouch, 1);
         session.render (26200, size);
@@ -423,12 +428,87 @@ TEST_CASE ("Switching Suction to Cut while engaged doesn't click", "[pad][proces
     CHECK (suctionToCut <= 3.f * std::max (suctionThroughout, cutThroughout));
 }
 
-// A low tone under a high, squeezed band: the makeup follows the band's shape, so
-// each cut's breathing can't swell the output the way a lagging level match did.
-TEST_CASE ("Suction's breathing never swells a low tone", "[pad][processor]")
+// A Pad to Classic switch with Classic's Impact filter on: Suction's band keeps
+// its shape, makeup included, while its wet ramps out at Classic's next cut,
+// and Classic's low-pass comes in at the cut after. Adopted at once, the band
+// stepped 1.07 at that first cut, against 0.16 for Suction throughout. The
+// window ends before the second cut: that is a splice to silence with Classic's
+// filter off too, and the engine tests cover the low-pass coming in. (The
+// other way, the pad turns Classic's filter off at the switch, and Suction's
+// band starts at the beat restart, after it has faded.)
+TEST_CASE ("Switching Suction to Classic's filter doesn't click", "[pad][processor]")
 {
+    constexpr int switched = 31200, secondCut = 66000, window = 2400;
+    const auto largestStep = [] (int run)
+    {
+        PadSession session;
+        auto& processor = session.processor;
+        const auto& impact = processor.getCutter ().impact ().diagnostics ();
+        set (processor, livecut::ids::impactFilterEnabled, 1);
+        set (processor, livecut::ids::impactFilterCutoff, 800);
+        set (processor, livecut::ids::impactFilterQ, 2);
+        set (processor, livecut::ids::padProgram, 3); // Suction
+        set (processor, livecut::ids::padY, 1); // fully squeezed, the most resonant band
+        if (run == 0)
+            useClassicSurface (processor);
+        else
+            set (processor, livecut::ids::padTouch, 1);
+        session.render (switched);
+        REQUIRE (processor.getCutter ().isCutting ());
+        if (run == 1)
+        {
+            useClassicSurface (processor);
+            session.render (secondCut - session.frame);
+            CHECK_FALSE (impact.filterActive); // the band faded at the first cut
+            CHECK (impact.bandLowHz == 0.0);
+            session.render (window);
+            CHECK (impact.filterActive); // and the low-pass came in at the second
+            CHECK (impact.bandLowHz == 0.0);
+        }
+        else
+            session.render (secondCut - session.frame);
+
+        float largest = 0.f;
+        for (int k = 2 * (switched - window); k < 2 * secondCut; ++k)
+            largest = std::max (largest, std::abs (session.output[static_cast<std::size_t> (k)]
+                                                   - session.output[static_cast<std::size_t> (k - 2)]));
+        return largest;
+    };
+    const auto classicThroughout = largestStep (0);
+    const auto suctionToClassic = largestStep (1);
+    const auto suctionThroughout = largestStep (2);
+    CAPTURE (suctionToClassic, suctionThroughout, classicThroughout);
+    CHECK (suctionToClassic <= 3.f * std::max (suctionThroughout, classicThroughout));
+}
+
+// A tone inside the pad's tightest band, at its resonant low edge, the loudest
+// place for it. The makeup follows the band's shape, so the cuts' breathing
+// can't swell it the way a lagging level match did. The bar is the spec's: at
+// most twice the band's own resonant peak for this tone with no makeup, from
+// the engine alone, breathing at Suction's 16ths. The makeup there is below 1,
+// and the cutter's splices ring the resonant edge harder than a steady tone.
+TEST_CASE ("Suction's breathing never swells a tone in its band", "[pad][processor]")
+{
+    const auto band = livecut::engine::mapPad (livecut::engine::PadProgram::suction, 0.f, 1.f, {}).impact;
+    constexpr double tone = .013 * 48000.0 / (2.0 * std::numbers::pi); // the session's signal, 99.3 Hz
+    REQUIRE (tone > band.filter.bandLowHz);
+    REQUIRE (tone < band.filter.bandHighHz);
+    livecut::engine::ImpactEffects effects;
+    effects.prepare (48000.0);
+    effects.setParameters (band);
+    double resonance = 0.0;
+    for (int i = 0; i < 96000; ++i)
+    {
+        if (i % 6000 == 0)
+            effects.startCut ({ 404, 0, 0.0, 0.0, static_cast<std::size_t> (i / 6000), 16 });
+        auto left = signal (i, 0), right = left;
+        effects.process (left, right);
+        resonance = std::max (resonance, std::abs (left / effects.diagnostics ().levelHoldGain));
+    }
+
     PadSession session;
     set (session.processor, livecut::ids::padProgram, 3); // Suction
+    set (session.processor, livecut::ids::padX, 0);
     set (session.processor, livecut::ids::padY, 1);
     set (session.processor, livecut::ids::padTouch, 1);
     session.render (96000);
@@ -436,8 +516,8 @@ TEST_CASE ("Suction's breathing never swells a low tone", "[pad][processor]")
     float peak = 0.f;
     for (const auto sample : session.output)
         peak = std::max (peak, std::abs (sample));
-    CAPTURE (peak);
-    CHECK (peak <= 2.f); // A lagging level match reached 8.5 here.
+    CAPTURE (peak, resonance);
+    CHECK (peak <= 2.0 * resonance); // A lagging level match swelled a tone below the band to 8.5.
 }
 
 TEST_CASE ("Touching while stopped stays dry, and playing with the touch held starts on the grid", "[pad][processor]")
@@ -488,10 +568,12 @@ TEST_CASE ("Pad processing never allocates", "[pad][processor]")
     PadSession session;
     juce::AudioBuffer<float> buffer (2, 4096);
     std::size_t allocations = 0;
+    bool suctionFiltered = false;
     for (int step = 0; step < 40; ++step)
     {
+        // Cut, then Suction, then Bounce while its band still sounds.
         set (session.processor, livecut::ids::padTouch, step < 20 ? 1 : 0);
-        set (session.processor, livecut::ids::padProgram, step < 10 ? 0 : 1);
+        set (session.processor, livecut::ids::padProgram, step < 7 ? 0 : step < 14 ? 3 : 1);
         session.head.info.setPpqPosition (step * 4096 / 24000.0);
         session.head.info.setPpqPositionOfLastBarStart (std::floor (step * 4096 / 96000.0) * 4.0);
         session.head.info.setBarCount (step * 4096 / 96000);
@@ -501,7 +583,9 @@ TEST_CASE ("Pad processing never allocates", "[pad][processor]")
             session.processor.processBlock (buffer, session.midi);
             allocations += counter.count ();
         }
+        suctionFiltered = suctionFiltered || session.processor.getCutter ().impact ().diagnostics ().bandLowHz > 0.0;
     }
+    CHECK (suctionFiltered);
     CHECK (allocations == 0);
 }
 

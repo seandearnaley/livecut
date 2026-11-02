@@ -63,6 +63,8 @@ struct ImpactParameters
     float decayMs = 80.0f; // [5, 1000], decay time to -60 dB
 };
 
+namespace detail
+{
 // The pink-noise power a band keeps, with its edges widthOctaves apart and
 // resonance q, from the analogue high-pass/low-pass pair the band's SVFs
 // approximate. In octaves: a flat band that wide keeps the same power. It is
@@ -70,10 +72,11 @@ struct ImpactParameters
 // ImpactEffects::prepare() tabulates it; this interpolates that table.
 inline constexpr double bandOpenOctaves = 9.23, bandOpenQ = 0.707; // 30 Hz-18 kHz, flat
 inline constexpr double bandPowerStep = 1.0 / 16.0, bandPowerMargin = 6.0; // octaves
-// Exposed for tests: the band's makeup reads the table directly.
+// For tests: the band's makeup reads the table directly.
 double bandPinkPower (double widthOctaves, double q);
-// Exposed for tests: the same integral, computed directly at any step.
+// For tests: the same integral, computed directly at any step.
 double integrateBandPinkPower (double widthOctaves, double q, double stepOctaves);
+} // namespace detail
 
 // JUCE-free, allocation-free stereo processing. Production rates are 8–384 kHz;
 // the engine also accepts 1 kHz for the existing deterministic timing fixtures.
@@ -130,8 +133,9 @@ private:
     void processDrive (double& left, double& right, double envelope);
     void processTransient (double& left, double& right);
 
-    // The filter runs parameters.filter; a disabled band adopts the
-    // requested one only once its wet has ramped out.
+    // The filter runs parameters.filter. A band switched off, or a type change
+    // into or out of a band, while it sounds holds it: it adopts the requested
+    // one only once its wet has ramped out.
     ImpactParameters parameters;
     ImpactParameters::Filter requestedFilter;
     // While held, the next cut detaches the filter from the shared envelope:

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "engine/ImpactEffects.h"
+#include "engine/PadPrograms.h"
 #include "AllocationCounter.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -11,6 +12,7 @@
 #include <bit>
 #include <cstdint>
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <vector>
 
@@ -165,30 +167,11 @@ ImpactParameters bandParameters (float lowHz, float highHz, float q = 0.707f)
 
 double decibels (double ratio) { return 20.0 * std::log10 (ratio); }
 
-// The pad's Suction curve: x picks the centre, y squeezes the edges toward it.
-ImpactParameters suctionBand (double x, double y)
+// Suction's band from the pad's own mapping, breathing as the pad plays it,
+// so a retuned curve retunes these tests too. y 1 is its tightest band.
+ImpactParameters suction (double x, double y = 1.0)
 {
-    const auto centre = 120.0 * std::pow (5000.0 / 120.0, x);
-    const auto squeeze = 0.85 * y;
-    return bandParameters (static_cast<float> (std::pow (30.0, 1.0 - squeeze) * std::pow (centre, squeeze)),
-                           static_cast<float> (std::pow (18000.0, 1.0 - squeeze) * std::pow (centre, squeeze)),
-                           static_cast<float> (0.707 + 1.8 * y));
-}
-
-// Suction's tightest band, breathing as the pad plays it.
-ImpactParameters breathingSuction (double x)
-{
-    auto p = suctionBand (x, 1.0);
-    p.filter.envelopeOctaves = 1.5f;
-    p.attackMs = 1.0f;
-    p.decayMs = 180.0f;
-    return p;
-}
-
-// The Suction y whose band is this many octaves wide.
-double squeezeForWidth (double octaves)
-{
-    return (1.0 - octaves / std::log2 (18000.0 / 30.0)) / 0.85;
+    return mapPad (PadProgram::suction, static_cast<float> (x), static_cast<float> (y), {}).impact;
 }
 
 // The band's steady-state sine gain with the level hold divided back out,
@@ -915,10 +898,10 @@ TEST_CASE ("A band holds its level along Suction's path", "[impact]")
         for (int step = 0; step <= 10; ++step)
         {
             const auto y = step / 10.0;
-            const auto p = suctionBand (x, y);
+            const auto p = suction (x, y);
             const auto width = std::log2 (p.filter.bandHighHz / static_cast<double> (p.filter.bandLowHz));
-            const auto capped = integrateBandPinkPower (bandOpenOctaves, bandOpenQ, bandPowerStep)
-                                    / bandPinkPower (width, p.filter.q) >= 4.0; // the makeup's +6 dB cap
+            const auto capped = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, detail::bandPowerStep)
+                                    / detail::bandPinkPower (width, p.filter.q) >= 4.0; // the makeup's +6 dB cap
             const auto steady = measure (p, p) - reference;
             const auto squeezing = measure (open, p) - reference;
             const auto opening = measure (p, open) - reference;
@@ -941,7 +924,7 @@ TEST_CASE ("A band holds its level along Suction's path", "[impact]")
 
 TEST_CASE ("A band keeps silence silent", "[impact]")
 {
-    const auto p = breathingSuction (0.5);
+    const auto p = suction (0.5);
     ImpactEffects effects;
     effects.prepare (rate);
     effects.setParameters (p);
@@ -969,13 +952,13 @@ TEST_CASE ("A band's makeup never steps", "[impact]")
     // env (6000 samples) = 0.0083, move it less. The table's slope in each
     // 1/16-octave cell is a secant of ln P, so it stays within the exact
     // slope's range one cell either side; 5% covers the table's error.
-    const auto p = breathingSuction (0.5);
+    const auto p = suction (0.5);
     const auto q = static_cast<double> (p.filter.q);
     const auto settledWidth = std::log2 (p.filter.bandHighHz / static_cast<double> (p.filter.bandLowHz));
     const auto exactGain = [q] (double width)
     {
-        return std::min (2.0, std::sqrt (integrateBandPinkPower (bandOpenOctaves, bandOpenQ, 1.0 / 256.0)
-                                         / integrateBandPinkPower (width, q, 1.0 / 256.0)));
+        return std::min (2.0, std::sqrt (detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, 1.0 / 256.0)
+                                         / detail::integrateBandPinkPower (width, q, 1.0 / 256.0)));
     };
     constexpr double h = 1.0 / 256.0;
     double steepest = 0.0, exactLowest = 2.0, exactHighest = 0.0;
@@ -1023,17 +1006,17 @@ TEST_CASE ("A band's pink power table matches its integral", "[impact]")
     const auto powerDecibels = [] (double ratio) { return 10.0 * std::log10 (ratio); };
 
     // The open band, against a direct integration at 64 times the resolution.
-    const auto open = integrateBandPinkPower (bandOpenOctaves, bandOpenQ, 1.0 / 1024.0);
-    CHECK_THAT (powerDecibels (bandPinkPower (bandOpenOctaves, bandOpenQ) / open), WithinAbs (0.0, 0.05));
-    CHECK_THAT (open, WithinRel (bandOpenOctaves, 0.01)); // A flat band keeps its width in octaves.
+    const auto open = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, 1.0 / 1024.0);
+    CHECK_THAT (powerDecibels (detail::bandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ) / open), WithinAbs (0.0, 0.05));
+    CHECK_THAT (open, WithinRel (detail::bandOpenOctaves, 0.01)); // A flat band keeps its width in octaves.
 
     // Off the table's grid, everywhere it reaches.
     for (const auto q : { 0.5, 0.707, 1.3, 2.507, 5.0, 8.0 })
         for (const auto width : { 1.0 / 12.0, 0.1, 0.37, 1.385, 2.9, 4.385, 9.23, 12.49 })
         {
             CAPTURE (q, width);
-            const auto direct = integrateBandPinkPower (width, q, 1.0 / 1024.0);
-            CHECK_THAT (powerDecibels (bandPinkPower (width, q) / direct), WithinAbs (0.0, 0.05));
+            const auto direct = detail::integrateBandPinkPower (width, q, 1.0 / 1024.0);
+            CHECK_THAT (powerDecibels (detail::bandPinkPower (width, q) / direct), WithinAbs (0.0, 0.05));
         }
 
     // Wider keeps more, up to a moderate q,
@@ -1044,7 +1027,7 @@ TEST_CASE ("A band's pink power table matches its integral", "[impact]")
         bool increasing = true;
         for (auto width = 1.0 / 12.0; width <= 12.5; width += 1.0 / 64.0)
         {
-            const auto power = bandPinkPower (width, q);
+            const auto power = detail::bandPinkPower (width, q);
             increasing = increasing && power > previous;
             previous = power;
         }
@@ -1052,24 +1035,47 @@ TEST_CASE ("A band's pink power table matches its integral", "[impact]")
     }
     // but not above about q 2, where the two resonant edges overlap in a
     // narrow band and reinforce each other.
-    CHECK (bandPinkPower (1.0 / 12.0, 2.507) > bandPinkPower (2.0, 2.507));
+    CHECK (detail::bandPinkPower (1.0 / 12.0, 2.507) > detail::bandPinkPower (2.0, 2.507));
 }
 
-TEST_CASE ("A band's peak stays within twice its resonance", "[impact]")
+TEST_CASE ("A band's peak inside it is its resonance times its makeup", "[impact]")
 {
-    // The pad's tightest band, breathing with cuts at Suction's 16ths. Its
-    // resonant peak with no makeup is the largest band output over the sweep.
+    // The pad's tightest band, breathing with cuts at Suction's 16ths, on a
+    // full-scale sine inside it. Its peak is at most the band's own gain at
+    // that frequency with no makeup, the largest over the breathing, times the
+    // largest makeup the breathing gives, both computed here rather than read
+    // from the band. The 10% is the sine's onset ringing at the resonant edges
+    // (measured up to 5%). At the top of the pad the overlapping edges keep
+    // more pink power than the open band, so the makeup cuts, to about 0.86.
+    // The Simper SVF is the bilinear transform of the analogue prototype, so
+    // its steady gain is the prototype's at the prewarped frequency.
+    const auto bandGain = [] (double low, double high, double q, double frequency)
+    {
+        const auto t = std::tan (pi * frequency / rate), k = 1.0 / q;
+        const auto w1 = t / std::tan (pi * low / rate), w2 = t / std::tan (pi * high / rate);
+        return w1 * w1 / std::hypot (1.0 - w1 * w1, k * w1) / std::hypot (1.0 - w2 * w2, k * w2);
+    };
     for (const auto x : { 0.0, 0.5, 1.0 })
     {
         CAPTURE (x);
-        const auto p = breathingSuction (x);
-        std::vector<double> frequencies { 30.0, 18000.0, p.filter.bandLowHz, p.filter.bandHighHz, 99.0 };
-        for (int i = 0; i <= 24; ++i)
-            frequencies.push_back (30.0 * std::pow (600.0, i / 24.0));
-        double resonance = 0.0;
-        std::vector<double> peaks;
-        for (const auto frequency : frequencies)
+        const auto p = suction (x);
+        const auto low = static_cast<double> (p.filter.bandLowHz), high = static_cast<double> (p.filter.bandHighHz);
+        const auto q = static_cast<double> (p.filter.q), opening = static_cast<double> (p.filter.envelopeOctaves);
+        REQUIRE (low * std::exp2 (-opening) >= 30.0); // so the breathing opens each edge in full
+        REQUIRE (high * std::exp2 (opening) <= 18000.0);
+        const auto open = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, 1.0 / 64.0);
+        double makeup = 0.0;
+        for (auto width = std::log2 (high / low); width <= std::log2 (high / low) + 2.0 * opening; width += 1.0 / 32.0)
+            makeup = std::max (makeup, std::min (2.0, std::sqrt (open / detail::integrateBandPinkPower (width, q, 1.0 / 64.0))));
+        for (int n = 0; n <= 8; ++n)
         {
+            const auto frequency = low * std::pow (high / low, n / 8.0);
+            double gain = 0.0;
+            for (int step = 0; step <= 150; ++step) // the breathing, 1/100 octave at a time
+            {
+                const auto o = opening * step / 150.0;
+                gain = std::max (gain, bandGain (low * std::exp2 (-o), high * std::exp2 (o), q, frequency));
+            }
             ImpactEffects effects;
             effects.prepare (rate);
             effects.setParameters (p);
@@ -1082,14 +1088,9 @@ TEST_CASE ("A band's peak stays within twice its resonance", "[impact]")
                 effects.process (left, right);
                 REQUIRE (std::isfinite (left));
                 peak = std::max (peak, static_cast<double> (std::abs (left)));
-                resonance = std::max (resonance, std::abs (left / effects.diagnostics().levelHoldGain));
             }
-            peaks.push_back (peak);
-        }
-        for (std::size_t i = 0; i < frequencies.size(); ++i)
-        {
-            CAPTURE (frequencies[i], peaks[i], resonance);
-            CHECK (peaks[i] <= 2.0 * resonance);
+            CAPTURE (frequency, peak, gain, makeup);
+            CHECK (peak <= 1.1 * makeup * gain);
         }
     }
 }
@@ -1195,10 +1196,19 @@ TEST_CASE ("A band resets cleanly and allocates no memory", "[impact]")
     first.setParameters (bandParameters (900.0f, 1000.0f, 3.0f));
     first.startCut ({});
     settle (first, 200);
+    // Switched to a Classic type, the band runs on until it fades at the next
+    // cut, and then it is cleared for good.
     auto classic = p;
     classic.filter.type = ImpactParameters::Filter::Type::highPass;
     first.setParameters (classic);
-    first.setParameters (p);
+    settle (first, 100);
+    CHECK_FALSE (clearedDiagnostics());
+    first.startCut ({});
+    settle (first, 96);
+    CHECK (clearedDiagnostics());
+    first.startCut ({});
+    settle (first, 200);
+    CHECK (first.diagnostics().filterActive);
     CHECK (clearedDiagnostics());
     first.reset();
     CHECK (clearedDiagnostics());
@@ -1223,14 +1233,21 @@ TEST_CASE ("A band resets cleanly and allocates no memory", "[impact]")
     CHECK (allocations == 0);
 }
 
-TEST_CASE ("A band switched on mid-cut starts fresh", "[impact]")
+TEST_CASE ("A band switched on starts fresh", "[impact]")
 {
-    // The fresh instance runs band on silence up to the switch, so its wet mix
-    // and envelope match while its band state, followers and glide stay clean.
+    // Switched on while another filter sounds, the band waits for it to fade
+    // at the next cut, then comes in at the cut after that. The fresh instance
+    // runs a disabled band on silence until that cut, so its wet mix and
+    // envelope match while its band state and glide stay clean. The stale band
+    // fades out at cut 1, leaving the low-pass to sound from cut 2.
+    constexpr int cut = 2000;
     const auto band = bandParameters (300.0f, 3000.0f, 2.0f);
     auto classic = band;
     classic.filter.type = ImpactParameters::Filter::Type::lowPass;
     classic.filter.cutoffHz = 500.0f;
+    auto disabled = band;
+    disabled.filter.enabled = false;
+    const auto signal = [] (int i) { return static_cast<float> (0.5 * std::sin (0.07 * i) + 0.2 * std::sin (0.9 * i)); };
     for (const auto staleBand : { false, true })
     {
         CAPTURE (staleBand);
@@ -1238,30 +1255,37 @@ TEST_CASE ("A band switched on mid-cut starts fresh", "[impact]")
         switched.prepare (rate);
         fresh.prepare (rate);
         switched.setParameters (staleBand ? bandParameters (100.0f, 8000.0f, 4.0f) : classic);
-        fresh.setParameters (band);
-        switched.startCut ({});
-        fresh.startCut ({});
-        const auto signal = [] (int i) { return static_cast<float> (0.5 * std::sin (0.07 * i) + 0.2 * std::sin (0.9 * i)); };
-        for (int i = 0; i < 4000; ++i)
-        {
-            if (staleBand && i == 2000)
-                switched.setParameters (classic);
-            auto left = signal (i), right = -0.5f * left;
-            switched.process (left, right);
-            float silentLeft = 0.0f, silentRight = 0.0f;
-            fresh.process (silentLeft, silentRight);
-        }
-        switched.setParameters (band);
+        fresh.setParameters (disabled);
         bool identical = true;
-        for (int i = 4000; i < 8000; ++i)
+        for (int i = 0; i < 6 * cut; ++i)
         {
+            const auto index = i / cut;
+            if (i % cut == 0)
+            {
+                if (staleBand && index == 1)
+                    switched.setParameters (classic);
+                if (index == 3)
+                    switched.setParameters (band);
+                if (index == 4)
+                    fresh.setParameters (band);
+                const CutIdentity identity { 404, 0, 0.0, 0.0, static_cast<std::size_t> (index), 8 };
+                switched.startCut (identity);
+                fresh.startCut (identity);
+            }
+            if (i == 3 * cut - 1) // the low-pass sounds just before the switch
+            {
+                REQUIRE (switched.diagnostics().filterActive);
+                REQUIRE (switched.diagnostics().bandLowHz == 0.0);
+            }
             auto l1 = signal (i), r1 = -0.5f * l1;
-            auto l2 = l1, r2 = r1;
+            auto l2 = index < 4 ? 0.0f : l1, r2 = index < 4 ? 0.0f : r1;
             switched.process (l1, r1);
             fresh.process (l2, r2);
-            identical = identical && l1 == l2 && r1 == r2;
+            if (index >= 4)
+                identical = identical && l1 == l2 && r1 == r2;
         }
         CHECK (identical);
+        CHECK (switched.diagnostics().bandLowHz > 0.0);
     }
 }
 
@@ -1271,7 +1295,7 @@ TEST_CASE ("A band switched off keeps its shape while it fades", "[impact]")
     // exactly as if nothing had changed, not even that cut, which would open
     // it: the output is the input plus the ramp times the unchanged band's wet
     // difference. Then the new parameters take over.
-    const auto band = breathingSuction (0.5);
+    const auto band = suction (0.5);
     auto off = band; // Cut's Impact: off, with every other filter setting changed too
     off.filter = ImpactParameters::Filter {};
     ImpactEffects switched, unchanged;
@@ -1329,4 +1353,214 @@ TEST_CASE ("A band switched off keeps its shape while it fades", "[impact]")
     settle (switched, 200);
     CHECK (switched.diagnostics().filterActive);
     CHECK (switched.diagnostics().bandLowHz == 0.0); // a low-pass now, not the band
+}
+
+namespace
+{
+struct TypeSwitch
+{
+    double largestError = 0.0; // against the unswitched twin times the ramp
+    bool sameShape = true;
+    float switchedStep = 0.0f, fromStep = 0.0f, toStep = 0.0f;
+};
+
+// Switches `from` to `to`, both enabled, at cut 1, mid-sound at full wet, with
+// cuts every 6000 samples as at Suction's 16ths. The largest steps are over a
+// window of 2400 samples either side of cuts 1 and 2.
+TypeSwitch switchType (const ImpactParameters& from, const ImpactParameters& to)
+{
+    constexpr int cut = 6000, window = 2400;
+    const auto signal = [] (int i)
+    {
+        return static_cast<float> (0.5 * std::sin (2.0 * pi * 700.0 * i / rate) + 0.3 * std::sin (2.0 * pi * 99.0 * i / rate));
+    };
+    const auto identity = [] (int i) { return CutIdentity { 404, 0, 0.0, 0.0, static_cast<std::size_t> (i / cut), 8 }; };
+    const auto largestStep = [&] (const ImpactParameters& first, const ImpactParameters* second)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (first);
+        float previous = 0.0f, largest = 0.0f;
+        for (int i = 0; i < 3 * cut; ++i)
+        {
+            if (i % cut == 0)
+            {
+                if (second != nullptr && i == cut)
+                    effects.setParameters (*second);
+                effects.startCut (identity (i));
+            }
+            auto left = signal (i), right = -0.5f * left;
+            effects.process (left, right);
+            if (i > cut - window && i < 2 * cut + window)
+                largest = std::max (largest, std::abs (left - previous));
+            previous = left;
+        }
+        return largest;
+    };
+    TypeSwitch result;
+    result.switchedStep = largestStep (from, &to);
+    result.fromStep = largestStep (from, nullptr);
+    result.toStep = largestStep (to, nullptr);
+
+    // While its wet ramps out, the sounding filter runs on as if nothing had
+    // changed, not even the cut, which would restart its envelope.
+    ImpactEffects switched, unchanged;
+    for (auto* effects : { &switched, &unchanged })
+    {
+        effects->prepare (rate);
+        effects->setParameters (from);
+        effects->startCut (identity (0));
+    }
+    int i = 0;
+    for (; i < cut; ++i)
+    {
+        auto l1 = signal (i), r1 = -0.5f * l1, l2 = l1, r2 = r1;
+        switched.process (l1, r1);
+        unchanged.process (l2, r2);
+    }
+    switched.setParameters (to);
+    switched.startCut (identity (i));
+    result.sameShape = ! switched.diagnostics().filterActive;
+    for (int k = 0; k < 96; ++k, ++i)
+    {
+        const auto input = signal (i);
+        auto l1 = input, r1 = -0.5f * input, l2 = l1, r2 = r1;
+        switched.process (l1, r1);
+        unchanged.process (l2, r2);
+        const auto ramp = 1.0 - (k + 1) / 96.0;
+        result.largestError = std::max (result.largestError, std::abs (l1 - (input + ramp * (static_cast<double> (l2) - input))));
+        if (k < 95)
+            result.sameShape = result.sameShape && switched.diagnostics().bandLowHz == unchanged.diagnostics().bandLowHz;
+    }
+    return result;
+}
+
+ImpactParameters suctionLowPass()
+{
+    // A Classic low-pass, sharing Suction's attack and decay.
+    auto p = suction (0.5);
+    p.filter = ImpactParameters::Filter {};
+    p.filter.enabled = true;
+    p.filter.cutoffHz = 2000.0f;
+    p.filter.q = 2.0f;
+    p.filter.envelopeOctaves = 2.0f;
+    return p;
+}
+
+// After the switch, the new type comes in at the next cut.
+void checkTakesOver (const ImpactParameters& from, const ImpactParameters& to, bool band)
+{
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (from);
+    effects.startCut ({ 404, 0, 0.0, 0.0, 0, 8 });
+    settle (effects, 6000);
+    effects.setParameters (to);
+    effects.startCut ({ 404, 0, 0.0, 0.0, 1, 8 });
+    settle (effects, 6000);
+    CHECK_FALSE (effects.diagnostics().filterActive);
+    effects.startCut ({ 404, 0, 0.0, 0.0, 2, 8 });
+    settle (effects, 200);
+    CHECK (effects.diagnostics().filterActive);
+    CHECK ((effects.diagnostics().bandLowHz > 0.0) == band);
+}
+} // namespace
+
+TEST_CASE ("A low-pass switched to a band keeps its shape while it fades", "[impact]")
+{
+    // The low-pass fades out whole at the next cut, and the band comes in at
+    // the cut after. Adopted at once, the switch cleared the high-pass state
+    // the two share, mid-sound.
+    const auto lowPass = suctionLowPass();
+    const auto band = suction (0.5);
+    const auto result = switchType (lowPass, band);
+    CAPTURE (result.largestError, result.switchedStep, result.fromStep, result.toStep);
+    CHECK (result.largestError < 1.0e-6);
+    CHECK (result.sameShape);
+    CHECK (result.switchedStep <= 3.0f * std::max (result.fromStep, result.toStep));
+    checkTakesOver (lowPass, band, true);
+}
+
+TEST_CASE ("A band switched to a low-pass keeps its shape while it fades", "[impact]")
+{
+    // A Pad to Classic switch: the band fades out whole, makeup included.
+    // Adopted at once, the low-pass ran on the band's high-pass state, without
+    // the makeup.
+    const auto lowPass = suctionLowPass();
+    const auto band = suction (0.5);
+    const auto result = switchType (band, lowPass);
+    CAPTURE (result.largestError, result.switchedStep, result.fromStep, result.toStep);
+    CHECK (result.largestError < 1.0e-6);
+    CHECK (result.sameShape);
+    CHECK (result.switchedStep <= 3.0f * std::max (result.fromStep, result.toStep));
+    checkTakesOver (band, lowPass, false);
+}
+
+TEST_CASE ("An open band's breathing doesn't dip the level at high rates", "[impact]")
+{
+    // At 96 kHz each cut opens the bottom of the pad's high edge to 43 kHz,
+    // where material has no power; counted in the makeup's width, those
+    // octaves dipped the level about 0.5 dB at every cut. Pink noise below
+    // 20 kHz, through the breathing band and the same band held still.
+    constexpr double highRate = 96000.0;
+    constexpr int cut = 12000; // 16ths at 120 bpm
+    // An eighth-order Butterworth low-pass at 19 kHz, from four RBJ biquads.
+    struct Biquad
+    {
+        double b0 = 0.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0, z1 = 0.0, z2 = 0.0;
+        Biquad (double frequency, double q)
+        {
+            const auto w = 2.0 * pi * frequency / highRate, alpha = std::sin (w) / (2.0 * q), a0 = 1.0 + alpha;
+            b0 = b2 = (1.0 - std::cos (w)) / (2.0 * a0);
+            b1 = (1.0 - std::cos (w)) / a0;
+            a1 = -2.0 * std::cos (w) / a0;
+            a2 = (1.0 - alpha) / a0;
+        }
+        double process (double x)
+        {
+            const auto y = b0 * x + z1;
+            z1 = b1 * x - a1 * y + z2;
+            z2 = b2 * x - a2 * y;
+            return y;
+        }
+    };
+    std::vector<Biquad> limit;
+    for (const auto q : { 0.5098, 0.6013, 0.9000, 2.5629 })
+        limit.emplace_back (19000.0, q);
+    Pink pink;
+
+    const auto breathing = suction (0.5, 0.0);
+    auto still = breathing;
+    still.filter.envelopeOctaves = 0.0f;
+    ImpactEffects moving, held;
+    moving.prepare (highRate);
+    held.prepare (highRate);
+    moving.setParameters (breathing);
+    held.setParameters (still);
+    auto deepest = std::numeric_limits<double>::infinity(), movingEnergy = 0.0, heldEnergy = 0.0;
+    for (int i = 0; i < 24 * cut; ++i)
+    {
+        if (i % cut == 0)
+        {
+            if (i > 0) // the level over each cut's first 20 ms, where it breathes widest
+                deepest = std::min (deepest, decibels (std::sqrt (movingEnergy / heldEnergy)));
+            movingEnergy = heldEnergy = 0.0;
+            const CutIdentity identity { 404, 0, 0.0, 0.0, static_cast<std::size_t> (i / cut), 16 };
+            moving.startCut (identity);
+            held.startCut (identity);
+        }
+        auto x = static_cast<double> (pink.next());
+        for (auto& stage : limit)
+            x = stage.process (x);
+        auto l1 = static_cast<float> (x), r1 = l1, l2 = l1, r2 = l1;
+        moving.process (l1, r1);
+        held.process (l2, r2);
+        if (i % cut < static_cast<int> (0.02 * highRate))
+        {
+            movingEnergy += l1 * static_cast<double> (l1);
+            heldEnergy += l2 * static_cast<double> (l2);
+        }
+    }
+    CAPTURE (deepest);
+    CHECK (deepest > -0.15);
 }

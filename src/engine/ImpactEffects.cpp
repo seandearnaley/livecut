@@ -12,10 +12,12 @@ namespace livecut::engine
 {
 namespace
 {
+using namespace detail;
 constexpr double pi = std::numbers::pi;
 constexpr double log1000 = 6.907755278982137;
 constexpr double semitone = 1.0594630943592953; // 2^(1/12)
 constexpr double makeupCeiling = 2.0; // +6 dB
+constexpr double makeupHighestHz = 18000.0;
 
 // The band's pink-noise power, tabulated over its width w (octaves) and log2 q.
 // The widest band the clamps allow is log2 (0.45 * 384 kHz / 30 Hz) = 12.49
@@ -123,6 +125,8 @@ double logCosh (double x)
 double cleanState (double x) { return std::abs (x) < 1.0e-30 ? 0.0 : x; }
 } // namespace
 
+namespace detail
+{
 double bandPinkPower (double widthOctaves, double q)
 {
     return std::exp (pinkPowerTable().interpolate (widthOctaves, q));
@@ -132,6 +136,7 @@ double integrateBandPinkPower (double widthOctaves, double q, double stepOctaves
 {
     return integratePinkPower (widthOctaves, q, stepOctaves, bandPowerMargin);
 }
+} // namespace detail
 
 void ImpactEffects::Ramp::setTarget (double value, std::uint32_t samples)
 {
@@ -213,20 +218,23 @@ void ImpactEffects::setParameters (const ImpactParameters& next)
     const auto filter = parameters.filter;
     parameters = next;
     parameters.filter = filter;
-    // A band switched off while it still sounds keeps its last shape, its
-    // breathing included, until its wet ramps out; it never changes shape while
-    // audible. Classic types adopt the new parameters at once, as they always have.
-    if (f.enabled || parameters.filter.type != ImpactParameters::Filter::Type::band
-        || (wet[0].current == 0.0 && wet[0].target == 0.0))
-        adoptFilter();
-    else
+    // A band switched off, or switched to or from another type, while it still
+    // sounds keeps its last shape, its breathing included, until its wet ramps
+    // out at the next cut; it never changes shape while audible. The new filter
+    // comes in on a later cut. Classic types, which never involve a band, adopt
+    // the new parameters at once, as they always have.
+    const auto band = ImpactParameters::Filter::Type::band;
+    const auto sounding = parameters.filter.type;
+    const auto audible = wet[0].current != 0.0 || wet[0].target != 0.0;
+    if (audible && (sounding == band || f.type == band) && (! f.enabled || f.type != sounding))
     {
         if (! filterHeld)
             heldDecayMultiplier = decayMultiplier;
         filterHeld = true;
         parameters.filter.enabled = false;
-        parameters.filter.chance = f.chance;
     }
+    else
+        adoptFilter();
     auto& d = parameters.drive;
     d.chance = std::clamp (d.chance, 0.0f, 1.0f);
     d.driveDb = std::clamp (d.driveDb, 0.0f, 30.0f);
@@ -298,9 +306,9 @@ void ImpactEffects::processFilter (double& left, double& right, double envelope,
     const auto mix = wet[0].next();
     if (mix == 0.0)
     {
-        filterState = {};
         resetBand();
-        adoptFilter();
+        if (filterHeld) // Only a held filter differs from the requested one.
+            adoptFilter();
         return;
     }
     if (parameters.filter.type == ImpactParameters::Filter::Type::band)
@@ -395,8 +403,13 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
     // keeps the open band's power, including where the resonant edges overlap.
     // It is at most +6 dB. It follows the breathing edges exactly, so it never
     // lags or overshoots.
+    // Octaves above 18 kHz don't count: at high rates the breathing pushes the
+    // high edge there, where material has little power, and counting them
+    // would dip the level at every cut. The table clamps a band that sits
+    // wholly above 18 kHz to its narrowest width.
     const auto& table = pinkPowerTable();
-    const auto hold = std::min (makeupCeiling, std::exp (0.5 * (table.logOpen - table.interpolate (std::log2 (high / low), bandQ))));
+    const auto width = std::log2 (std::min (high, makeupHighestHz) / low);
+    const auto hold = std::min (makeupCeiling, std::exp (0.5 * (table.logOpen - table.interpolate (width, bandQ))));
     state.levelHoldGain = hold;
     left += mix * (hold * bandLeft - left);
     right += mix * (hold * bandRight - right);
