@@ -185,6 +185,44 @@ TEST_CASE ("Hold survives a loop wrap", "[pad][processor]")
     CHECK (session.processor.getDisplayState ().status.load () == livecut::DisplayState::Status::cutting);
 }
 
+// Going idle resets the effect rack; a latched Hold never goes idle, so nothing resets mid-sound.
+TEST_CASE ("A latched Hold keeps the rack running", "[pad][processor]")
+{
+    constexpr int end = 72000; // well past the beat-1 release and its fade
+    PadSession held, touched, released;
+    set (held.processor, livecut::ids::padHold, 1);
+    for (auto* session : { &held, &touched, &released })
+    {
+        set (session->processor, livecut::ids::padTouch, 1);
+        session->render (2400);
+        if (session != &touched)
+            set (session->processor, livecut::ids::padTouch, 0);
+    }
+
+    // The rack counts every cut since its last reset.
+    auto cuts = [] (const PadSession& session) { return session.processor.getCutter ().routeDiagnostics ().cutsStarted; };
+    auto counted = cuts (held);
+    REQUIRE (counted > 0);
+    bool runningThroughout = true, neverReset = true;
+    while (held.frame < end)
+    {
+        held.render (1000);
+        runningThroughout &= held.processor.getCutter ().isCutting ();
+        neverReset &= cuts (held) >= counted;
+        counted = cuts (held);
+    }
+    touched.render (end - touched.frame);
+    released.render (end - released.frame);
+
+    CHECK (runningThroughout);
+    CHECK (neverReset);
+    CHECK (counted == cuts (touched));
+    CHECK (PadSession::sameBetween (held.output, touched.output, 0, end));
+    // Without the latch, the pad went idle and the rack forgot its cuts.
+    CHECK_FALSE (released.processor.getCutter ().isCutting ());
+    CHECK (cuts (released) == 0);
+}
+
 TEST_CASE ("Switching from Classic to Pad while cutting releases on the next beat", "[pad][processor]")
 {
     constexpr int switched = 31200, beat = 48000, fade = 240;

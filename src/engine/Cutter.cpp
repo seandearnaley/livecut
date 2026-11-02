@@ -313,6 +313,13 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
         idle = pendingIdle;
         if (idle && cutting)
             drop (sampleOffset, observer);
+        // The pad has faded out by now, so forgetting the rack's tails is
+        // inaudible, and the next engage starts clean rather than stale.
+        if (idle)
+        {
+            routeRack.reset();
+            impactCut.reset();
+        }
     }
 
     if (restartPending)
