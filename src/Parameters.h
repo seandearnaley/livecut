@@ -136,6 +136,7 @@ inline constexpr auto padTouch = "padTouch";
 inline constexpr auto padHold = "padHold";
 inline constexpr auto padQuantize = "padQuantize";
 inline constexpr auto surface = "surface";
+inline constexpr auto padStraight = "padStraight";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
@@ -173,7 +174,7 @@ struct Settings
     Surface surface = Surface::pad;
     engine::PadProgram padProgram = engine::PadProgram::cut;
     float padX = .5f, padY = .5f;
-    bool padTouch = false, padHold = false;
+    bool padTouch = false, padHold = false, padStraight = false;
     engine::PadQuantize padQuantize = engine::PadQuantize::beat;
 };
 
@@ -311,7 +312,7 @@ private:
     Source padHold;
     Source padQuantize;
     Source surface;
-
+    Source padStraight;
 };
 
 void applySettings (engine::Cutter& cutter, const Settings& settings);

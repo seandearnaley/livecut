@@ -316,6 +316,20 @@ TEST_CASE ("Touching while stopped stays dry, and playing with the touch held st
     CHECK (session.processor.getCutter ().isCutting ());
 }
 
+TEST_CASE ("Toggling Straight while engaged takes effect without a fault", "[pad][processor]")
+{
+    PadSession session;
+    set (session.processor, livecut::ids::padProgram, 2); // Glitch
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (24000); // one beat
+    REQUIRE (session.processor.getCutter ().isCutting ());
+    set (session.processor, livecut::ids::padStraight, 1);
+    session.render (4 * 96000);
+    CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
+    CHECK (session.processor.getCutter ().isCutting ());
+    CHECK (session.processor.getDisplayState ().status.load () == livecut::DisplayState::Status::cutting);
+}
+
 TEST_CASE ("Seeking while engaged resumes cutting without a fault", "[pad][processor]")
 {
     PadSession session;

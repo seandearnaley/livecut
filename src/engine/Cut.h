@@ -44,6 +44,7 @@ struct CutParameters
     float maxCents = 0.0f;
     double dutyCycle = 1.0;     // gate of regular cuts
     double fillDutyCycle = 1.0; // gate of stutters, rolls and fills
+    bool straight = false;      // Every cut on even divisions of the beat; unrelated to WarpCut's straightChance
 
     // CutProc11
     double stutterChance = 0.8;

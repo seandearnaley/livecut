@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "PadSurface.h"
 #include "Parameters.h"
 #include "PluginProcessor.h"
 
@@ -26,7 +27,7 @@ constexpr std::array allIds {
     ids::impactFilterEnabled, ids::impactFilterType, ids::impactFilterChance, ids::impactFilterCutoff, ids::impactFilterQ, ids::impactFilterEnvOctaves, ids::impactFilterRepeatOctaves, ids::impactFilterMix, ids::impactDriveEnabled, ids::impactDriveMode, ids::impactDriveChance, ids::impactDriveDb, ids::impactDriveEnvDb, ids::impactDriveRepeatDb, ids::impactDriveMix, ids::impactTransientEnabled, ids::impactTransientChance, ids::impactTransientAttackDb, ids::impactTransientSustainDb, ids::impactTransientTimeMs, ids::impactTransientMix, ids::impactAttackMs, ids::impactDecayMs,
     ids::fractureProcedure, ids::fractureActivity, ids::fractureGrainSizeMs, ids::fractureGrainDensity, ids::fractureGrainPositionSpreadMs, ids::fractureGrainPitchSpreadCents, ids::fractureGrainPanSpread, ids::fractureTapeStartSpeed, ids::fractureTapeEndSpeed, ids::fractureTapeCurve, ids::fractureTapeCycle, ids::fractureTapeAlternate, ids::fractureFrequencyEnabled, ids::fractureFrequencyMode, ids::fractureFrequencyChance, ids::fractureFrequencyHz, ids::fractureFrequencyEnvHz, ids::fractureFrequencyRepeatHz, ids::fractureFrequencyMix,
     ids::resonanceEnabled, ids::resonanceRootHz, ids::resonanceDecayMs, ids::resonanceExcitationDb, ids::resonanceInterval1, ids::resonanceInterval2, ids::resonanceInterval3, ids::resonanceInterval4, ids::resonanceWeight1, ids::resonanceWeight2, ids::resonanceWeight3, ids::resonanceWeight4, ids::resonanceMix, ids::resonanceOrder, ids::resonanceSpectralEnabled, ids::resonanceFreeze, ids::resonanceSmearMs, ids::resonanceSpectralMix,
-    ids::padProgram, ids::padX, ids::padY, ids::padTouch, ids::padHold, ids::padQuantize, ids::surface
+    ids::padProgram, ids::padX, ids::padY, ids::padTouch, ids::padHold, ids::padQuantize, ids::surface, ids::padStraight
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -724,5 +725,50 @@ TEST_CASE ("Surface round-trips, and the saved schema version is 9", "[parameter
         CHECK (xml->getIntAttribute ("algorithmVersion") == 2);
         restored.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
         CHECK (SettingsReader (restored.getParameterState()).read().surface == surface);
+    }
+}
+
+TEST_CASE ("Pad Straight is a bool named Pad Straight, default off", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    auto& p = parameter (state, ids::padStraight);
+    CHECK (p.getParameterIndex() == 113);
+    CHECK (p.getName (32) == "Pad Straight");
+    CHECK (p.isBoolean());
+    CHECK (p.isAutomatable());
+    CHECK (p.getVersionHint() == 9);
+    CHECK_THAT (defaultValue (state, ids::padStraight), WithinAbs (0.0, 1.0e-6));
+}
+
+TEST_CASE ("Settings read Pad Straight", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    CHECK_FALSE (Settings {}.padStraight);
+    CHECK_FALSE (reader.read().padStraight);
+    setValue (state, ids::padStraight, 1);
+    CHECK (reader.read().padStraight);
+    setValue (state, ids::padStraight, 0);
+    CHECK_FALSE (reader.read().padStraight);
+}
+
+TEST_CASE ("padSettings passes Straight to the cut parameters, and Classic never does", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    const auto mapping = engine::mapPad (engine::PadProgram::glitch, .5f, .5f, {});
+    CHECK_FALSE (mapping.cut.straight);
+
+    for (const auto on : { false, true })
+    {
+        INFO ("Pad Straight " << (on ? "on" : "off"));
+        setValue (state, ids::padStraight, on ? 1.0f : 0.0f);
+        const auto user = reader.read();
+        CHECK (user.padStraight == on);
+        CHECK_FALSE (user.cut.straight); // Classic reads the cut parameters without Straight
+        CHECK (padSettings (user, mapping).cut.straight == on);
     }
 }

@@ -116,6 +116,7 @@ PadPage::PadPage (juce::AudioProcessorValueTreeState& s)
           chosen = juce::jlimit (0, static_cast<int> (engine::padProgramCount) - 1, juce::roundToInt (value));
       }),
       hold (parameter (s, ids::padHold), "Hold"),
+      straight (parameter (s, ids::padStraight), "Straight"),
       quantize (choice (s, ids::padQuantize)),
       mix (parameter (s, ids::wet), "Mix")
 {
@@ -139,10 +140,15 @@ PadPage::PadPage (juce::AudioProcessorValueTreeState& s)
         programRow.addAndMakeVisible (button);
     }
 
-    hold.setTitle ("Pad Hold");
-    for (auto* child : hold.getChildren())
-        if (auto* toggle = dynamic_cast<juce::ToggleButton*> (child))
-            toggle->setTooltip ("Keep cutting after you let go. Switch Hold off with nothing pressed to stop on the grid.");
+    const auto describeSwitch = [] (PowerSwitch& control, const juce::String& title, const juce::String& tooltip)
+    {
+        control.setTitle (title);
+        for (auto* child : control.getChildren())
+            if (auto* toggle = dynamic_cast<juce::ToggleButton*> (child))
+                toggle->setTooltip (tooltip);
+    };
+    describeSwitch (hold, "Pad Hold", "Keep cutting after you let go. Switch Hold off with nothing pressed to stop on the grid.");
+    describeSwitch (straight, "Pad Straight", "Keeps every cut on even divisions of the beat: no triplets");
 
     for (auto* child : quantize.getChildren())
         if (auto* button = dynamic_cast<juce::TextButton*> (child))
@@ -153,7 +159,7 @@ PadPage::PadPage (juce::AudioProcessorValueTreeState& s)
     mix.setTitle ("Mix");
     mix.setTooltip ("How much of the program you hear while the pad plays. The same control as Wet on the Classic pages.");
 
-    for (auto* component : std::initializer_list<juce::Component*> { &hold, &quantize, &mix })
+    for (auto* component : std::initializer_list<juce::Component*> { &hold, &straight, &quantize, &mix })
         addAndMakeVisible (component);
 
     programAttachment.sendInitialUpdate();
@@ -234,7 +240,8 @@ void PadPage::resized()
     auto row = area.removeFromTop (rowHeight);
     mix.setBounds (row.removeFromRight (240));
     hold.setBounds (row.getX(), row.getY() + 6, 90, 28);
-    quantize.setBounds (row.getX() + 104, row.getY() + 5, 150, 30);
+    straight.setBounds (row.getX() + 104, row.getY() + 6, 90, 28);
+    quantize.setBounds (row.getX() + 208, row.getY() + 5, 150, 30);
 }
 
 void PadPage::visibilityChanged()

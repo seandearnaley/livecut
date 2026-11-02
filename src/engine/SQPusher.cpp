@@ -41,6 +41,9 @@ const std::vector<SQPusher::Fill> fillTable {
     { { 0.5, 1.0 }, { 0.5 }, { 0.125, 0.125, 0.125, 0.125 }, { 1.0 }, { sixth, sixth, sixth } },
 };
 
+// The fills built only from even divisions of the beat, for Straight.
+constexpr std::array straightFills { 0, 1, 2, 4, 9, 11 };
+
 // The chance of semiquavers on each quaver of the bar, scaled by the activity setting.
 constexpr std::array semiquaverWeights { 0.0, 0.3, 0.0, 0.5, 0.7, 0.8, 0.9, 0.6 };
 
@@ -97,8 +100,30 @@ void SQPusher::chooseBlock (Random& random,
 
     if (startsLastBar)
     {
-        fill = random.integer (0, static_cast<int> (fillTable.size()) - 1);
+        fill = params.straight
+             ? straightFills[static_cast<std::size_t> (random.integer (0, static_cast<int> (straightFills.size()) - 1))]
+             : random.integer (0, static_cast<int> (fillTable.size()) - 1);
         fillBlock = 0;
+    }
+
+    // Straight turned on mid-fill: a tuplet fill gives way to quavers.
+    if (params.straight && fill >= 0
+        && std::find (straightFills.begin(), straightFills.end(), fill) == straightFills.end())
+    {
+        fill = -1;
+        const auto sixtyFourths = beatsIntoBar * 64.0;
+
+        if (std::abs (sixtyFourths - std::round (sixtyFourths)) > epsilon)
+        {
+            // Recover the beat grid with one cut to the next whole beat.
+            const auto toBeat = (std::floor (beatsIntoBar) + 1.0) * unitsPerBeat - unitsIntoBar;
+            Cut cut;
+            cut.units = std::min ({ toBeat, unitsPerBar - unitsIntoBar, context.phraseUnits - context.unitsDone });
+            cut.gate = params.dutyCycle;
+            cut.amp = static_cast<float> (random.uniform (params.minAmp, params.maxAmp));
+            cuts.assign (1, cut);
+            return;
+        }
     }
 
     cuts.clear();

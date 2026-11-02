@@ -37,15 +37,19 @@ void Bounce::chooseBlock (Random& random,
     // In fractional meters the zone can start off the beat, before recovery applies.
     if (std::abs (context.unitsDone - zoneStart) <= epsilon && random.chance (params.ratchetChance))
     {
+        // Three pitch steps, each twice as fast as the last: 3, 3 and 6 cuts
+        // at zone/6, zone/12 and zone/24, or straight 2, 2 and 4 at zone/4, zone/8 and zone/16.
+        const std::size_t group = params.straight ? 2 : 3;
+        const auto slowest = params.straight ? 4.0 : 6.0;
         Cut cut;
         cut.gate = params.fillDutyCycle;
-        cuts.assign (12, cut);
+        cuts.assign (4 * group, cut);
         sweep (cuts, random, params);
 
         for (std::size_t i = 0; i < cuts.size(); ++i)
         {
-            const auto step = i < 3 ? 0 : i < 6 ? 1 : 2;
-            cuts[i].units = zone / (step == 0 ? 6.0 : step == 1 ? 12.0 : 24.0);
+            const auto step = i < group ? 0 : i < 2 * group ? 1 : 2;
+            cuts[i].units = zone / (slowest * (1 << step));
             // Keep sweep's pitch draw, but replace its ramp with whole semitone steps.
             cuts[i].cents = static_cast<float> (100.0 * std::round (params.climb * step / 2.0));
         }
@@ -85,6 +89,19 @@ void Bounce::chooseBlock (Random& random,
     if (boundary >= beat - epsilon && random.chance (params.bounceChance))
     {
         const auto even = random.chance (0.5);
+
+        if (params.straight)
+        {
+            // A gallop where the triplet was even, a dotted pair where it shuffled.
+            addCut ((even ? 1.0 : 3.0) * beat / 4.0);
+            addCut (beat / 4.0);
+
+            if (even)
+                addCut (beat / 2.0);
+
+            return;
+        }
+
         addCut ((even ? 1.0 : 2.0) * beat / 3.0);
         addCut (beat / 3.0);
 

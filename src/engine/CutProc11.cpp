@@ -30,7 +30,11 @@ void CutProc11::chooseBlock (Random& random,
         // weighted choice of n replaces BBCut's fixed stutter speed.
         static constexpr std::array cutsPerUnit { 1, 2, 3, 4, 6, 8 };
         static constexpr std::array weights { 0.4, 0.3, 0.1, 0.1, 0.05, 0.05 };
-        const auto perUnit = cutsPerUnit[random.weighted (weights)];
+        // Straight keeps the even speeds at their original weights.
+        static constexpr std::array straightCutsPerUnit { 1, 2, 4, 8 };
+        static constexpr std::array straightWeights { 0.4, 0.3, 0.1, 0.05 };
+        const auto perUnit = params.straight ? straightCutsPerUnit[random.weighted (straightWeights)]
+                                             : cutsPerUnit[random.weighted (weights)];
 
         Cut cut;
         cut.units = 1.0 / perUnit;

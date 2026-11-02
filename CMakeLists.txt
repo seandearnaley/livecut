@@ -204,6 +204,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/PhraseSeedTests.cpp
         tests/engine/RandomTests.cpp
         tests/engine/SQPusherTests.cpp
+        tests/engine/StraightTests.cpp
         tests/engine/WarpCutTests.cpp)
     target_include_directories(LivecutEngineTests PRIVATE tests)
     livecut_build_for_host_only(LivecutEngineTests)
