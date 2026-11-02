@@ -35,9 +35,9 @@ constexpr std::array<ProgramInfo, engine::padProgramCount> programInfo {
     ProgramInfo { "triplets", "Left to right: more triplet bounce, with halftime bars at the far right. Up: ratchets climb faster and higher." },
     ProgramInfo { "repeats", "Left to right: faster repeats that get crunchier as they speed up. Up: each repeat steps from falling to rising pitch." },
     ProgramInfo { "squeeze", "" },
-    ProgramInfo { "resonant", "" },
+    ProgramInfo { "resonance", "" },
     ProgramInfo { "stops", "" },
-    ProgramInfo { "nested", "" },
+    ProgramInfo { "nested loops", "" },
     ProgramInfo { "rolls", "" },
 };
 
@@ -146,8 +146,8 @@ PadPage::PadPage (juce::AudioProcessorValueTreeState& s)
 
     for (auto* child : quantize.getChildren())
         if (auto* button = dynamic_cast<juce::TextButton*> (child))
-            button->setTooltip (button->getButtonText() == "Bar" ? "Let go and switch programs on the next bar line"
-                                                                  : "Let go and switch programs on the next beat");
+            button->setTooltip (button->getButtonText() == "Bar" ? "Releases and program changes land on the next bar"
+                                                                  : "Releases and program changes land on the next beat");
 
     mix.setComponentID ("padMix");
     mix.setTitle ("Mix");
@@ -192,8 +192,8 @@ void PadPage::refresh (const DisplayState& display)
         programs[i]->setPending (i == pending, when);
     }
 
-    const auto mapping = engine::mapPad (playing, 0.5f, 0.5f, {});
-    pad.setCaptions (mapping.xCaption, mapping.yCaption);
+    const auto captions = engine::padCaptions (playing);
+    pad.setCaptions (captions.x, captions.y);
     pad.showEngaged (display.padEngaged.load());
 }
 
@@ -208,7 +208,13 @@ juce::String PadPage::headline (const DisplayState& display, const juce::String&
         return programName (display.padActiveProgram.load()) + " " + rightArrow + " " + programName (pending)
              + (landsOnBar() ? " ON THE BAR" : " ON THE BEAT");
 
-    return programName (static_cast<int> (playingProgram (display))) + " " + middleDot + " " + status.toUpperCase();
+    const auto line = programName (static_cast<int> (playingProgram (display))) + " " + middleDot + " ";
+
+    // Playing but not cutting: nothing starts until a touch, and a touch waits for the next unit.
+    if (display.status.load() == DisplayState::Status::startingSoon)
+        return line + (display.padEngaged.load() ? "STARTING" : "PRESS THE PAD TO PLAY");
+
+    return line + status.toUpperCase();
 }
 
 void PadPage::resized()

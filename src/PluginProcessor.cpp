@@ -531,14 +531,23 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
             resources.renderEpoch = segment.transportEpoch;
             if (newEpoch)
                 resources.cutter.resetRendering ();
-            if (newEpoch || !context.running)
-            {
-                padGate.reset ();
-                padGain = context.settings.surface == livecut::Surface::pad ? 0.0f : 1.0f;
-                resources.cutter.setIdle (context.settings.surface == livecut::Surface::pad);
-            }
             if (context.settings.surface == livecut::Surface::pad)
             {
+                // renderSettings still holds the surface the last context rendered with.
+                const auto fromClassic = renderSettings.surface == livecut::Surface::classic;
+                if (newEpoch || !context.running || (fromClassic && !resources.cutter.isCutting ()))
+                {
+                    // Closed and idle; a latched Hold reopens the gate on the first sample.
+                    padGate.resync ();
+                    padGain = 0.0f;
+                    resources.cutter.setIdle (true);
+                }
+                else if (fromClassic)
+                {
+                    // Classic was mid-cut: let go like a lifted finger rather than cut to the input.
+                    padGate.arm ();
+                    padGain = 1.0f;
+                }
                 const auto mapping = livecut::engine::mapPad (padGate.activeProgram (), context.settings.padX,
                                                              context.settings.padY, currentMapping.zones);
                 if (padGate.engaged () && !livecut::engine::sameDiscreteState (mapping, currentMapping))

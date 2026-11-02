@@ -27,6 +27,7 @@ public:
 
         void setPending (bool pending, const juce::String& when);
         bool isPending() const { return pending; }
+        const juce::String& captionText() const { return caption; }
 
         void paintButton (juce::Graphics&, bool highlighted, bool down) override;
 
@@ -41,8 +42,9 @@ public:
     // pad's captions and its touch mark.
     void refresh (const DisplayState& display);
 
-    // The ruler's line: the program and the bar, a pending switch, or a
-    // chosen program that isn't here yet.
+    // The ruler's line: the program and the bar, a pending switch, a chosen
+    // program that isn't here yet, or, while the host plays but nothing is
+    // cut yet, an invitation to press the pad or a note that it's starting.
     juce::String headline (const DisplayState& display, const juce::String& status) const;
 
     void resized() override;

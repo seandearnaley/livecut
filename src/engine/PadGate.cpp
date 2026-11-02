@@ -18,8 +18,20 @@ void PadGate::prepare (double sampleRate)
 
 void PadGate::reset()
 {
-    state = State::closed;
+    resync();
     latch = false;
+}
+
+void PadGate::resync()
+{
+    state = State::closed;
+    fadePosition = 0;
+    pending.reset();
+}
+
+void PadGate::arm()
+{
+    state = State::armed;
     fadePosition = 0;
     pending.reset();
 }
@@ -29,7 +41,7 @@ PadGate::Step PadGate::process (const Input& input, double beatsIntoBar,
 {
     Step step;
     const bool available = isAvailable (input.program);
-    latch = input.hold && (input.touch || latch);
+    latch = input.hold && (latch || (input.touch && available));
     const bool want = available && (input.alwaysEngaged || input.touch || latch);
     const double h = .5 * beatsPerSample;
     const bool boundary = input.quantize == PadQuantize::beat
@@ -70,6 +82,9 @@ PadGate::Step PadGate::process (const Input& input, double beatsIntoBar,
             state = State::armed;
         if (state == State::armed && boundary)
             state = State::fading;
+        // A release during the recovery from an earlier fade keeps rising to full gain.
+        if (state == State::armed && fadePosition > 0)
+            --fadePosition;
         if (state == State::fading)
         {
             ++fadePosition;

@@ -32,6 +32,15 @@ struct PadMapping
     const char* yCaption;
 };
 
+struct PadCaptions
+{
+    const char* x;
+    const char* y;
+};
+
+// What the pad's axes do for a program. Empty for programs not yet built.
+PadCaptions padCaptions (PadProgram program);
+
 // Normalized value in [0, 1], with 0.03 hysteresis around the previous zone.
 int padZone (float value, int zones, int previous);
 

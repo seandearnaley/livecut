@@ -29,7 +29,16 @@ public:
     };
 
     void prepare (double sampleRate);
+    // The full reset at preparation: nothing latched, nothing pending, closed.
     void reset();
+    // The transport moved or stopped: closes the gate and drops any release
+    // or pending switch, but keeps a latched Hold and the active program, so
+    // the next process() reopens at once when Hold is still on.
+    void resync();
+    // A switch from Classic over cuts in progress: an armed release at full
+    // gain, as if a finger had just lifted, so the cuts carry on to the
+    // boundary and fade rather than cutting to the input.
+    void arm();
     // beatsIntoBar must be normalised to [-h, beatsPerBar - h), where h = .5 *
     // beatsPerSample, as returned by Cutter::renderPosition().
     Step process (const Input&, double beatsIntoBar, double beatsPerBar, double beatsPerSample);

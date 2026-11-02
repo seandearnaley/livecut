@@ -48,8 +48,8 @@ XYPad::XYPad (juce::RangedAudioParameter& xParameter, juce::RangedAudioParameter
     setComponentID (touchParameter.getParameterID());
     setTitle ("Pad");
     setWantsKeyboardFocus (true);
-    setTooltip ("Press to cut; let go to stop on the grid. Drag plays both axes, Shift-drag makes fine changes. "
-                "Arrow keys nudge 1%, Shift 0.1%, Ctrl 10%. Home resets.");
+    setTooltip ("Press to cut; let go to stop on the grid. Drag to change the sound side to side and up and down, "
+                "Shift-drag for fine changes. Arrow keys nudge 1%, Shift 0.1%, Ctrl 10%. Home resets.");
 
     for (auto* a : { &x, &y })
     {

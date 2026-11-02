@@ -4,6 +4,8 @@
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
 #include "ProcessorTestSupport.h"
+#include "ui/LivecutLookAndFeel.h"
+#include "ui/PadPage.h"
 #include "ui/PhraseRuler.h"
 #include "ui/XYPad.h"
 
@@ -255,6 +257,42 @@ TEST_CASE ("Program buttons select programs, and later programs are disabled", "
     CHECK_FALSE (buttons[2]->getToggleState());
 }
 
+TEST_CASE ("The pad's words describe the sound", "[pad][editor]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+
+    // One short noun under each key, fitting its key with room to spare.
+    const juce::StringArray captions { "re-edits", "triplets", "repeats", "squeeze", "resonance", "stops", "nested loops", "rolls" };
+    for (int i = 0; i < captions.size(); ++i)
+    {
+        INFO (captions[i]);
+        auto* key = dynamic_cast<livecut::ui::PadPage::ProgramButton*> (findById (editor, "program" + juce::String (i)));
+        REQUIRE (key != nullptr);
+        CHECK (key->captionText() == captions[i]);
+        CHECK (juce::GlyphArrangement::getStringWidth (livecut::ui::uiFont (11.0f), key->captionText()) <= static_cast<float> (key->getWidth() - 12));
+    }
+
+    int quantizeButtons = 0;
+    for (auto* child : required (editor, "padQuantize").getChildren())
+    {
+        if (auto* button = dynamic_cast<juce::TextButton*> (child))
+        {
+            ++quantizeButtons;
+            INFO (button->getButtonText());
+            CHECK (button->getTooltip() == (button->getButtonText() == "Bar" ? "Releases and program changes land on the next bar"
+                                                                            : "Releases and program changes land on the next beat"));
+        }
+    }
+    CHECK (quantizeButtons == 2);
+
+    auto* pad = dynamic_cast<juce::TooltipClient*> (findById (editor, "padTouch"));
+    REQUIRE (pad != nullptr);
+    CHECK (pad->getTooltip().startsWith ("Press to cut; let go to stop on the grid."));
+    CHECK_FALSE (pad->getTooltip().containsIgnoreCase ("axes"));
+}
+
 TEST_CASE ("Pressing the pad sets Pad Touch and releasing clears it, with paired gestures", "[pad][editor][xy]")
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -407,6 +445,15 @@ TEST_CASE ("The ruler headline names the program and any pending switch", "[pad]
     editor.refreshDisplay();
     CHECK (ruler->headlineText() == utf8 ("CUT · PRESS PLAY IN YOUR HOST TO START CUTTING"));
     CHECK (editor.statusText() == "Press play in your host to start cutting");
+
+    // Playing, nothing starts until a touch; touched, the cuts wait for the next unit.
+    display.status.store (livecut::DisplayState::Status::startingSoon);
+    editor.refreshDisplay();
+    CHECK (ruler->headlineText() == utf8 ("CUT · PRESS THE PAD TO PLAY"));
+    display.padEngaged.store (true);
+    editor.refreshDisplay();
+    CHECK (ruler->headlineText() == utf8 ("CUT · STARTING"));
+    display.padEngaged.store (false);
 
     display.status.store (livecut::DisplayState::Status::cutting);
     display.phraseBars.store (4);

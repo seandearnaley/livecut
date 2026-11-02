@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "PluginProcessor.h"
+#include "ProcessorTestSupport.h"
 #include "engine/AllocationCounter.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -87,9 +88,19 @@ struct PadSession
 
     bool dryFrom (int sample = 0) const
     {
-        const auto offset = static_cast<std::size_t> (sample) * 2;
-        return std::memcmp (input.data () + offset, output.data () + offset,
-                            (input.size () - offset) * sizeof (float)) == 0;
+        return dryBetween (sample, static_cast<int> (input.size () / 2));
+    }
+
+    // Bitwise, over the samples [from, to).
+    bool dryBetween (int from, int to) const
+    {
+        return sameBetween (output, input, from, to);
+    }
+
+    static bool sameBetween (const std::vector<float>& a, const std::vector<float>& b, int from, int to)
+    {
+        const auto offset = static_cast<std::size_t> (from) * 2;
+        return std::memcmp (a.data () + offset, b.data () + offset, static_cast<std::size_t> (to - from) * 2 * sizeof (float)) == 0;
     }
 };
 } // namespace
@@ -135,6 +146,81 @@ TEST_CASE ("Releasing fades out on the next beat", "[pad][processor]")
     CHECK_FALSE (session.processor.getCutter ().isCutting ());
     session.render (12000);
     CHECK (session.dryFrom (48000 + 239));
+}
+
+TEST_CASE ("With Bar quantize, a release fades from the next bar line", "[pad][processor]")
+{
+    PadSession session;
+    set (session.processor, livecut::ids::padQuantize, 1); // Bar
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (31200); // beat 1.3
+    set (session.processor, livecut::ids::padTouch, 0);
+    session.render (96000 + 238 - session.frame);
+    CHECK (session.processor.getCutter ().isCutting ());
+    session.render (1);
+    CHECK (session.processor.getCutter ().isCutting ());
+    session.render (1);
+    CHECK_FALSE (session.processor.getCutter ().isCutting ());
+    session.render (12000);
+    CHECK_FALSE (session.dryBetween (48000 + 240, 96000)); // the beat passes without a release
+    CHECK (session.dryFrom (96000 + 239));
+}
+
+TEST_CASE ("Hold survives a loop wrap", "[pad][processor]")
+{
+    PadSession session;
+    set (session.processor, livecut::ids::padHold, 1);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (2400);
+    set (session.processor, livecut::ids::padTouch, 0);
+    session.render (36000 - session.frame); // beat 2.5, latched
+    REQUIRE (session.processor.getCutter ().isCutting ());
+    REQUIRE (session.processor.getDisplayState ().padEngaged.load ());
+    session.frame = 0; // the host loops back to bar 1
+    session.render (1);
+    CHECK (session.processor.getDisplayState ().padEngaged.load ());
+    CHECK (session.processor.getCutter ().isCutting ()); // bar 1 starts on a unit
+    session.render (24000);
+    CHECK (session.processor.getCutter ().isCutting ());
+    CHECK (session.processor.getDisplayState ().status.load () == livecut::DisplayState::Status::cutting);
+}
+
+TEST_CASE ("Switching from Classic to Pad while cutting releases on the next beat", "[pad][processor]")
+{
+    constexpr int switched = 31200, beat = 48000, fade = 240;
+    PadSession released, held;
+    for (auto* session : { &released, &held })
+    {
+        useClassicSurface (session->processor);
+        session->render (switched); // beat 1.3, cutting on the Classic pages
+        REQUIRE (session->processor.getCutter ().isCutting ());
+        set (session->processor, livecut::ids::surface, 0); // Pad
+        if (session == &held)
+            set (session->processor, livecut::ids::padTouch, 1); // the same cuts, heard in full
+        session->render (beat + fade + 12000 - session->frame);
+    }
+    CHECK (held.processor.getCutter ().isCutting ());
+    CHECK_FALSE (released.processor.getCutter ().isCutting ());
+
+    // The cuts carry on to the beat, exactly as under a held touch.
+    CHECK (PadSession::sameBetween (released.output, held.output, switched, beat));
+    CHECK_FALSE (released.dryBetween (switched, beat));
+
+    // Then the 5 ms fade back to the input.
+    int mismatches = 0;
+    for (int i = 0; i < fade; ++i)
+    {
+        const auto gain = 1.f - static_cast<float> (i + 1) / static_cast<float> (fade);
+        for (int channel = 0; channel < 2; ++channel)
+        {
+            const auto k = static_cast<std::size_t> (beat + i) * 2 + static_cast<std::size_t> (channel);
+            const auto dry = released.input[k];
+            if (std::abs (released.output[k] - (dry + gain * (held.output[k] - dry))) > 1.0e-6f)
+                ++mismatches;
+        }
+    }
+    CHECK (mismatches == 0);
+    CHECK (released.dryFrom (beat + fade - 1));
 }
 
 TEST_CASE ("A program switch restarts on the beat sample", "[pad][processor]")

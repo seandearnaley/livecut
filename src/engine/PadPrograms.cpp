@@ -22,6 +22,24 @@ bool isAvailable (PadProgram program)
     return program == PadProgram::cut || program == PadProgram::bounce || program == PadProgram::glitch;
 }
 
+PadCaptions padCaptions (PadProgram program)
+{
+    switch (program)
+    {
+        case PadProgram::cut: return { "Density", "Re-edit" };
+        case PadProgram::bounce: return { "Bounce", "Ratchet" };
+        case PadProgram::glitch: return { "Rate", "Pitch" };
+        case PadProgram::suction:
+        case PadProgram::filter:
+        case PadProgram::tape:
+        case PadProgram::loops:
+        case PadProgram::rush:
+            break;
+    }
+
+    return { "", "" };
+}
+
 int padZone (float value, int zones, int previous)
 {
     assert (value >= 0.f && value <= 1.f);
@@ -60,8 +78,6 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             mapping.cut.stutterArea = lerp (.2, .8, y);
             mapping.cut.maxRepeats = static_cast<int> (std::lround (lerp (0, 3, y)));
             mapping.cut.minRepeats = 0;
-            mapping.xCaption = "Density";
-            mapping.yCaption = "Re-edit";
             break;
         }
         case PadProgram::bounce:
@@ -73,8 +89,6 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             mapping.cut.halftimeChance = x >= .85 ? .5 : 0;
             mapping.cut.ratchetChance = y;
             mapping.cut.climb = static_cast<int> (std::lround (lerp (0, 12, y)));
-            mapping.xCaption = "Bounce";
-            mapping.yCaption = "Ratchet";
             break;
         case PadProgram::glitch:
         {
@@ -88,8 +102,6 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             mapping.crusher.minBits = mapping.crusher.maxBits = static_cast<float> (lerp (24, 6, x));
             mapping.cut.minCents = y < .5f ? -2400.f * (.5f - y) : 0.f;
             mapping.cut.maxCents = y >= .5f ? 2400.f * (y - .5f) : 0.f;
-            mapping.xCaption = "Rate";
-            mapping.yCaption = "Pitch";
             break;
         }
         case PadProgram::suction:
@@ -101,6 +113,9 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             std::abort(); // A violated precondition must not select a fallback program.
     }
 
+    const auto captions = padCaptions (program);
+    mapping.xCaption = captions.x;
+    mapping.yCaption = captions.y;
     return mapping;
 }
 

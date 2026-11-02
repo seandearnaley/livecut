@@ -84,6 +84,33 @@ TEST_CASE ("Only Cut, Bounce and Glitch are available", "[pad]")
     CHECK (PadZones{}.y == -1);
 }
 
+TEST_CASE ("Captions can be looked up for any program, empty for those not yet built", "[pad]")
+{
+    const auto caption = [] (const char* text) { return std::string_view (text); };
+    CHECK (caption (padCaptions (PadProgram::cut).x) == "Density");
+    CHECK (caption (padCaptions (PadProgram::cut).y) == "Re-edit");
+    CHECK (caption (padCaptions (PadProgram::bounce).x) == "Bounce");
+    CHECK (caption (padCaptions (PadProgram::bounce).y) == "Ratchet");
+    CHECK (caption (padCaptions (PadProgram::glitch).x) == "Rate");
+    CHECK (caption (padCaptions (PadProgram::glitch).y) == "Pitch");
+
+    for (const auto program : { PadProgram::suction, PadProgram::filter, PadProgram::tape, PadProgram::loops, PadProgram::rush })
+    {
+        CAPTURE (program);
+        CHECK (caption (padCaptions (program).x).empty());
+        CHECK (caption (padCaptions (program).y).empty());
+    }
+
+    // The same words the mapping carries, from one table.
+    for (const auto program : { PadProgram::cut, PadProgram::bounce, PadProgram::glitch })
+    {
+        CAPTURE (program);
+        const auto mapping = mapPad (program, .5f, .5f, {});
+        CHECK (caption (mapping.xCaption) == caption (padCaptions (program).x));
+        CHECK (caption (mapping.yCaption) == caption (padCaptions (program).y));
+    }
+}
+
 TEST_CASE ("Pad zones hold inside the hysteresis band", "[pad]")
 {
     CHECK (padZone (.34f, 3, 0) == 0);

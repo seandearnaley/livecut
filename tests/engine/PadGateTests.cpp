@@ -206,6 +206,45 @@ TEST_CASE ("Pressing again during the fade restores full gain without going idle
         checkStep (d.next(), 1.f, false);
 }
 
+TEST_CASE ("A release during the recovery keeps the gain rising to full before the boundary", "[padgate]")
+{
+    Driver d;
+    d.input.touch = true;
+    d.until (2400);
+    d.input.touch = false;
+    d.until (beat + 120);
+    d.input.touch = true;
+    checkStep (d.next(), 1.f - 119.f / 240.f, false);
+    d.input.touch = false;
+    for (int remaining = 118; remaining >= 0; --remaining)
+    {
+        CAPTURE (remaining);
+        checkStep (d.next(), 1.f - static_cast<float> (remaining) / 240.f, false);
+    }
+    while (d.sample < 2 * beat)
+        checkStep (d.next(), 1.f, false);
+    for (int i = 0; i < fade; ++i)
+        checkStep (d.next(), 1.f - static_cast<float> (i + 1) / 240.f, i == fade - 1);
+}
+
+TEST_CASE ("Hold only latches a touch on an available program", "[padgate]")
+{
+    Driver d;
+    d.input.hold = true;
+    d.input.program = PadProgram::suction;
+    d.input.touch = true;
+    d.until (2400);
+    d.input.touch = false;
+    d.input.program = PadProgram::cut;
+    while (d.sample < beat)
+        checkStep (d.next(), 0.f, true);
+    CHECK_FALSE (d.gate.engaged());
+    d.input.touch = true;
+    checkStep (d.next(), 1.f, false);
+    d.input.touch = false;
+    checkStep (d.next(), 1.f, false);
+}
+
 TEST_CASE ("Hold keeps the gate open after release, and turning Hold off releases on the next boundary", "[padgate]")
 {
     Driver d;
@@ -369,6 +408,89 @@ TEST_CASE ("Reset clears latch, release and pending switch while preserving the 
     checkStep (d.next(), 1.f, false);
 }
 
+TEST_CASE ("Resync keeps a latched Hold and reopens on the next sample", "[padgate]")
+{
+    Driver d;
+    d.input.hold = true;
+    d.input.touch = true;
+    d.input.program = PadProgram::bounce;
+    d.until (2400);
+    d.input.touch = false;
+    d.input.program = PadProgram::glitch;
+    d.next();
+    REQUIRE (d.gate.pendingProgram() == PadProgram::glitch);
+    d.input.program = PadProgram::bounce;
+
+    SECTION ("Latched: the gate reopens at once, the pending switch is dropped")
+    {
+        d.gate.resync();
+        CHECK_FALSE (d.gate.engaged());
+        CHECK_FALSE (d.gate.pendingProgram().has_value());
+        CHECK (d.gate.activeProgram() == PadProgram::bounce);
+        const auto reopened = d.next();
+        checkStep (reopened, 1.f, false);
+        CHECK_FALSE (reopened.programChanged);
+        CHECK (d.gate.engaged());
+        d.until (2 * beat + fade);
+        checkStep (d.next(), 1.f, false);
+    }
+
+    SECTION ("Hold switched off before the resync: nothing is latched, so the gate stays closed")
+    {
+        d.input.hold = false;
+        d.next();
+        d.input.hold = true;
+        d.gate.resync();
+        CHECK_FALSE (d.gate.engaged());
+        while (d.sample < 2 * beat + fade)
+            checkStep (d.next(), 0.f, true);
+    }
+
+    SECTION ("Mid-fade with Hold off: the fade is dropped and the gate stays closed")
+    {
+        d.input.hold = false;
+        d.until (beat + 120);
+        d.gate.resync();
+        CHECK_FALSE (d.gate.engaged());
+        checkStep (d.next(), 0.f, true);
+        d.input.hold = true;
+        checkStep (d.next(), 0.f, true);
+    }
+}
+
+TEST_CASE ("Arming a gate releases on the next boundary unless something keeps it open", "[padgate]")
+{
+    Driver d;
+    d.until (2400);
+    d.gate.arm();
+    CHECK (d.gate.engaged());
+
+    SECTION ("Nothing pressed: full gain to the beat, then the fade")
+    {
+        while (d.sample < beat)
+            checkStep (d.next(), 1.f, false);
+        for (int i = 0; i < fade; ++i)
+            checkStep (d.next(), 1.f - static_cast<float> (i + 1) / 240.f, i == fade - 1);
+        CHECK_FALSE (d.gate.engaged());
+        checkStep (d.next(), 0.f, true);
+    }
+
+    SECTION ("Pressed: the gate is open at full gain")
+    {
+        d.input.touch = true;
+        while (d.sample < beat + fade)
+            checkStep (d.next(), 1.f, false);
+    }
+
+    SECTION ("Bar quantize: full gain to the bar line")
+    {
+        d.input.quantize = PadQuantize::bar;
+        while (d.sample < 4 * beat)
+            checkStep (d.next(), 1.f, false);
+        checkStep (d.next(), 1.f - 1.f / 240.f, false);
+    }
+}
+
 TEST_CASE ("Pad gate lifecycle and processing allocate nothing", "[padgate]")
 {
     std::size_t allocations = 0;
@@ -385,6 +507,9 @@ TEST_CASE ("Pad gate lifecycle and processing allocate nothing", "[padgate]")
         d.until (2 * beat + fade);
         d.input.touch = false;
         d.until (3 * beat + fade);
+        d.gate.arm();
+        d.until (4 * beat + fade);
+        d.gate.resync();
         d.gate.reset();
         allocations = counter.count();
     }
