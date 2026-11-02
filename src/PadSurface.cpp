@@ -11,6 +11,7 @@ Settings padSettings (const Settings& user, const engine::PadMapping& mapping)
     settings.unitsPerBar = mapping.unitsPerBar;
     settings.seed = mapping.seed;
     settings.cut = mapping.cut;
+    settings.cut.straight = user.padStraight;
     settings.crusher = mapping.crusher;
     settings.wet = user.wet;
     settings.outputTrimDb = user.outputTrimDb;
@@ -25,6 +26,7 @@ Settings padSettings (const Settings& user, const engine::PadMapping& mapping)
     settings.padY = user.padY;
     settings.padTouch = user.padTouch;
     settings.padHold = user.padHold;
+    settings.padStraight = user.padStraight;
     settings.padQuantize = user.padQuantize;
     return settings;
 }

@@ -279,7 +279,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 toggle (ids::padHold, "Pad Hold", false, 9),
                 choice (ids::padQuantize, "Pad Quantize", { "Beat", "Bar" }, 0, 9),
                 std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids::surface, 9 }, "Surface",
-                    juce::StringArray { "Pad", "Classic" }, 0, juce::AudioParameterChoiceAttributes().withAutomatable (false)));
+                    juce::StringArray { "Pad", "Classic" }, 0, juce::AudioParameterChoiceAttributes().withAutomatable (false)),
+                toggle (ids::padStraight, "Pad Straight", false, 9));
 
     return layout;
 }
@@ -397,7 +398,8 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       padTouch (state, ids::padTouch),
       padHold (state, ids::padHold),
       padQuantize (state, ids::padQuantize),
-      surface (state, ids::surface)
+      surface (state, ids::surface),
+      padStraight (state, ids::padStraight)
 {
 }
 
@@ -520,6 +522,7 @@ Settings SettingsReader::read() const
     settings.padTouch = padTouch.read() > .5f;
     settings.padHold = padHold.read() > .5f;
     settings.padQuantize = static_cast<engine::PadQuantize> (padQuantize.readIndex());
+    settings.padStraight = padStraight.read() > .5f;
     return settings;
 }
 
