@@ -798,6 +798,50 @@ TEST_CASE ("Classic filter types are bit-identical", "[impact]")
     CHECK (render (ImpactParameters::Filter::Type::highPass) == UINT64_C (0x7217203d7ef5f2b1));
 }
 
+TEST_CASE ("Disabling a Classic filter at a cut is unchanged", "[impact]")
+{
+    // Measured on the ImpactEffects of 069eecb, before a disabled band held its
+    // shape: switched off at cut 4 with its cutoff changed too, a Classic
+    // filter adopts the new parameters at once, as it always did.
+    const auto render = [] (ImpactParameters::Filter::Type type)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        ImpactParameters p;
+        p.filter.enabled = true;
+        p.filter.type = type;
+        p.filter.cutoffHz = 900.0f;
+        p.filter.q = 2.0f;
+        p.filter.envelopeOctaves = 2.0f;
+        p.filter.repeatOctaves = 1.0f;
+        effects.setParameters (p);
+        Noise noise;
+        Fnv1a hash;
+        for (int i = 0; i < 4096; ++i)
+        {
+            if (i % 512 == 0)
+            {
+                if (i == 4 * 512)
+                {
+                    auto off = p;
+                    off.filter.enabled = false;
+                    off.filter.cutoffHz = 3000.0f;
+                    effects.setParameters (off);
+                }
+                effects.startCut ({ 0, 0, 0.0, 0.0, static_cast<std::size_t> (i / 512), 8 });
+            }
+            auto left = noise.next(), right = noise.next();
+            effects.process (left, right);
+            hash.add (left);
+            hash.add (right);
+        }
+        return hash.value;
+    };
+    CHECK (render (ImpactParameters::Filter::Type::lowPass) == UINT64_C (0xfb2a92b00ee0be24));
+    CHECK (render (ImpactParameters::Filter::Type::bandPass) == UINT64_C (0x03253cb975c2908a));
+    CHECK (render (ImpactParameters::Filter::Type::highPass) == UINT64_C (0x9471151b3bcd46e7));
+}
+
 TEST_CASE ("A band filter's edges are where it says", "[impact]")
 {
     const auto p = bandParameters (200.0f, 2000.0f);
@@ -873,7 +917,8 @@ TEST_CASE ("A band holds its level along Suction's path", "[impact]")
             const auto y = step / 10.0;
             const auto p = suctionBand (x, y);
             const auto width = std::log2 (p.filter.bandHighHz / static_cast<double> (p.filter.bandLowHz));
-            const auto capped = std::log2 (18000.0 / 30.0) / width * (0.707 / p.filter.q) >= 4.0;
+            const auto capped = integrateBandPinkPower (bandOpenOctaves, bandOpenQ, bandPowerStep)
+                                    / bandPinkPower (width, p.filter.q) >= 4.0; // the makeup's +6 dB cap
             const auto steady = measure (p, p) - reference;
             const auto squeezing = measure (open, p) - reference;
             const auto opening = measure (p, open) - reference;
@@ -1220,7 +1265,7 @@ TEST_CASE ("A band switched on mid-cut starts fresh", "[impact]")
     }
 }
 
-TEST_CASE ("A filter switched off keeps its shape while it fades", "[impact]")
+TEST_CASE ("A band switched off keeps its shape while it fades", "[impact]")
 {
     // At the next cut the wet ramps out over 2 ms. Meanwhile the band runs on
     // exactly as if nothing had changed, not even that cut, which would open

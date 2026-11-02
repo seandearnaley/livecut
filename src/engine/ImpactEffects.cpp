@@ -213,10 +213,11 @@ void ImpactEffects::setParameters (const ImpactParameters& next)
     const auto filter = parameters.filter;
     parameters = next;
     parameters.filter = filter;
-    // A filter switched off while it still sounds keeps its last shape, its
+    // A band switched off while it still sounds keeps its last shape, its
     // breathing included, until its wet ramps out; it never changes shape while
-    // audible.
-    if (f.enabled || (wet[0].current == 0.0 && wet[0].target == 0.0))
+    // audible. Classic types adopt the new parameters at once, as they always have.
+    if (f.enabled || parameters.filter.type != ImpactParameters::Filter::Type::band
+        || (wet[0].current == 0.0 && wet[0].target == 0.0))
         adoptFilter();
     else
     {
@@ -257,7 +258,7 @@ void ImpactEffects::startCut (const CutIdentity& identity)
     ++state.cutsStarted;
     if (filterHeld && ! filterDetached)
     {
-        // A filter fading out shouldn't breathe: this cut would open a held band
+        // A band fading out shouldn't breathe: this cut would open a held band
         // 1.5 octaves while it fades, an audible change of shape. So it fades on
         // its own envelope, decaying on from where it was.
         filterDetached = true;

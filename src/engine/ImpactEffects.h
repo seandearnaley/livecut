@@ -70,8 +70,9 @@ struct ImpactParameters
 // ImpactEffects::prepare() tabulates it; this interpolates that table.
 inline constexpr double bandOpenOctaves = 9.23, bandOpenQ = 0.707; // 30 Hz-18 kHz, flat
 inline constexpr double bandPowerStep = 1.0 / 16.0, bandPowerMargin = 6.0; // octaves
+// Exposed for tests: the band's makeup reads the table directly.
 double bandPinkPower (double widthOctaves, double q);
-// The same integral, computed directly at any step, for checking the table.
+// Exposed for tests: the same integral, computed directly at any step.
 double integrateBandPinkPower (double widthOctaves, double q, double stepOctaves);
 
 // JUCE-free, allocation-free stereo processing. Production rates are 8–384 kHz;
@@ -129,7 +130,7 @@ private:
     void processDrive (double& left, double& right, double envelope);
     void processTransient (double& left, double& right);
 
-    // The filter runs parameters.filter; a disabled filter adopts the
+    // The filter runs parameters.filter; a disabled band adopts the
     // requested one only once its wet has ramped out.
     ImpactParameters parameters;
     ImpactParameters::Filter requestedFilter;
