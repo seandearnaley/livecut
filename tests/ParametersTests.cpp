@@ -25,7 +25,8 @@ constexpr std::array allIds {
     ids::mode, ids::attackAlign, ids::attackThreshold, ids::reverseChance,
     ids::impactFilterEnabled, ids::impactFilterType, ids::impactFilterChance, ids::impactFilterCutoff, ids::impactFilterQ, ids::impactFilterEnvOctaves, ids::impactFilterRepeatOctaves, ids::impactFilterMix, ids::impactDriveEnabled, ids::impactDriveMode, ids::impactDriveChance, ids::impactDriveDb, ids::impactDriveEnvDb, ids::impactDriveRepeatDb, ids::impactDriveMix, ids::impactTransientEnabled, ids::impactTransientChance, ids::impactTransientAttackDb, ids::impactTransientSustainDb, ids::impactTransientTimeMs, ids::impactTransientMix, ids::impactAttackMs, ids::impactDecayMs,
     ids::fractureProcedure, ids::fractureActivity, ids::fractureGrainSizeMs, ids::fractureGrainDensity, ids::fractureGrainPositionSpreadMs, ids::fractureGrainPitchSpreadCents, ids::fractureGrainPanSpread, ids::fractureTapeStartSpeed, ids::fractureTapeEndSpeed, ids::fractureTapeCurve, ids::fractureTapeCycle, ids::fractureTapeAlternate, ids::fractureFrequencyEnabled, ids::fractureFrequencyMode, ids::fractureFrequencyChance, ids::fractureFrequencyHz, ids::fractureFrequencyEnvHz, ids::fractureFrequencyRepeatHz, ids::fractureFrequencyMix,
-    ids::resonanceEnabled, ids::resonanceRootHz, ids::resonanceDecayMs, ids::resonanceExcitationDb, ids::resonanceInterval1, ids::resonanceInterval2, ids::resonanceInterval3, ids::resonanceInterval4, ids::resonanceWeight1, ids::resonanceWeight2, ids::resonanceWeight3, ids::resonanceWeight4, ids::resonanceMix, ids::resonanceOrder, ids::resonanceSpectralEnabled, ids::resonanceFreeze, ids::resonanceSmearMs, ids::resonanceSpectralMix
+    ids::resonanceEnabled, ids::resonanceRootHz, ids::resonanceDecayMs, ids::resonanceExcitationDb, ids::resonanceInterval1, ids::resonanceInterval2, ids::resonanceInterval3, ids::resonanceInterval4, ids::resonanceWeight1, ids::resonanceWeight2, ids::resonanceWeight3, ids::resonanceWeight4, ids::resonanceMix, ids::resonanceOrder, ids::resonanceSpectralEnabled, ids::resonanceFreeze, ids::resonanceSmearMs, ids::resonanceSpectralMix,
+    ids::padProgram, ids::padX, ids::padY, ids::padTouch, ids::padHold, ids::padQuantize, ids::surface
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)
@@ -272,7 +273,8 @@ TEST_CASE ("Parameters added for Bounce carry version hint 2", "[parameters]")
         const auto isMixer = name == ids::wet || name == ids::outputTrim;
         const auto isPerform = name == ids::swing || name == ids::accent || name == ids::hold;
         const auto isRecut = name == ids::mode || name == ids::attackAlign || name == ids::attackThreshold || name == ids::reverseChance;
-        CHECK (parameter (state, id).getVersionHint() == (name.startsWith ("resonance") ? 8 : name.startsWith ("fracture") ? 7 : name.startsWith ("impact") ? 6 : isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
+        const auto isPad = name.startsWith ("pad") || name == ids::surface;
+        CHECK (parameter (state, id).getVersionHint() == (isPad ? 9 : name.startsWith ("resonance") ? 8 : name.startsWith ("fracture") ? 7 : name.startsWith ("impact") ? 6 : isRecut ? 5 : isPerform ? 4 : isMixer ? 3 : isBounce ? 2 : 1));
     }
 }
 
@@ -597,4 +599,130 @@ TEST_CASE ("Resonance controls preserve prepared configuration and explicit inva
     CHECK (settings.spectralFreeze);
     CHECK (settings.spectralSmearMs == 750);
     CHECK_THAT (settings.spectralMix, WithinAbs (.4f, 1.e-6f));
+}
+
+TEST_CASE ("Pad parameters have the specified names, choices and ranges and are appended", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    constexpr std::array padIds { ids::padProgram, ids::padX, ids::padY, ids::padTouch, ids::padHold, ids::padQuantize, ids::surface };
+    constexpr std::array names { "Pad Program", "Pad X", "Pad Y", "Pad Touch", "Pad Hold", "Pad Quantize", "Surface" };
+
+    for (std::size_t i = 0; i < padIds.size(); ++i)
+    {
+        INFO (padIds[i]);
+        auto& p = parameter (state, padIds[i]);
+        CHECK (p.getParameterIndex() == static_cast<int> (106 + i));
+        CHECK (p.getName (32) == names[i]);
+        CHECK (p.isAutomatable() == (i != 6));
+        CHECK_THAT (p.convertFrom0to1 (0.0f), WithinAbs (0.0, 1.0e-6));
+        CHECK_THAT (p.convertFrom0to1 (1.0f), WithinAbs (i == 0 ? 7.0 : 1.0, 1.0e-6));
+        CHECK_THAT (defaultValue (state, padIds[i]), WithinAbs (i == 1 || i == 2 ? .5 : 0.0, 1.0e-6));
+    }
+
+    const auto checkChoices = [&] (const char* id, const juce::StringArray& expected)
+    {
+        const auto* p = dynamic_cast<juce::AudioParameterChoice*> (&parameter (state, id));
+        REQUIRE (p != nullptr);
+        CHECK (p->choices == expected);
+    };
+    checkChoices (ids::padProgram, { "Cut", "Bounce", "Glitch", "Suction", "Filter", "Tape", "Loops", "Rush" });
+    checkChoices (ids::padQuantize, { "Beat", "Bar" });
+    checkChoices (ids::surface, { "Pad", "Classic" });
+    checkChoices (ids::procedure, { "CutProc11", "WarpCut", "SQPusher", "Bounce" });
+    CHECK (parameter (state, ids::padTouch).isBoolean());
+    CHECK (parameter (state, ids::padHold).isBoolean());
+    for (const auto* id : { ids::padX, ids::padY })
+    {
+        auto& p = parameter (state, id);
+        REQUIRE (dynamic_cast<juce::AudioParameterFloat*> (&p) != nullptr);
+        CHECK (p.getNormalisableRange().interval == 0.0f);
+        CHECK (p.getNormalisableRange().skew == 1.0f);
+        CHECK (p.getText (.5f, 32) == "50%");
+        CHECK_THAT (p.convertFrom0to1 (p.getValueForText ("75%")), WithinAbs (.75, 1.0e-6));
+    }
+}
+
+TEST_CASE ("Settings read the pad parameters", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    setValue (state, ids::surface, 1);
+    setValue (state, ids::padX, .25f);
+    setValue (state, ids::padY, .75f);
+    setValue (state, ids::padTouch, 1);
+    setValue (state, ids::padHold, 1);
+    setValue (state, ids::padQuantize, 1);
+    constexpr std::array programs { engine::PadProgram::cut, engine::PadProgram::bounce, engine::PadProgram::glitch,
+        engine::PadProgram::suction, engine::PadProgram::filter, engine::PadProgram::tape, engine::PadProgram::loops, engine::PadProgram::rush };
+    for (std::size_t i = 0; i < programs.size(); ++i)
+    {
+        setValue (state, ids::padProgram, static_cast<float> (i));
+        const auto settings = reader.read();
+        CHECK (settings.surface == Surface::classic);
+        CHECK (settings.padProgram == programs[i]);
+        CHECK_THAT (settings.padX, WithinAbs (.25, 1.0e-6));
+        CHECK_THAT (settings.padY, WithinAbs (.75, 1.0e-6));
+        CHECK (settings.padTouch);
+        CHECK (settings.padHold);
+        CHECK (settings.padQuantize == engine::PadQuantize::bar);
+    }
+}
+
+TEST_CASE ("A new instance defaults to the Pad surface", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    for (const auto& settings : { Settings {}, SettingsReader (processor.getParameterState()).read() })
+    {
+        CHECK (settings.surface == Surface::pad);
+        CHECK (settings.padProgram == engine::PadProgram::cut);
+        CHECK_THAT (settings.padX, WithinAbs (.5, 1.0e-6));
+        CHECK_THAT (settings.padY, WithinAbs (.5, 1.0e-6));
+        CHECK_FALSE (settings.padTouch);
+        CHECK_FALSE (settings.padHold);
+        CHECK (settings.padQuantize == engine::PadQuantize::beat);
+    }
+}
+
+TEST_CASE ("A state saved without Surface loads as Classic", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    setValue (processor.getParameterState(), ids::seed, 7);
+    juce::MemoryBlock saved;
+    processor.getStateInformation (saved);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (saved.getData(), static_cast<int> (saved.getSize()));
+    REQUIRE (xml != nullptr);
+    auto* surface = xml->getChildByAttribute ("id", ids::surface);
+    REQUIRE (surface != nullptr);
+    xml->removeChildElement (surface, true);
+    SECTION ("Current schema without Surface") {}
+    SECTION ("Old schema without Surface") { xml->setAttribute ("schemaVersion", 8); }
+    SECTION ("Unversioned state without Surface") { xml->removeAttribute ("schemaVersion"); }
+    juce::AudioProcessor::copyXmlToBinary (*xml, saved);
+
+    LivecutAudioProcessor restored;
+    restored.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
+    const auto settings = SettingsReader (restored.getParameterState()).read();
+    CHECK (settings.surface == Surface::classic);
+    CHECK (settings.seed == 7);
+    CHECK (restored.getParameterState().getRawParameterValue (ids::surface)->load() == 1.0f);
+}
+
+TEST_CASE ("Surface round-trips, and the saved schema version is 9", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessor restored;
+    for (const auto surface : { Surface::classic, Surface::pad })
+    {
+        setValue (processor.getParameterState(), ids::surface, static_cast<float> (surface));
+        juce::MemoryBlock saved;
+        processor.getStateInformation (saved);
+        auto xml = juce::AudioProcessor::getXmlFromBinary (saved.getData(), static_cast<int> (saved.getSize()));
+        REQUIRE (xml != nullptr);
+        CHECK (xml->getIntAttribute ("schemaVersion") == 9);
+        CHECK (xml->getIntAttribute ("algorithmVersion") == 2);
+        restored.setStateInformation (saved.getData(), static_cast<int> (saved.getSize()));
+        CHECK (SettingsReader (restored.getParameterState()).read().surface == surface);
+    }
 }

@@ -271,6 +271,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
                 number (ids::resonanceSmearMs, "Spectral Smear", FloatRange (0, 2000), 0, decimals (0, "ms"), 8),
                 number (ids::resonanceSpectralMix, "Spectral Mix", FloatRange (0, 1), 1, percent(), 8));
 
+    // 1.0 appends pad controls after all existing host indices.
+    layout.add (choice (ids::padProgram, "Pad Program", { "Cut", "Bounce", "Glitch", "Suction", "Filter", "Tape", "Loops", "Rush" }, 0, 9),
+                number (ids::padX, "Pad X", FloatRange (0.0f, 1.0f), .5f, percent(), 9),
+                number (ids::padY, "Pad Y", FloatRange (0.0f, 1.0f), .5f, percent(), 9),
+                toggle (ids::padTouch, "Pad Touch", false, 9),
+                toggle (ids::padHold, "Pad Hold", false, 9),
+                choice (ids::padQuantize, "Pad Quantize", { "Beat", "Bar" }, 0, 9),
+                std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { ids::surface, 9 }, "Surface",
+                    juce::StringArray { "Pad", "Classic" }, 0, juce::AudioParameterChoiceAttributes().withAutomatable (false)));
+
     return layout;
 }
 
@@ -380,7 +390,14 @@ SettingsReader::SettingsReader (const juce::AudioProcessorValueTreeState& state)
       resonanceSpectralEnabled (state, ids::resonanceSpectralEnabled),
       resonanceFreeze (state, ids::resonanceFreeze),
       resonanceSmearMs (state, ids::resonanceSmearMs),
-      resonanceSpectralMix (state, ids::resonanceSpectralMix)
+      resonanceSpectralMix (state, ids::resonanceSpectralMix),
+      padProgram (state, ids::padProgram),
+      padX (state, ids::padX),
+      padY (state, ids::padY),
+      padTouch (state, ids::padTouch),
+      padHold (state, ids::padHold),
+      padQuantize (state, ids::padQuantize),
+      surface (state, ids::surface)
 {
 }
 
@@ -496,6 +513,13 @@ Settings SettingsReader::read() const
     settings.spectralFreeze = resonanceFreeze.read() > .5f;
     settings.spectralSmearMs = resonanceSmearMs.read();
     settings.spectralMix = resonanceSpectralMix.read();
+    settings.surface = static_cast<Surface> (surface.readIndex());
+    settings.padProgram = static_cast<engine::PadProgram> (padProgram.readIndex());
+    settings.padX = padX.read();
+    settings.padY = padY.read();
+    settings.padTouch = padTouch.read() > .5f;
+    settings.padHold = padHold.read() > .5f;
+    settings.padQuantize = static_cast<engine::PadQuantize> (padQuantize.readIndex());
     return settings;
 }
 

@@ -880,7 +880,7 @@ void LivecutAudioProcessor::changeProgramName (int, const juce::String &) {}
 void LivecutAudioProcessor::getStateInformation (juce::MemoryBlock &destData)
 {
     auto state = parameters.copyState ();
-    state.setProperty ("schemaVersion", 8, nullptr);
+    state.setProperty ("schemaVersion", 9, nullptr);
     state.setProperty ("algorithmVersion", 2, nullptr);
     if (const auto xml = state.createXml ())
         copyXmlToBinary (*xml, destData);
@@ -894,6 +894,14 @@ void LivecutAudioProcessor::setStateInformation (const void *data, int sizeInByt
     if (xml == nullptr || !xml->hasTagName (parameters.state.getType ()))
         return;
     auto restored = juce::ValueTree::fromXml (*xml);
+    // Sessions saved before the pad surface retain their Classic controls.
+    if (!restored.getChildWithProperty ("id", livecut::ids::surface).isValid ())
+    {
+        juce::ValueTree child ("PARAM");
+        child.setProperty ("id", livecut::ids::surface, nullptr);
+        child.setProperty ("value", 1, nullptr);
+        restored.appendChild (child, nullptr);
+    }
     // A missing parameter means the default of that release, even when loading
     // an old set into an instance whose newer controls were already adjusted.
     for (auto *parameter : getParameters ())

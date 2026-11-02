@@ -6,6 +6,8 @@
 #include "engine/ImpactEffects.h"
 #include "engine/Fracture.h"
 #include "engine/FrequencyEffects.h"
+#include "engine/PadPrograms.h"
+#include "engine/PadGate.h"
 #include "engine/Resonator.h"
 #include "engine/RouteRack.h"
 
@@ -127,6 +129,13 @@ inline constexpr auto resonanceSpectralEnabled = "resonanceSpectralEnabled";
 inline constexpr auto resonanceFreeze = "resonanceFreeze";
 inline constexpr auto resonanceSmearMs = "resonanceSmearMs";
 inline constexpr auto resonanceSpectralMix = "resonanceSpectralMix";
+inline constexpr auto padProgram = "padProgram";
+inline constexpr auto padX = "padX";
+inline constexpr auto padY = "padY";
+inline constexpr auto padTouch = "padTouch";
+inline constexpr auto padHold = "padHold";
+inline constexpr auto padQuantize = "padQuantize";
+inline constexpr auto surface = "surface";
 } // namespace ids
 
 inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
@@ -134,6 +143,7 @@ inline constexpr std::array subdivisions { 6, 8, 12, 16, 18, 24, 32 };
 juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
 enum class ProcessingMode { live, studio };
+enum class Surface { pad, classic };
 
 // Everything the cutter needs from the parameters, read in one go.
 struct Settings
@@ -160,6 +170,11 @@ struct Settings
     engine::EffectRoute resonanceOrder = engine::EffectRoute::impactResonatorFrequency;
     bool requestedSpectral = false, spectralFreeze = false;
     float spectralSmearMs = 0.0f, spectralMix = 1.0f;
+    Surface surface = Surface::pad;
+    engine::PadProgram padProgram = engine::PadProgram::cut;
+    float padX = .5f, padY = .5f;
+    bool padTouch = false, padHold = false;
+    engine::PadQuantize padQuantize = engine::PadQuantize::beat;
 };
 
 // Reads every parameter's current value. It caches each parameter's atomic
@@ -289,7 +304,13 @@ private:
     Source resonanceFreeze;
     Source resonanceSmearMs;
     Source resonanceSpectralMix;
-
+    Source padProgram;
+    Source padX;
+    Source padY;
+    Source padTouch;
+    Source padHold;
+    Source padQuantize;
+    Source surface;
 
 };
 
