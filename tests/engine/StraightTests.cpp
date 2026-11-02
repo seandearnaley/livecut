@@ -367,6 +367,63 @@ void requireGolden (CutProcedure& procedure, const CutParameters& params, const 
 
     REQUIRE (next == golden.cuts.size());
 }
+// Glitch with Straight off until the first block of its phrase's last bar has
+// played, then with Straight on to the end of the phrase.
+struct SwitchedPhrase
+{
+    std::vector<Cut> firstFillBlock;
+    std::vector<PlayedBlock> after;
+};
+
+constexpr int switchUnitsPerBar = 16;
+constexpr double switchUnitsPerBeat = 4.0;
+
+SwitchedPhrase playSwitchingToStraight (std::uint32_t seed)
+{
+    SQPusher procedure;
+    CutParameters params;
+    params.straight = false;
+    params.minPhraseBars = 2;
+    params.activity = 0.95;
+    Random random (seed);
+
+    BlockContext context;
+    context.phraseUnits = static_cast<double> (procedure.choosePhraseBars (random, params) * switchUnitsPerBar);
+    context.unitsPerBar = switchUnitsPerBar;
+    context.beatsPerBar = 4.0;
+    const auto lastBar = context.phraseUnits - switchUnitsPerBar;
+    SwitchedPhrase phrase;
+    std::vector<Cut> cuts;
+
+    while (context.unitsDone < context.phraseUnits - tolerance)
+    {
+        procedure.chooseBlock (random, params, context, cuts);
+        REQUIRE (! cuts.empty());
+
+        if (params.straight)
+            phrase.after.push_back ({ context.unitsDone, cuts });
+
+        if (std::abs (context.unitsDone - lastBar) < tolerance)
+        {
+            phrase.firstFillBlock = cuts;
+            params.straight = true;
+        }
+
+        context.unitsDone += totalUnits (cuts);
+    }
+
+    REQUIRE (params.straight);
+    REQUIRE_THAT (context.unitsDone, WithinAbs (context.phraseUnits, 1.0e-6));
+    return phrase;
+}
+
+void requireFillBlock (const std::vector<Cut>& cuts, const std::vector<double>& beats)
+{
+    REQUIRE (cuts.size() == beats.size());
+
+    for (std::size_t i = 0; i < cuts.size(); ++i)
+        REQUIRE_THAT (cuts[i].units, WithinAbs (beats[i] * switchUnitsPerBeat, tolerance));
+}
 } // namespace
 
 TEST_CASE ("Straight Cut rolls only in even divisions", "[straight]")
@@ -511,48 +568,34 @@ TEST_CASE ("Turning Straight on drops a tuplet fill already playing", "[straight
 {
     // With Straight off, seed 4 ends its phrase on fill 5: two quavers, then
     // a block of triplet crotchets. Straight turns on after the quavers.
-    constexpr std::uint32_t seed = 4;
-    constexpr int unitsPerBar = 16;
-    constexpr double unitsPerBeat = 4.0;
-    const auto& tupletFill = SQPusher::fills()[5];
-    SQPusher procedure;
-    CutParameters params;
-    params.straight = false;
-    params.minPhraseBars = 2;
-    params.activity = 0.95;
-    Random random (seed);
+    const auto phrase = playSwitchingToStraight (4);
+    requireFillBlock (phrase.firstFillBlock, SQPusher::fills()[5][0]);
+    REQUIRE_FALSE (phrase.after.empty());
 
-    BlockContext context;
-    context.phraseUnits = static_cast<double> (procedure.choosePhraseBars (random, params) * unitsPerBar);
-    context.unitsPerBar = unitsPerBar;
-    context.beatsPerBar = 4.0;
-    const auto lastBar = context.phraseUnits - unitsPerBar;
-    std::vector<Cut> cuts;
-    auto switched = false;
-
-    while (context.unitsDone < context.phraseUnits - tolerance)
+    for (const auto& block : phrase.after)
     {
-        CAPTURE (context.unitsDone);
-        procedure.chooseBlock (random, params, context, cuts);
-        REQUIRE (! cuts.empty());
-
-        if (switched)
-            REQUIRE (evenDivisions (cuts, unitsPerBar, 4.0));
-
-        if (std::abs (context.unitsDone - lastBar) < tolerance)
-        {
-            REQUIRE (cuts.size() == tupletFill[0].size());
-
-            for (std::size_t i = 0; i < cuts.size(); ++i)
-                REQUIRE_THAT (cuts[i].units, WithinAbs (tupletFill[0][i] * unitsPerBeat, tolerance));
-
-            params.straight = true;
-            switched = true;
-        }
-
-        context.unitsDone += totalUnits (cuts);
+        CAPTURE (block.startUnits);
+        REQUIRE (evenDivisions (block.cuts, switchUnitsPerBar, 4.0));
     }
+}
 
-    REQUIRE (switched);
-    REQUIRE_THAT (context.unitsDone, WithinAbs (context.phraseUnits, 1.0e-6));
+TEST_CASE ("Dropping an off-grid fill recovers the beat grid with one cut", "[straight]")
+{
+    // With Straight off, each seed ends its phrase on a fill that opens off the
+    // grid (4/7, 1/3, 7/5 or 2/5 of a beat). Straight turns on after that block.
+    const auto [seed, fill] = GENERATE (table<std::uint32_t, std::size_t> ({ { 3, 3 }, { 6, 6 }, { 15, 7 }, { 13, 10 } }));
+    CAPTURE (seed, fill);
+    const auto phrase = playSwitchingToStraight (seed);
+    requireFillBlock (phrase.firstFillBlock, SQPusher::fills()[fill][0]);
+    REQUIRE (phrase.after.size() > 1);
+
+    const auto& recovery = phrase.after.front();
+    REQUIRE (recovery.cuts.size() == 1);
+    CHECK (isWhole ((recovery.startUnits + recovery.cuts.front().units) / switchUnitsPerBeat));
+
+    for (std::size_t i = 1; i < phrase.after.size(); ++i)
+    {
+        CAPTURE (phrase.after[i].startUnits);
+        REQUIRE (evenDivisions (phrase.after[i].cuts, switchUnitsPerBar, 4.0));
+    }
 }

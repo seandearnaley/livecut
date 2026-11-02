@@ -109,7 +109,22 @@ void SQPusher::chooseBlock (Random& random,
     // Straight turned on mid-fill: a tuplet fill gives way to quavers.
     if (params.straight && fill >= 0
         && std::find (straightFills.begin(), straightFills.end(), fill) == straightFills.end())
+    {
         fill = -1;
+        const auto sixtyFourths = beatsIntoBar * 64.0;
+
+        if (std::abs (sixtyFourths - std::round (sixtyFourths)) > epsilon)
+        {
+            // Recover the beat grid with one cut to the next whole beat.
+            const auto toBeat = (std::floor (beatsIntoBar) + 1.0) * unitsPerBeat - unitsIntoBar;
+            Cut cut;
+            cut.units = std::min ({ toBeat, unitsPerBar - unitsIntoBar, context.phraseUnits - context.unitsDone });
+            cut.gate = params.dutyCycle;
+            cut.amp = static_cast<float> (random.uniform (params.minAmp, params.maxAmp));
+            cuts.assign (1, cut);
+            return;
+        }
+    }
 
     cuts.clear();
 
