@@ -67,11 +67,10 @@ transport behavior, memory and validation limits.
 the pages. Press it to cut and let go to stop on the next beat or bar; drag to
 play two settings of the chosen program at once. Eight programs sit beneath it,
 Cut, Bounce and Glitch first, with Suction, Filter, Tape, Loops and Rush to
-follow. Hold keeps cutting after you let go, and Mix blends the input with the
-program. Classic keeps the original pages, and sessions saved before the pad
-open on them.
-
-Straight keeps every cut on even divisions of the beat, so a program plays no triplets.
+follow. Hold keeps cutting after you let go, Mix blends the input with the
+program, and Straight keeps every cut on even divisions of the beat, so a
+program plays no triplets. Classic keeps the original pages, and sessions saved
+before the pad open on them.
 
 ## Building
 

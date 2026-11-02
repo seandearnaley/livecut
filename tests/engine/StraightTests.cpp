@@ -506,3 +506,53 @@ TEST_CASE ("Straight off reproduces the pre-Straight cut lists", "[straight]")
         }
     }
 }
+
+TEST_CASE ("Turning Straight on drops a tuplet fill already playing", "[straight]")
+{
+    // With Straight off, seed 4 ends its phrase on fill 5: two quavers, then
+    // a block of triplet crotchets. Straight turns on after the quavers.
+    constexpr std::uint32_t seed = 4;
+    constexpr int unitsPerBar = 16;
+    constexpr double unitsPerBeat = 4.0;
+    const auto& tupletFill = SQPusher::fills()[5];
+    SQPusher procedure;
+    CutParameters params;
+    params.straight = false;
+    params.minPhraseBars = 2;
+    params.activity = 0.95;
+    Random random (seed);
+
+    BlockContext context;
+    context.phraseUnits = static_cast<double> (procedure.choosePhraseBars (random, params) * unitsPerBar);
+    context.unitsPerBar = unitsPerBar;
+    context.beatsPerBar = 4.0;
+    const auto lastBar = context.phraseUnits - unitsPerBar;
+    std::vector<Cut> cuts;
+    auto switched = false;
+
+    while (context.unitsDone < context.phraseUnits - tolerance)
+    {
+        CAPTURE (context.unitsDone);
+        procedure.chooseBlock (random, params, context, cuts);
+        REQUIRE (! cuts.empty());
+
+        if (switched)
+            REQUIRE (evenDivisions (cuts, unitsPerBar, 4.0));
+
+        if (std::abs (context.unitsDone - lastBar) < tolerance)
+        {
+            REQUIRE (cuts.size() == tupletFill[0].size());
+
+            for (std::size_t i = 0; i < cuts.size(); ++i)
+                REQUIRE_THAT (cuts[i].units, WithinAbs (tupletFill[0][i] * unitsPerBeat, tolerance));
+
+            params.straight = true;
+            switched = true;
+        }
+
+        context.unitsDone += totalUnits (cuts);
+    }
+
+    REQUIRE (switched);
+    REQUIRE_THAT (context.unitsDone, WithinAbs (context.phraseUnits, 1.0e-6));
+}

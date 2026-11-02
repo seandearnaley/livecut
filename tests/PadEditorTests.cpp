@@ -189,7 +189,8 @@ TEST_CASE ("New instances open on the pad page at 880 by 724", "[pad][editor]")
         CHECK (control.getTitle().isNotEmpty());
     }
     checkNoOverlaps (editor, { "surface", "padTouch", "program0", "program1", "program2", "program3", "program4",
-                               "program5", "program6", "program7", "padHold", "padQuantize", "padMix" });
+                               "program5", "program6", "program7", "padHold", "padQuantize", "padMix",
+                               "padStraight" });
 
     for (const auto* id : { "patternTab", "recutTab", "impactTab", "fractureTab", "resonanceTab", "procedure",
                             "subdivision", "crusher", "wet", "outputTrim", "capture", "saveCapture", "swing", "accent", "hold" })
@@ -393,7 +394,7 @@ TEST_CASE ("The Classic switch shows the legacy pages and sets Surface", "[pad][
         INFO (id);
         CHECK (isShowing (required (editor, id), editor));
     }
-    for (const auto* id : { "padTouch", "padProgram", "padHold", "padQuantize", "padMix" })
+    for (const auto* id : { "padTouch", "padProgram", "padHold", "padQuantize", "padMix", "padStraight" })
     {
         INFO (id);
         CHECK_FALSE (isShowing (required (editor, id), editor));

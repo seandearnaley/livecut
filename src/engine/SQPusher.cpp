@@ -106,6 +106,11 @@ void SQPusher::chooseBlock (Random& random,
         fillBlock = 0;
     }
 
+    // Straight turned on mid-fill: a tuplet fill gives way to quavers.
+    if (params.straight && fill >= 0
+        && std::find (straightFills.begin(), straightFills.end(), fill) == straightFills.end())
+        fill = -1;
+
     cuts.clear();
 
     if (fill >= 0 && fillBlock < fillTable[static_cast<std::size_t> (fill)].size())

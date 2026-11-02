@@ -516,13 +516,13 @@ Settings SettingsReader::read() const
     settings.spectralSmearMs = resonanceSmearMs.read();
     settings.spectralMix = resonanceSpectralMix.read();
     settings.surface = static_cast<Surface> (surface.readIndex());
+    settings.padStraight = padStraight.read() > .5f;
     settings.padProgram = static_cast<engine::PadProgram> (padProgram.readIndex());
     settings.padX = padX.read();
     settings.padY = padY.read();
     settings.padTouch = padTouch.read() > .5f;
     settings.padHold = padHold.read() > .5f;
     settings.padQuantize = static_cast<engine::PadQuantize> (padQuantize.readIndex());
-    settings.padStraight = padStraight.read() > .5f;
     return settings;
 }
 
