@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -332,11 +333,111 @@ TEST_CASE ("Output is identical for every host buffer size", "[pad][processor]")
 TEST_CASE ("Programs not yet built stay dry and say so", "[pad][processor]")
 {
     PadSession session;
-    set (session.processor, livecut::ids::padProgram, 3); // Suction
+    set (session.processor, livecut::ids::padProgram, 4); // Filter
     set (session.processor, livecut::ids::padTouch, 1);
     session.render (96000);
     CHECK (session.dryFrom ());
     CHECK (session.processor.getDisplayState ().padUnavailable.load ());
+}
+
+TEST_CASE ("Suction engages, releases and switches without a fault", "[pad][processor]")
+{
+    constexpr int beat = 24000, fade = 240;
+    PadSession session;
+    const auto& cutter = session.processor.getCutter ();
+    const auto& display = session.processor.getDisplayState ();
+    set (session.processor, livecut::ids::padProgram, 3); // Suction
+    set (session.processor, livecut::ids::padY, .75f);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (beat);
+    REQUIRE (cutter.isCutting ());
+    CHECK (display.padActiveProgram.load () == 3);
+    CHECK_FALSE (display.padUnavailable.load ());
+    CHECK (cutter.activeProcedure () == livecut::engine::Procedure::cutProc11);
+    CHECK (cutter.activeUnitsPerBar () == 16);
+    CHECK (cutter.impact ().diagnostics ().filterActive);
+    CHECK (cutter.impact ().diagnostics ().bandLowHz > 30.0); // squeezed
+    CHECK (cutter.impact ().diagnostics ().bandHighHz < 18000.0);
+    CHECK_FALSE (session.dryFrom ());
+
+    // Moving the pad reshapes the band without restarting the cuts.
+    set (session.processor, livecut::ids::padX, 1);
+    set (session.processor, livecut::ids::padY, 0);
+    session.render (beat);
+    CHECK (cutter.isCutting ());
+
+    // Switching to Cut lands on the beat, and the band switches off.
+    set (session.processor, livecut::ids::padProgram, 0);
+    session.render (3 * beat - session.frame + 1);
+    CHECK (display.padActiveProgram.load () == 0);
+    CHECK (cutter.isCutting ());
+    session.render (beat);
+    CHECK_FALSE (cutter.impact ().diagnostics ().filterActive);
+
+    // And back to Suction.
+    set (session.processor, livecut::ids::padProgram, 3);
+    session.render (5 * beat - session.frame + 1);
+    CHECK (display.padActiveProgram.load () == 3);
+    session.render (beat / 2);
+    CHECK (cutter.impact ().diagnostics ().filterActive);
+
+    // Releasing fades out on the next beat and returns to the input exactly.
+    set (session.processor, livecut::ids::padTouch, 0);
+    session.render (6 * beat + fade + 12000 - session.frame);
+    CHECK_FALSE (cutter.isCutting ());
+    CHECK (session.dryFrom (6 * beat + fade - 1));
+    CHECK (cutter.error () == livecut::engine::Cutter::Error::none);
+}
+
+// The band keeps its shape while its wet ramps out over 2 ms at the first Cut
+// cut, so the switch adds no click of its own. The bar is 3x the larger
+// reference, not 1x: the restart is a hard cut splice, and it rings through
+// the fading band. The click this guards against, the band switching type
+// before its wet ramped out, measured about 80x the reference.
+TEST_CASE ("Switching Suction to Cut while engaged doesn't click", "[pad][processor]")
+{
+    constexpr int switched = 30000, beat = 48000, window = 2400;
+    // The largest step around the beat, playing `from` and then `to` from beat 1.25.
+    const auto largestStep = [] (int from, int to)
+    {
+        PadSession session;
+        set (session.processor, livecut::ids::padProgram, static_cast<float> (from));
+        set (session.processor, livecut::ids::padY, 1); // fully squeezed, the most resonant band
+        set (session.processor, livecut::ids::padTouch, 1);
+        session.render (switched);
+        REQUIRE (session.processor.getCutter ().isCutting ());
+        set (session.processor, livecut::ids::padProgram, static_cast<float> (to));
+        session.render (beat + window - session.frame);
+        REQUIRE (session.processor.getDisplayState ().padActiveProgram.load () == to);
+
+        float largest = 0.f;
+        for (int k = 2 * (beat - window); k < 2 * (beat + window); ++k)
+            largest = std::max (largest, std::abs (session.output[static_cast<std::size_t> (k)]
+                                                   - session.output[static_cast<std::size_t> (k - 2)]));
+        return largest;
+    };
+    const auto suctionToCut = largestStep (3, 0);
+    const auto suctionThroughout = largestStep (3, 3);
+    const auto cutThroughout = largestStep (0, 0);
+    CAPTURE (suctionToCut, suctionThroughout, cutThroughout);
+    CHECK (suctionToCut <= 3.f * std::max (suctionThroughout, cutThroughout));
+}
+
+// A low tone under a high, squeezed band: the makeup follows the band's shape, so
+// each cut's breathing can't swell the output the way a lagging level match did.
+TEST_CASE ("Suction's breathing never swells a low tone", "[pad][processor]")
+{
+    PadSession session;
+    set (session.processor, livecut::ids::padProgram, 3); // Suction
+    set (session.processor, livecut::ids::padY, 1);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (96000);
+    REQUIRE (session.processor.getCutter ().isCutting ());
+    float peak = 0.f;
+    for (const auto sample : session.output)
+        peak = std::max (peak, std::abs (sample));
+    CAPTURE (peak);
+    CHECK (peak <= 2.f); // A lagging level match reached 8.5 here.
 }
 
 TEST_CASE ("Touching while stopped stays dry, and playing with the touch held starts on the grid", "[pad][processor]")
