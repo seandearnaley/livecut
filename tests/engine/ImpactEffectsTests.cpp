@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cstdint>
 #include <cmath>
 #include <numbers>
 #include <vector>
@@ -101,6 +103,90 @@ Spectrum driveSpectrum (ImpactParameters::Drive::Mode mode, bool adaa, double sa
     const auto fundamental = 2.0 * std::hypot (real, imaginary) / length;
     const auto residual = std::sqrt (std::max (0.0, energy / length - std::pow (dc / length, 2) - 0.5 * fundamental * fundamental));
     return { fundamental, residual };
+}
+
+// A fixed 32-bit LCG (Numerical Recipes constants) as white noise in [-0.5, 0.5).
+struct Noise
+{
+    std::uint32_t state = 0x1234567u;
+    float next()
+    {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<float> (static_cast<double> (state >> 8) * 0x1.0p-24 - 0.5);
+    }
+};
+
+// FNV-1a over the raw bytes of each float.
+struct Fnv1a
+{
+    std::uint64_t value = UINT64_C (0xcbf29ce484222325);
+    void add (float sample)
+    {
+        const auto bits = std::bit_cast<std::uint32_t> (sample);
+        for (int shift = 0; shift < 32; shift += 8)
+        {
+            value ^= (bits >> shift) & 0xffu;
+            value *= UINT64_C (0x100000001b3);
+        }
+    }
+};
+
+// Paul Kellet's refined pink filter over the local LCG.
+struct Pink
+{
+    Noise white;
+    double b0 = 0.0, b1 = 0.0, b2 = 0.0, b3 = 0.0, b4 = 0.0, b5 = 0.0, b6 = 0.0;
+    float next()
+    {
+        const auto w = static_cast<double> (white.next());
+        b0 = 0.99886 * b0 + w * 0.0555179;
+        b1 = 0.99332 * b1 + w * 0.0750759;
+        b2 = 0.96900 * b2 + w * 0.1538520;
+        b3 = 0.86650 * b3 + w * 0.3104856;
+        b4 = 0.55000 * b4 + w * 0.5329522;
+        b5 = -0.7616 * b5 - w * 0.0168980;
+        const auto pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362;
+        b6 = w * 0.115926;
+        return static_cast<float> (0.1 * pink);
+    }
+};
+
+ImpactParameters bandParameters (float lowHz, float highHz, float q = 0.707f)
+{
+    ImpactParameters p;
+    p.filter.enabled = true;
+    p.filter.type = ImpactParameters::Filter::Type::band;
+    p.filter.bandLowHz = lowHz;
+    p.filter.bandHighHz = highHz;
+    p.filter.q = q;
+    return p;
+}
+
+double decibels (double ratio) { return 20.0 * std::log10 (ratio); }
+
+// The band's steady-state sine gain with the level hold divided back out,
+// sample by sample, using the hold gain the diagnostics report.
+double preHoldGain (const ImpactParameters& parameters, double frequency)
+{
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (parameters);
+    effects.startCut ({});
+    const auto count = static_cast<int> (rate);
+    double inputEnergy = 0.0, outputEnergy = 0.0;
+    for (int i = 0; i < 2 * count; ++i)
+    {
+        const auto input = static_cast<float> (0.05 * std::sin (2.0 * pi * frequency * i / rate));
+        auto left = input, right = input;
+        effects.process (left, right);
+        const auto filtered = left / effects.diagnostics().levelHoldGain;
+        if (i >= count)
+        {
+            inputEnergy += input * static_cast<double> (input);
+            outputEnergy += filtered * filtered;
+        }
+    }
+    return std::sqrt (outputEnergy / inputEnergy);
 }
 } // namespace
 
@@ -650,4 +736,260 @@ TEST_CASE ("Impact extremes remain finite across supported rates and silence rem
                 REQUIRE (std::isfinite (right));
             }
         }
+}
+
+TEST_CASE ("Classic filter types are bit-identical", "[impact]")
+{
+    // Measured on the single-SVF filter before the band type existed.
+    const auto render = [] (ImpactParameters::Filter::Type type)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        ImpactParameters p;
+        p.filter.enabled = true;
+        p.filter.type = type;
+        p.filter.cutoffHz = 900.0f;
+        p.filter.q = 2.0f;
+        p.filter.envelopeOctaves = 2.0f;
+        p.filter.repeatOctaves = 1.0f;
+        effects.setParameters (p);
+        Noise noise;
+        Fnv1a hash;
+        for (int i = 0; i < 4096; ++i)
+        {
+            if (i % 512 == 0)
+                effects.startCut ({ 0, 0, 0.0, 0.0, static_cast<std::size_t> (i / 512), 8 });
+            auto left = noise.next(), right = noise.next();
+            effects.process (left, right);
+            hash.add (left);
+            hash.add (right);
+        }
+        return hash.value;
+    };
+    CHECK (render (ImpactParameters::Filter::Type::lowPass) == UINT64_C (0xca23b283d2a00333));
+    CHECK (render (ImpactParameters::Filter::Type::bandPass) == UINT64_C (0x0c90f4acbe734b6d));
+    CHECK (render (ImpactParameters::Filter::Type::highPass) == UINT64_C (0x7217203d7ef5f2b1));
+}
+
+TEST_CASE ("A band filter's edges are where it says", "[impact]")
+{
+    const auto p = bandParameters (200.0f, 2000.0f);
+    for (const auto edge : { 200.0, 2000.0 })
+    {
+        CAPTURE (edge);
+        CHECK_THAT (decibels (preHoldGain (p, edge)), WithinAbs (-3.0, 1.0));
+    }
+    for (const auto outside : { 50.0, 8000.0 })
+    {
+        CAPTURE (outside);
+        CHECK (decibels (preHoldGain (p, outside)) < -10.0);
+    }
+}
+
+TEST_CASE ("A band breathes open at each cut", "[impact]")
+{
+    auto p = bandParameters (300.0f, 3000.0f);
+    p.filter.envelopeOctaves = 1.5f;
+    p.attackMs = 1.0f;
+    p.decayMs = 180.0f;
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (p);
+    effects.startCut ({});
+    settle (effects, 48); // The end of the 1 ms attack.
+    const auto openLow = effects.diagnostics().bandLowHz;
+    const auto openHigh = effects.diagnostics().bandHighHz;
+    settle (effects, static_cast<int> (0.18 * rate));
+    const auto laterLow = effects.diagnostics().bandLowHz;
+    const auto laterHigh = effects.diagnostics().bandHighHz;
+    CHECK (openLow < laterLow);
+    CHECK (openHigh > laterHigh);
+    CHECK_THAT (openLow, WithinAbs (300.0 * std::exp2 (-1.5), 1.0));
+    CHECK_THAT (openHigh, WithinAbs (3000.0 * std::exp2 (1.5), 10.0));
+}
+
+TEST_CASE ("A band holds its level", "[impact]")
+{
+    const auto open = bandParameters (30.0f, 18000.0f);
+    const auto squeezed = bandParameters (600.0f, 1500.0f, 2.5f);
+    const auto measure = [] (const ImpactParameters& first, const ImpactParameters& second)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (first);
+        effects.startCut ({});
+        Pink pinkLeft, pinkRight;
+        pinkRight.white.state = 0x89abcdefu;
+        const auto half = static_cast<int> (0.5 * rate);
+        double inputEnergy = 0.0, outputEnergy = 0.0;
+        for (int i = 0; i < 6 * half; ++i)
+        {
+            if (i == half)
+                effects.setParameters (second);
+            auto left = pinkLeft.next(), right = pinkRight.next();
+            const auto inLeft = static_cast<double> (left), inRight = static_cast<double> (right);
+            effects.process (left, right);
+            if (i >= 2 * half) // 500 ms after the change
+            {
+                inputEnergy += inLeft * inLeft + inRight * inRight;
+                outputEnergy += left * static_cast<double> (left) + right * static_cast<double> (right);
+            }
+        }
+        return decibels (std::sqrt (outputEnergy / inputEnergy));
+    };
+    CHECK_THAT (measure (open, open), WithinAbs (0.0, 1.5));
+    CHECK_THAT (measure (squeezed, squeezed), WithinAbs (0.0, 1.5));
+    CHECK_THAT (measure (open, squeezed), WithinAbs (0.0, 1.5));
+    CHECK_THAT (measure (squeezed, open), WithinAbs (0.0, 1.5));
+}
+
+TEST_CASE ("A band never lifts silence or a whisper", "[impact]")
+{
+    const auto whisper = std::pow (10.0, -90.0 / 20.0);
+    for (const auto amplitude : { 0.0, whisper })
+    {
+        CAPTURE (amplitude);
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (bandParameters (600.0f, 1500.0f, 2.5f));
+        effects.startCut ({});
+        for (int i = 0; i < static_cast<int> (rate); ++i)
+        {
+            const auto input = static_cast<float> (amplitude * std::sin (2.0 * pi * 1000.0 * i / rate));
+            auto left = input, right = input;
+            effects.process (left, right);
+            REQUIRE (effects.diagnostics().levelHoldGain == 1.0);
+            REQUIRE (std::abs (left) <= 4.0f * static_cast<float> (amplitude));
+        }
+    }
+}
+
+TEST_CASE ("A band's resonant peak stays bounded", "[impact]")
+{
+    for (const auto highHz : { 1000.0f, 1100.0f, 1200.0f })
+        for (const auto frequency : { 1000.0, static_cast<double> (highHz) })
+        {
+            CAPTURE (highHz, frequency);
+            ImpactEffects effects;
+            effects.prepare (rate);
+            effects.setParameters (bandParameters (1000.0f, highHz, 2.5f));
+            effects.startCut ({});
+            float peak = 0.0f;
+            for (int i = 0; i < static_cast<int> (rate); ++i)
+            {
+                const auto input = static_cast<float> (0.5 * std::sin (2.0 * pi * frequency * i / rate));
+                auto left = input, right = input;
+                effects.process (left, right);
+                REQUIRE (std::isfinite (left));
+                peak = std::max (peak, std::abs (left));
+            }
+            CHECK (peak <= 4.0f * 0.5f);
+        }
+}
+
+TEST_CASE ("A band at extreme rates stays finite", "[impact]")
+{
+    for (const auto sampleRate : { 8000.0, 384000.0 })
+        for (const auto high : { false, true })
+        {
+            CAPTURE (sampleRate, high);
+            ImpactEffects effects;
+            effects.prepare (sampleRate);
+            auto p = high ? bandParameters (18000.0f, 18000.0f, 8.0f) : bandParameters (30.0f, 30.0f, 8.0f);
+            p.filter.envelopeOctaves = high ? 6.0f : -6.0f;
+            p.filter.repeatOctaves = high ? 4.0f : -4.0f;
+            p.attackMs = 0.0f;
+            effects.setParameters (p);
+            effects.startCut ({ 2, 4, 0.0, 0.0, 7, 8 });
+            for (int i = 0; i < 50000; ++i)
+            {
+                float left = i % 2 == 0 ? 16.0f : -16.0f;
+                float right = static_cast<float> (8.0 * std::sin (0.51 * i));
+                effects.process (left, right);
+                REQUIRE (std::isfinite (left));
+                REQUIRE (std::isfinite (right));
+                const auto& d = effects.diagnostics();
+                REQUIRE (d.bandLowHz >= 30.0);
+                REQUIRE (d.bandHighHz <= 0.45 * sampleRate);
+                REQUIRE (d.bandLowHz < d.bandHighHz);
+            }
+        }
+}
+
+TEST_CASE ("A band glides when its edges jump", "[impact]")
+{
+    const auto largestStep = [] (bool jump)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (bandParameters (200.0f, 2000.0f));
+        effects.startCut ({});
+        const auto change = static_cast<int> (0.5 * rate);
+        float previous = 0.0f, largest = 0.0f;
+        for (int i = 0; i < 2 * change; ++i)
+        {
+            if (jump && i == change)
+                effects.setParameters (bandParameters (1000.0f, 1200.0f));
+            // A loud tone the new band rejects: without the glide, the jump
+            // steps the high-pass states' output by several times its slew.
+            const auto input = static_cast<float> (0.8 * std::sin (2.0 * pi * 100.0 * i / rate));
+            auto left = input, right = input;
+            effects.process (left, right);
+            if (i >= change)
+                largest = std::max (largest, std::abs (left - previous));
+            previous = left;
+        }
+        return largest;
+    };
+    CHECK (largestStep (true) <= 1.5f * largestStep (false));
+}
+
+TEST_CASE ("Crossed band edges hold a semitone apart", "[impact]")
+{
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (bandParameters (1000.0f, 900.0f));
+    effects.startCut ({});
+    settle (effects, 256);
+    CHECK_THAT (effects.diagnostics().bandLowHz, WithinAbs (1000.0, 1.0e-6));
+    CHECK_THAT (effects.diagnostics().bandHighHz, WithinAbs (1000.0 * std::exp2 (1.0 / 12.0), 1.0e-6));
+}
+
+TEST_CASE ("A band resets cleanly and allocates no memory", "[impact]")
+{
+    auto p = bandParameters (400.0f, 2500.0f, 2.0f);
+    p.filter.envelopeOctaves = 1.5f;
+    ImpactEffects first, second;
+    first.prepare (rate);
+    second.prepare (rate);
+    first.setParameters (p);
+    second.setParameters (p);
+    first.startCut ({});
+    first.setParameters (bandParameters (900.0f, 1000.0f, 3.0f));
+    settle (first, 100);
+    for (int i = 0; i < 4000; ++i)
+    {
+        auto left = static_cast<float> (0.6 * std::sin (0.2 * i)), right = -left;
+        first.process (left, right);
+    }
+    first.reset();
+    first.setParameters (p);
+    first.startCut ({});
+    second.startCut ({});
+    bool identical = true;
+    std::size_t allocations = 0;
+    {
+        livecut::engine::testing::AllocationCounter counter;
+        for (int i = 0; i < 10000; ++i)
+        {
+            auto l1 = static_cast<float> (0.7 * std::sin (0.04 * i)), r1 = 0.5f * l1;
+            auto l2 = l1, r2 = r1;
+            first.process (l1, r1);
+            second.process (l2, r2);
+            identical = identical && l1 == l2 && r1 == r2;
+        }
+        allocations = counter.count();
+    }
+    CHECK (identical);
+    CHECK (allocations == 0);
 }

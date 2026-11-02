@@ -14,6 +14,10 @@ namespace
 {
 constexpr double pi = std::numbers::pi;
 constexpr double log1000 = 6.907755278982137;
+constexpr double semitone = 1.0594630943592953; // 2^(1/12)
+constexpr double holdFloor = 0.5011872336272722; // -6 dB
+constexpr double holdCeiling = 7.943282347242815; // +18 dB
+constexpr double holdGatePower = 1.0e-8; // -80 dBFS, as mean square
 
 // SplitMix64's finaliser, used as a stateless hash rather than an RNG stream.
 std::uint64_t hash (std::uint64_t x)
@@ -79,6 +83,8 @@ void ImpactEffects::prepare (double newSampleRate)
     sampleRate = newSampleRate;
     rampSamples = static_cast<std::uint32_t> (std::ceil (0.002 * sampleRate));
     dcPole = std::exp (-2.0 * pi * 5.0 / sampleRate);
+    smoothingPole = std::exp (-1.0 / (0.020 * sampleRate));
+    followerPole = std::exp (-1.0 / (0.150 * sampleRate));
     reset();
     setParameters (parameters);
 }
@@ -89,8 +95,16 @@ void ImpactEffects::reset()
     wet = {};
     filterState = {};
     driveState = {};
+    resetBand();
     fastEnvelope = slowEnvelope = adEnvelope = 0.0;
     attackPosition = 0;
+}
+
+void ImpactEffects::resetBand()
+{
+    bandState = {};
+    inputPower = outputPower = 0.0;
+    bandPrimed = false;
 }
 
 void ImpactEffects::setParameters (const ImpactParameters& next)
@@ -105,6 +119,10 @@ void ImpactEffects::setParameters (const ImpactParameters& next)
     f.q = std::clamp (f.q, 0.5f, 8.0f);
     f.envelopeOctaves = std::clamp (f.envelopeOctaves, -6.0f, 6.0f);
     f.repeatOctaves = std::clamp (f.repeatOctaves, -4.0f, 4.0f);
+    f.bandLowHz = std::clamp (f.bandLowHz, 30.0f, 18000.0f);
+    f.bandHighHz = std::clamp (f.bandHighHz, 30.0f, 18000.0f);
+    bandLowTarget = std::log2 (static_cast<double> (f.bandLowHz));
+    bandHighTarget = std::log2 (static_cast<double> (f.bandHighHz));
     f.mix = std::clamp (f.mix, 0.0f, 1.0f);
     auto& d = parameters.drive;
     d.chance = std::clamp (d.chance, 0.0f, 1.0f);
@@ -169,6 +187,12 @@ void ImpactEffects::processFilter (double& left, double& right, double envelope)
     if (mix == 0.0)
     {
         filterState = {};
+        resetBand();
+        return;
+    }
+    if (parameters.filter.type == ImpactParameters::Filter::Type::band)
+    {
+        processBand (left, right, envelope, mix);
         return;
     }
     const auto& p = parameters.filter;
@@ -195,6 +219,79 @@ void ImpactEffects::processFilter (double& left, double& right, double envelope)
     };
     left = channel (left, filterState[0]);
     right = channel (right, filterState[1]);
+}
+
+void ImpactEffects::processBand (double& left, double& right, double envelope, double mix)
+{
+    const auto& p = parameters.filter;
+    if (! bandPrimed)
+    {
+        bandLow = bandLowTarget;
+        bandHigh = bandHighTarget;
+        bandQ = p.q;
+        bandPrimed = true;
+    }
+    else
+    {
+        // 20 ms one-pole glides, so block-rate parameter steps cannot zipper.
+        bandLow = bandLowTarget + smoothingPole * (bandLow - bandLowTarget);
+        bandHigh = bandHighTarget + smoothingPole * (bandHigh - bandHighTarget);
+        bandQ = p.q + smoothingPole * (bandQ - p.q);
+    }
+    // The envelope opens the edges outward and repeat progress shifts both.
+    // The high edge stays at least a semitone above the low edge, so crossed
+    // edges hold a semitone apart, and both stay inside [30, 0.45 * rate].
+    const auto opening = p.envelopeOctaves * envelope;
+    const auto shift = p.repeatOctaves * state.repeatProgress;
+    const auto limit = 0.45 * sampleRate;
+    auto low = std::clamp (std::exp2 (bandLow - opening + shift), 30.0, limit);
+    auto high = std::clamp (std::exp2 (bandHigh + opening + shift), 30.0, limit);
+    high = std::min (std::max (high, low * semitone), limit);
+    low = std::min (low, high / semitone);
+    state.bandLowHz = low;
+    state.bandHighHz = high;
+
+    struct Stage { double a1, a2, a3; };
+    const auto k = 1.0 / bandQ;
+    const auto stage = [this, k] (double cutoff)
+    {
+        const auto g = std::tan (pi * cutoff / sampleRate);
+        const auto a1 = 1.0 / (1.0 + g * (g + k));
+        return Stage { a1, g * a1, g * (g * a1) };
+    };
+    const auto tick = [] (const Stage& c, double input, FilterState& s)
+    {
+        // The same Simper SVF as the single-stage types.
+        const auto v3 = input - s.ic2;
+        const auto v1 = c.a1 * s.ic1 + c.a2 * v3;
+        const auto v2 = s.ic2 + c.a2 * s.ic1 + c.a3 * v3;
+        s.ic1 = cleanState (2.0 * v1 - s.ic1);
+        s.ic2 = cleanState (2.0 * v2 - s.ic2);
+        return std::array<double, 2> { v1, v2 };
+    };
+    const auto highPass = stage (low), lowPass = stage (high);
+    const auto channel = [&] (double input, FilterState& highState, FilterState& lowState)
+    {
+        const auto [v1, v2] = tick (highPass, input, highState);
+        return tick (lowPass, input - k * v1 - v2, lowState)[1];
+    };
+    const auto bandLeft = channel (left, filterState[0], bandState[0]);
+    const auto bandRight = channel (right, filterState[1], bandState[1]);
+
+    // Level hold: 150 ms mean-square followers on the stereo input and the band.
+    // Their ratio sets one linked gain in [-6, +18] dB, held at 0 dB until the
+    // input passes -80 dBFS so silence and noise floors are never lifted.
+    const auto inputSquare = 0.5 * (left * left + right * right);
+    const auto outputSquare = 0.5 * (bandLeft * bandLeft + bandRight * bandRight);
+    inputPower = cleanState (inputSquare + followerPole * (inputPower - inputSquare));
+    outputPower = cleanState (outputSquare + followerPole * (outputPower - outputSquare));
+    auto hold = 1.0;
+    if (inputPower > holdGatePower)
+        hold = outputPower * holdCeiling * holdCeiling <= inputPower
+            ? holdCeiling : std::max (std::sqrt (inputPower / outputPower), holdFloor);
+    state.levelHoldGain = hold;
+    left += mix * (hold * bandLeft - left);
+    right += mix * (hold * bandRight - right);
 }
 
 void ImpactEffects::processDrive (double& left, double& right, double envelope)

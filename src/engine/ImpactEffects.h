@@ -23,7 +23,8 @@ struct ImpactParameters
 {
     struct Filter
     {
-        enum class Type { lowPass, bandPass, highPass };
+        // band is engine-only: a high-pass at bandLowHz into a low-pass at bandHighHz.
+        enum class Type { lowPass, bandPass, highPass, band };
         bool enabled = false;
         Type type = Type::lowPass;
         float chance = 1.0f;
@@ -31,6 +32,8 @@ struct ImpactParameters
         float q = 0.707f; // [0.5, 8]
         float envelopeOctaves = 0.0f; // [-6, 6]
         float repeatOctaves = 0.0f; // [-4, 4]
+        float bandLowHz = 30.0f; // [30, 18000], band only
+        float bandHighHz = 18000.0f; // [30, 18000], band only
         float mix = 1.0f;
     } filter;
 
@@ -76,6 +79,8 @@ public:
         bool filterActive = false;
         bool driveActive = false;
         bool transientActive = false;
+        double bandLowHz = 0.0, bandHighHz = 0.0; // the band's effective edges
+        double levelHoldGain = 1.0; // the band's linear level-hold gain
     };
 
     void prepare (double sampleRate);
@@ -103,7 +108,9 @@ private:
     };
 
     double nextEnvelope();
+    void resetBand();
     void processFilter (double& left, double& right, double envelope);
+    void processBand (double& left, double& right, double envelope, double mix);
     void processDrive (double& left, double& right, double envelope);
     void processTransient (double& left, double& right);
 
@@ -117,6 +124,14 @@ private:
     std::uint64_t attackSamples = 0, attackPosition = 0;
     std::array<Ramp, 3> wet;
     std::array<FilterState, 2> filterState;
+    // The band's high-pass runs on filterState and its low-pass on bandState.
+    // Its edges (log2 Hz) and q glide toward targets latched by setParameters.
+    std::array<FilterState, 2> bandState;
+    double bandLowTarget = 0.0, bandHighTarget = 0.0;
+    double bandLow = 0.0, bandHigh = 0.0, bandQ = 0.0;
+    bool bandPrimed = false;
+    double smoothingPole = 0.0, followerPole = 0.0;
+    double inputPower = 0.0, outputPower = 0.0;
     std::array<DriveState, 2> driveState;
     double fastEnvelope = 0.0, slowEnvelope = 0.0;
     double transientAttack = 0.0, transientRelease = 0.0;
