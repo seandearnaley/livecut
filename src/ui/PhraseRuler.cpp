@@ -42,6 +42,15 @@ void PhraseRuler::show (const Snapshot& snapshot)
     repaint();
 }
 
+void PhraseRuler::setHeadline (const juce::String& text)
+{
+    if (headline == text)
+        return;
+
+    headline = text;
+    repaint();
+}
+
 juce::String PhraseRuler::describe (const Snapshot& snapshot)
 {
     using Status = DisplayState::Status;
@@ -83,7 +92,7 @@ void PhraseRuler::paint (juce::Graphics& g)
 
     g.setFont (lcdFont (15.0f));
     g.setColour (palette::lcdOn);
-    g.drawText (describe (current), textLine, juce::Justification::centredLeft);
+    g.drawText (headline.isNotEmpty() ? headline : describe (current), textLine, juce::Justification::centredLeft);
 
     if (cutting)
     {

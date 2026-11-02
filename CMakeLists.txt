@@ -35,6 +35,8 @@ add_library(LivecutEngine STATIC
     src/engine/RouteRack.cpp
     src/engine/Fracture.cpp
     src/engine/LivePlayer.cpp
+    src/engine/PadGate.cpp
+    src/engine/PadPrograms.cpp
     src/engine/PhraseSeed.cpp
     src/engine/Random.cpp
     src/engine/SQPusher.cpp
@@ -96,6 +98,8 @@ target_sources(LivecutCode
         src/DisplayState.h
         src/HostSync.cpp
         src/HostSync.h
+        src/PadSurface.cpp
+        src/PadSurface.h
         src/Parameters.cpp
         src/Parameters.h
         src/PluginEditor.cpp
@@ -106,10 +110,14 @@ target_sources(LivecutCode
         src/ui/Controls.h
         src/ui/LivecutLookAndFeel.cpp
         src/ui/LivecutLookAndFeel.h
+        src/ui/PadPage.cpp
+        src/ui/PadPage.h
         src/ui/PhraseRuler.cpp
         src/ui/PhraseRuler.h
         src/ui/RangeSlider.cpp
-        src/ui/RangeSlider.h)
+        src/ui/RangeSlider.h
+        src/ui/XYPad.cpp
+        src/ui/XYPad.h)
 target_include_directories(LivecutCode INTERFACE src)
 target_link_libraries(LivecutCode INTERFACE LivecutEngine LivecutSpectral juce::juce_audio_utils)
 
@@ -143,6 +151,8 @@ if(LIVECUT_BUILD_TESTS)
         tests/EditorTests.cpp
         tests/HostSyncTests.cpp
         tests/ParametersTests.cpp
+        tests/PadEditorTests.cpp
+        tests/PadProcessorTests.cpp
         tests/PluginProcessorTests.cpp
         tests/FractureStateTests.cpp
         tests/FractureProcessorTests.cpp
@@ -177,6 +187,8 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/DelayTimelineTests.cpp
         tests/engine/OnsetDetectorTests.cpp
         tests/engine/BounceTests.cpp
+        tests/engine/PadProgramsTests.cpp
+        tests/engine/PadGateTests.cpp
         tests/engine/CutProc11Tests.cpp
         tests/engine/CutterTests.cpp
         tests/engine/EffectsTests.cpp

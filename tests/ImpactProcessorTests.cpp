@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "PluginProcessor.h"
+#include "ProcessorTestSupport.h"
 #include "engine/AllocationCounter.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -142,6 +143,8 @@ TEST_CASE ("Impact Hold stores effected wet while Capture stores the heard mix",
     const auto latency = studio ? 4000 : 0;
     const auto total = latency + 16000 + 8800;
     LivecutAudioProcessor processor, wetReference;
+    useClassicSurface (processor);
+    useClassicSurface (wetReference);
     configureImpactProcessor (processor, studio);
     configureImpactProcessor (wetReference, studio);
     setImpactParameter (processor, livecut::ids::wet, .5f);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "PluginProcessor.h"
+#include "ProcessorTestSupport.h"
 #include "engine/AllocationCounter.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -89,6 +90,8 @@ void append (Stereo& result, const juce::AudioBuffer<float>& buffer)
 TEST_CASE ("Grain processor publishes actual source waiting instead of substituting Classic audio", "[fracture][processor][waiting]")
 {
     LivecutAudioProcessor live, studio;
+    useClassicSurface (live);
+    useClassicSurface (studio);
     configure (live, false, 1.0f);
     configure (studio, true, 1.0f);
     for (auto* processor : { &live, &studio })
@@ -131,6 +134,8 @@ TEST_CASE ("Grain processor publishes actual source waiting instead of substitut
 TEST_CASE ("Studio Tape and Frequency render their original delayed setting and tempo contexts", "[fracture][processor][contexts]")
 {
     LivecutAudioProcessor live, studio;
+    useClassicSurface (live);
+    useClassicSurface (studio);
     for (auto* processor : { &live, &studio })
     {
         configure (*processor, processor == &studio, 2.0f);
@@ -191,6 +196,9 @@ TEST_CASE ("Fracture Hold retains the post Frequency wet chain and Capture retai
     const auto latency = studio ? studioLatency : 0;
     const auto total = latency + barFrames + 8800;
     LivecutAudioProcessor processor, wetReference, unmodulated;
+    useClassicSurface (processor);
+    useClassicSurface (wetReference);
+    useClassicSurface (unmodulated);
     for (auto* candidate : { &processor, &wetReference, &unmodulated })
         configure (*candidate, studio, family);
     set (processor, livecut::ids::wet, .35f);
@@ -264,6 +272,7 @@ TEST_CASE ("Fracture Hold retains the post Frequency wet chain and Capture retai
 TEST_CASE ("Zero speed Tape reaches the processor output as silence rather than held input", "[fracture][processor][tape-zero]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     configure (processor, false, 2.0f);
     set (processor, livecut::ids::fractureTapeStartSpeed, 0.0f);
     set (processor, livecut::ids::fractureTapeEndSpeed, 0.0f);

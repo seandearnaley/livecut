@@ -59,6 +59,12 @@ public:
     void setProcedure (Procedure procedure);
     void setUnitsPerBar (int unitsPerBar);
 
+    // Requests are consumed at the start of the next rendered sample.
+    // Idle passes input through; leaving idle resumes on a unit boundary.
+    void setIdle (bool idle);
+    // While cutting, restart on the next boundary of the current subdivision.
+    void restartAtNextUnit();
+
     // Takes effect from the next block.
     void setParameters (const CutParameters& parameters);
 
@@ -102,7 +108,7 @@ public:
     // Forgets the current phrase. Until the next unit boundary the input
     // passes through; cutting then resumes in the current bar.
     void reset();
-    // Drops render/planner state while preserving already ingested raw history.
+    // Drops render/planner state and a pending restart, preserving raw history and idle.
     void resetRendering();
 
     // Synchronous sample events; implementations must never allocate or wait.
@@ -131,6 +137,9 @@ public:
     void beginRenderContext (const Timing&, const Position&, std::int64_t firstFrame, int sampleOffset, Observer*);
     void renderOne (std::int64_t frame, float& left, float& right, int sampleOffset, Observer*);
     void endRenderContext (int sampleOffset, Observer*);
+
+    // Next sample's position, including a pending bar wrap; valid within a render context.
+    Position renderPosition() const;
 
     bool isCutting() const { return cutting && hasActivePlan; }
     bool isTimingSupported() const { return timingSupported; }
@@ -170,6 +179,7 @@ private:
     void renderSource (std::int64_t frame, float& left, float& right, bool advanceBySamples);
     void selectTransform (std::int64_t renderFrame);
     void applyStructuralChanges();
+    void drop (int sampleOffset, Observer* observer);
 
     struct BlockPlan
     {
@@ -250,6 +260,7 @@ private:
 
     bool timingSupported = true;
     bool cutting = false;
+    bool idle = false, pendingIdle = false, restartPending = false;
     bool phraseCompletionNotified = false;
     bool havePosition = false;
     std::int64_t expectedBar = 0;

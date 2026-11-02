@@ -643,3 +643,282 @@ TEST_CASE ("An exclusive-end completion is not repeated at the next phrase start
     CHECK (events.starts == 2);
     CHECK (events.ends == 1);
 }
+
+namespace
+{
+struct PadEvents final : Cutter::Observer
+{
+    void discontinuity (int offset) override
+    {
+        if (resetCount < resets.size())
+            resets[resetCount] = base + offset;
+        ++resetCount;
+    }
+    void phraseStarted (int offset, bool) override
+    {
+        if (startCount < starts.size())
+            starts[startCount] = base + offset;
+        ++startCount;
+    }
+    void phraseCompleted (int) override {}
+    void processOutput (int, float, float, float&, float&) override {}
+
+    std::int64_t base = 0;
+    std::array<std::int64_t, 64> starts {}, resets {};
+    std::size_t startCount = 0, resetCount = 0;
+};
+
+void runPadSamples (Cutter& cutter, Host& host, PadEvents& events, int samples)
+{
+    Buffer buffer (samples);
+    cutter.process (buffer.left.data(), buffer.right.data(), samples, host.timing(), host.position(), &events);
+    host.advance (samples);
+    events.base += samples;
+}
+} // namespace
+
+TEST_CASE ("An idle cutter passes input through untouched", "[cutter][pad]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    PadEvents events;
+    Buffer buffer (2 * samplesPerBar (host));
+    const auto untouched = buffer;
+
+    cutter.setIdle (true);
+    cutter.process (buffer.left.data(), buffer.right.data(), static_cast<int> (buffer.left.size()),
+                    host.timing(), host.position(), &events);
+
+    CHECK (buffer == untouched);
+    CHECK_FALSE (cutter.isCutting());
+    CHECK (events.startCount == 0);
+}
+
+TEST_CASE ("Leaving idle starts the phrase on the next unit boundary", "[cutter][pad]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    PadEvents events;
+    cutter.setIdle (true);
+    runPadSamples (cutter, host, events, 5000);
+    cutter.setIdle (false);
+    runPadSamples (cutter, host, events, 7000);
+    CHECK (events.startCount == 0);
+    CHECK_FALSE (cutter.isCutting());
+    runPadSamples (cutter, host, events, 1);
+
+    REQUIRE (events.startCount == 1);
+    CHECK (events.starts[0] == 12000);
+    CHECK (cutter.isCutting());
+}
+
+TEST_CASE ("Leaving idle on a unit boundary starts cutting on that sample", "[cutter][pad]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    PadEvents events;
+    cutter.setIdle (true);
+    runPadSamples (cutter, host, events, 12000);
+    REQUIRE (events.startCount == 0);
+
+    cutter.setIdle (false);
+    runPadSamples (cutter, host, events, 1);
+
+    REQUIRE (events.startCount == 1);
+    CHECK (events.starts[0] == 12000);
+    CHECK (cutter.isCutting());
+}
+
+TEST_CASE ("Restart waits for the current grid, then starts the new subdivision there", "[cutter][pad]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    PadEvents events;
+    Buffer buffer (36001);
+    cutter.beginRenderContext (host.timing(), host.position(), 0, 0, &events);
+
+    for (int sample = 0; sample <= 36000; ++sample)
+    {
+        if (sample == 31000)
+        {
+            REQUIRE (cutter.isCutting());
+            cutter.setUnitsPerBar (32);
+            cutter.restartAtNextUnit();
+        }
+        const auto index = static_cast<std::size_t> (sample);
+        REQUIRE (cutter.ingestInputFrame (sample, { buffer.left[index], buffer.right[index] }));
+        cutter.renderOne (sample, buffer.left[index], buffer.right[index], sample, &events);
+        if (sample == 35999)
+        {
+            CHECK (cutter.activeUnitsPerBar() == 8);
+            CHECK (events.resetCount == 1); // Initial context only.
+            CHECK (events.startCount == 1);
+        }
+    }
+    cutter.endRenderContext (36001, &events);
+
+    REQUIRE (events.resetCount == 2);
+    REQUIRE (events.startCount == 2);
+    CHECK (events.resets[1] == 36000);
+    CHECK (events.starts[1] == 36000);
+    CHECK (cutter.activeUnitsPerBar() == 32);
+    CHECK (cutter.isCutting());
+}
+
+TEST_CASE ("Going idle mid-phrase stops cutting on that sample with a discontinuity", "[cutter][pad]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    PadEvents events;
+    runPadSamples (cutter, host, events, 5000);
+    REQUIRE (cutter.isCutting());
+    const auto retained = cutter.rawInputFrame (4999);
+    REQUIRE (retained.has_value());
+    cutter.beginRenderContext (host.timing(), host.position(), 5000, 0, &events);
+    float left = 0.25f, right = -0.75f;
+    REQUIRE (cutter.ingestInputFrame (5000, { left, right }));
+
+    cutter.setIdle (true);
+    CHECK (cutter.isCutting()); // The request is consumed by renderOne.
+    cutter.renderOne (5000, left, right, 0, &events);
+
+    CHECK_FALSE (cutter.isCutting());
+    CHECK (cutter.currentCuts().empty());
+    CHECK_THAT (left, WithinAbs (0.25, 0.0));
+    CHECK_THAT (right, WithinAbs (-0.75, 0.0));
+    REQUIRE (events.resetCount == 2);
+    CHECK (events.resets[1] == 5000);
+    CHECK (events.startCount == 1);
+    CHECK (cutter.error() == Cutter::Error::none);
+    const auto afterDrop = cutter.rawInputFrame (4999);
+    REQUIRE (afterDrop.has_value());
+    CHECK_THAT (afterDrop->left, WithinAbs (retained->left, 0.0));
+    CHECK_THAT (afterDrop->right, WithinAbs (retained->right, 0.0));
+    cutter.endRenderContext (1, &events);
+}
+
+TEST_CASE ("A seek clears a pending restart", "[cutter][pad]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    PadEvents events;
+    runPadSamples (cutter, host, events, 31000);
+    REQUIRE (cutter.isCutting());
+    cutter.restartAtNextUnit();
+    host.beats = 10 * 4.0 + 0.25;
+    runPadSamples (cutter, host, events, 18001); // Cross two unit boundaries after the seek.
+
+    REQUIRE (events.resetCount == 2);
+    CHECK (events.resets[1] == 31000);
+    REQUIRE (events.startCount == 2);
+    CHECK (events.starts[1] == 37000);
+    CHECK (cutter.isCutting());
+}
+
+TEST_CASE ("Render position is the next sample to render", "[cutter][pad]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    host.beats = 1.5;
+    Buffer buffer (48000);
+    cutter.beginRenderContext (host.timing(), host.position(), 0, 0, nullptr);
+
+    auto checkPosition = [&] (int sample)
+    {
+        Host expected;
+        expected.beats = 1.5;
+        expected.advance (sample);
+        const auto actual = cutter.renderPosition();
+        CHECK (actual.bar == expected.position().bar);
+        CHECK_THAT (actual.beatsIntoBar, WithinAbs (expected.position().beatsIntoBar, 1.0e-9));
+    };
+    // The first context ends before the bar line; continue through it in a second context.
+    for (int sample = 0; sample <= 60001; ++sample)
+    {
+        if (sample == 48000)
+        {
+            cutter.endRenderContext (48000, nullptr);
+            host.advance (48000);
+            cutter.beginRenderContext (host.timing(), host.position(), 48000, 0, nullptr);
+        }
+        if (sample == 0 || sample == 777 || sample == 47999 || sample == 60000 || sample == 60001)
+            checkPosition (sample);
+
+        const auto index = static_cast<std::size_t> (sample % 48000);
+        REQUIRE (cutter.ingestInputFrame (sample, { buffer.left[index], buffer.right[index] }));
+        cutter.renderOne (sample, buffer.left[index], buffer.right[index], sample % 48000, nullptr);
+    }
+    cutter.endRenderContext (12002, nullptr);
+}
+
+TEST_CASE ("Idle and restart requests never allocate", "[cutter][pad]")
+{
+    const auto toggleIdle = GENERATE (false, true);
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    Buffer buffer (1000);
+    PadEvents events;
+    std::size_t allocations = 0;
+    {
+        AllocationCounter counter;
+        for (int sample = 0; sample < 2 * samplesPerBar (host); sample += 1000)
+        {
+            // Exercise repeated restarts, then idle transitions every 1,000 samples.
+            cutter.setIdle (toggleIdle && sample % 2000 != 0);
+            cutter.restartAtNextUnit();
+            cutter.process (buffer.left.data(), buffer.right.data(), 1000, host.timing(), host.position(), &events);
+            host.advance (1000);
+            events.base += 1000;
+        }
+        allocations = counter.count();
+    }
+    CHECK (allocations == 0);
+    CHECK (events.startCount > 4);
+    CHECK (events.resetCount > 4);
+}
+
+TEST_CASE ("Idle survives a render reset and ignores restart requests", "[cutter][pad]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    PadEvents events;
+    cutter.setIdle (true);
+    runPadSamples (cutter, host, events, 5000);
+    cutter.resetRendering();
+    cutter.restartAtNextUnit();
+    runPadSamples (cutter, host, events, 7000);
+    CHECK_FALSE (cutter.isCutting());
+    CHECK (events.startCount == 0);
+    CHECK (events.resetCount == 2);
+
+    cutter.setIdle (false);
+    runPadSamples (cutter, host, events, 12001);
+    CHECK (events.startCount == 1);
+    CHECK (events.resetCount == 2);
+    CHECK (cutter.isCutting());
+}
+
+TEST_CASE ("A restart requested on a unit boundary takes effect on that sample", "[cutter][pad]")
+{
+    Cutter cutter;
+    cutter.prepare (sampleRate);
+    Host host;
+    PadEvents events;
+    runPadSamples (cutter, host, events, 12000);
+    cutter.restartAtNextUnit();
+    runPadSamples (cutter, host, events, 1);
+
+    REQUIRE (events.resetCount == 2);
+    REQUIRE (events.startCount == 2);
+    CHECK (events.resets[1] == 12000);
+    CHECK (events.starts[1] == 12000);
+}

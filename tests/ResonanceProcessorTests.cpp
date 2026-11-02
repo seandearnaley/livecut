@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "PluginProcessor.h"
+#include "ProcessorTestSupport.h"
 #include "engine/AllocationCounter.h"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -78,6 +79,7 @@ TEST_CASE ("Prepared Spectral adds its measured delay once to Live and Studio dr
 TEST_CASE ("Spectral Capture stores heard output at exclusive end and retains warm-up metadata", "[processor][resonance][capture]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     setResonance (processor, "resonanceSpectralEnabled", 1.0f);
     setResonance (processor, "minPhraseBars", 1.0f);
     setResonance (processor, "maxPhraseBars", 1.0f);
@@ -297,6 +299,8 @@ TEST_CASE ("Spectral localMix zero delays exact prior processing and original sm
 TEST_CASE ("Owned Spectral display values follow the heard source rather than the current Cutter", "[processor][resonance][display]")
 {
     LivecutAudioProcessor prior, spectral;
+    useClassicSurface (prior);
+    useClassicSurface (spectral);
     setResonance (spectral, "resonanceSpectralEnabled", 1);
     setResonance (spectral, "resonanceSpectralMix", 0);
     for (auto *p : {&prior, &spectral})

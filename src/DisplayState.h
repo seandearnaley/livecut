@@ -16,6 +16,9 @@ namespace livecut
 // own, so a read may mix neighbouring blocks, which a display can tolerate.
 struct DisplayState
 {
+    std::atomic<int> padActiveProgram{0}, padPendingProgram{-1};
+    std::atomic<bool> padEngaged{false}, padUnavailable{false};
+
     enum class Status
     {
         waitingForHost, // the host is stopped or doesn't report its transport

@@ -57,6 +57,20 @@ a saved request. The editor keeps its 880 × 724 layout with Pattern/Recut pages
 See [the 0.5.1 release notes](docs/releases/0.5.1.md) for the corrected host lifecycle and [the feature guide](docs/releases/0.5.0.md) for source eligibility,
 transport behavior, memory and validation limits.
 
+**0.6 / Impact** adds a Slice Filter, Drive / Wavefold and a Transient Shaper, each following the cuts through a shared cut envelope. See [the 0.6.0 release notes](docs/releases/0.6.0.md).
+
+**0.7 / Fracture** adds the GrainCut and TapeCut readers and a Ring / Frequency Shift effect. See [the 0.7.0 release notes](docs/releases/0.7.0.md).
+
+**0.8 / Resonance** adds a four-voice tuned resonator, a choice of effect order and a Spectral Freeze / Smear stage. See [the 0.8.0 release notes](docs/releases/0.8.0.md).
+
+**Livecut 1.0 (in progress): the pad.** New instances open on a pad instead of
+the pages. Press it to cut and let go to stop on the next beat or bar; drag to
+play two settings of the chosen program at once. Eight programs sit beneath it,
+Cut, Bounce and Glitch first, with Suction, Filter, Tape, Loops and Rush to
+follow. Hold keeps cutting after you let go, and Mix blends the input with the
+program. Classic keeps the original pages, and sessions saved before the pad
+open on them.
+
 ## Building
 
 Requirements: CMake 3.25+, and a recent Xcode (macOS) or Visual Studio (Windows).
