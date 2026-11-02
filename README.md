@@ -71,6 +71,8 @@ follow. Hold keeps cutting after you let go, and Mix blends the input with the
 program. Classic keeps the original pages, and sessions saved before the pad
 open on them.
 
+Straight keeps every cut on even divisions of the beat, so a program plays no triplets.
+
 ## Building
 
 Requirements: CMake 3.25+, and a recent Xcode (macOS) or Visual Studio (Windows).

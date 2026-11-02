@@ -13,7 +13,7 @@ namespace livecut::ui
 {
 
 // The pad surface beneath the phrase ruler: the pad, a row of eight program
-// keys, then Hold, Beat / Bar and Mix. Where a control owns a parameter, its
+// keys, then Hold, Straight, Beat / Bar and Mix. Where a control owns a parameter, its
 // component ID is the parameter's ID. Mix is the Wet parameter under its own ID.
 class PadPage final : public juce::Component
 {
@@ -63,6 +63,7 @@ private:
     juce::OwnedArray<ProgramButton> programs;
     juce::ParameterAttachment programAttachment;
     PowerSwitch hold;
+    PowerSwitch straight;
     ProcedureSwitch quantize;
     SliderRow mix;
     int chosen = 0;

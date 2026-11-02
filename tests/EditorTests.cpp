@@ -257,10 +257,11 @@ TEST_CASE ("The editor resizes at a fixed aspect ratio", "[editor]")
                 WithinAbs (static_cast<double> (editor.getWidth()) / editor.getHeight(), 1.0e-6));
 }
 
-// Hidden: run `LivecutTests "[.screenshot]"` to render the editor mid-phrase to
-// editor.png in the working directory, for reviewing the design.
+// Hidden: run `LIVECUT_SCREENSHOT_DIR=<dir> LivecutTests "[.screenshot]"` to render the
+// editor mid-phrase to editor.png in that directory, for reviewing the design.
 TEST_CASE ("Render the editor for design review", "[.screenshot]")
 {
+    const auto directory = screenshotDirectory();
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
     useClassicSurface (processor);
@@ -293,15 +294,7 @@ TEST_CASE ("Render the editor for design review", "[.screenshot]")
 
     LivecutAudioProcessorEditor editor (processor);
     editor.refreshDisplay();
-    const auto saveImage = [&] (const char* name)
-    {
-        const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
-        juce::FileOutputStream stream (juce::File::getCurrentWorkingDirectory().getChildFile (name));
-        REQUIRE (stream.openedOk());
-        stream.setPosition (0);
-        stream.truncate();
-        REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
-    };
+    const auto saveImage = [&] (const char* name) { saveScreenshot (editor, directory, name); };
     saveImage ("editor.png");
 
     playHead.info.setIsPlaying (false);
@@ -789,6 +782,7 @@ TEST_CASE ("Impact controls bind both ways and have named accessible input contr
 
 TEST_CASE ("Render the Impact editor for design review", "[.screenshot][impact]")
 {
+    const auto directory = screenshotDirectory();
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
     useClassicSurface (processor);
@@ -799,12 +793,7 @@ TEST_CASE ("Render the Impact editor for design review", "[.screenshot][impact]"
     auto& state = processor.getParameterState();
     for (const auto* id : { "impactFilterEnabled", "impactDriveEnabled", "impactTransientEnabled" })
         state.getParameter (id)->setValueNotifyingHost (1);
-    const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
-    juce::FileOutputStream stream (juce::File::getCurrentWorkingDirectory().getChildFile ("editor-impact.png"));
-    REQUIRE (stream.openedOk());
-    stream.setPosition (0);
-    stream.truncate();
-    REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
+    saveScreenshot (editor, directory, "editor-impact.png");
 }
 
 TEST_CASE ("Fracture page exposes reader families and frequency controls at the existing size", "[editor][fracture-ui]")
@@ -985,6 +974,7 @@ TEST_CASE ("Fracture source status distinguishes waiting failures and host condi
 
 TEST_CASE ("Render the Fracture editor for design review", "[.screenshot][fracture-ui]")
 {
+    const auto directory = screenshotDirectory();
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
     useClassicSurface (processor);
@@ -1002,12 +992,7 @@ TEST_CASE ("Render the Fracture editor for design review", "[.screenshot][fractu
     const auto save = [&] (const char* name)
     {
         editor.refreshDisplay();
-        const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
-        juce::FileOutputStream stream (juce::File::getCurrentWorkingDirectory().getChildFile (name));
-        REQUIRE (stream.openedOk());
-        stream.setPosition (0);
-        stream.truncate();
-        REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
+        saveScreenshot (editor, directory, name);
     };
     family.setValueNotifyingHost (family.convertTo0to1 (1));
     display.fractureFamily.store (livecut::engine::FractureProcedure::grainCut);
@@ -1069,6 +1054,7 @@ TEST_CASE ("Resonance controls bind parameters and fit the editor", "[editor][re
 
 TEST_CASE ("Render the Resonance editor for design review", "[.screenshot][resonance-ui]")
 {
+    const auto directory = screenshotDirectory();
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
     useClassicSurface (processor);
@@ -1098,12 +1084,7 @@ TEST_CASE ("Render the Resonance editor for design review", "[.screenshot][reson
     const auto save = [&] (const char* name)
     {
         editor.refreshDisplay();
-        const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
-        juce::FileOutputStream output (juce::File::getCurrentWorkingDirectory().getChildFile (name));
-        REQUIRE (output.openedOk());
-        output.setPosition (0);
-        output.truncate();
-        REQUIRE (juce::PNGImageFormat().writeImageToStream (image, output));
+        saveScreenshot (editor, directory, name);
     };
     auto& state = processor.getParameterState();
     state.getParameter ("resonanceEnabled")->setValueNotifyingHost (1);

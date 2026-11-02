@@ -432,6 +432,52 @@ TEST_CASE ("A Classic session opens on the legacy pages", "[pad][editor]")
     CHECK (surface->getButtonText() == "Pad");
 }
 
+TEST_CASE ("The Straight toggle sets Pad Straight", "[pad][editor]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    auto* straight = dynamic_cast<livecut::ui::PowerSwitch*> (findById (editor, "padStraight"));
+    REQUIRE (straight != nullptr);
+    CHECK (isShowing (*straight, editor));
+    CHECK (straight->getTitle() == "Pad Straight");
+    auto* toggle = findControl<juce::ToggleButton> (*straight);
+    REQUIRE (toggle != nullptr);
+    CHECK (toggle->getButtonText() == "Straight");
+    CHECK (toggle->getTooltip() == "Keeps every cut on even divisions of the beat: no triplets");
+
+    CHECK (index (processor, livecut::ids::padStraight) == 0);
+    toggle->setToggleState (true, juce::sendNotificationSync);
+    CHECK (index (processor, livecut::ids::padStraight) == 1);
+    toggle->setToggleState (false, juce::sendNotificationSync);
+    CHECK (index (processor, livecut::ids::padStraight) == 0);
+
+    set (processor, livecut::ids::padStraight, 1.0f); // the host moving the parameter lights the switch
+    CHECK (straight->isOn());
+}
+
+TEST_CASE ("The bottom row holds Hold, Straight, Beat/Bar and Mix without overlap", "[pad][editor]")
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    LivecutAudioProcessor processor;
+    LivecutAudioProcessorEditor editor (processor);
+    REQUIRE (editor.getWidth() == 880);
+    REQUIRE (editor.getHeight() == 724);
+
+    // Left to right, and the hold and straight switches share a line.
+    checkNoOverlaps (editor, { "padHold", "padStraight", "padQuantize", "padMix" });
+    const auto& hold = required (editor, "padHold");
+    const auto& straight = required (editor, "padStraight");
+    const auto& quantize = required (editor, "padQuantize");
+    const auto& mix = required (editor, "padMix");
+    CHECK (hold.getRight() < straight.getX());
+    CHECK (straight.getRight() < quantize.getX());
+    CHECK (quantize.getRight() < mix.getX());
+    CHECK (hold.getY() == straight.getY());
+    CHECK (hold.getHeight() == straight.getHeight());
+    CHECK (straight.getWidth() >= hold.getWidth());
+}
+
 TEST_CASE ("The ruler headline names the program and any pending switch", "[pad][editor]")
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -490,10 +536,11 @@ TEST_CASE ("The ruler headline names the program and any pending switch", "[pad]
     CHECK (editor.statusText() == "Bar 2 of 4");
 }
 
-// Hidden: run `LivecutTests "[.screenshot][pad]"` to render the pad page mid-performance
-// to editor-pad.png in the working directory, for reviewing the design.
+// Hidden: run `LIVECUT_SCREENSHOT_DIR=<dir> LivecutTests "[.screenshot][pad]"` to render the
+// pad page mid-performance to editor-pad.png in that directory, for reviewing the design.
 TEST_CASE ("Render the pad editor for design review", "[.screenshot][pad]")
 {
+    const auto directory = screenshotDirectory();
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
     LivecutAudioProcessorEditor editor (processor);
@@ -514,12 +561,7 @@ TEST_CASE ("Render the pad editor for design review", "[.screenshot][pad]")
     const auto save = [&] (const char* name)
     {
         editor.refreshDisplay();
-        const auto image = editor.createComponentSnapshot (editor.getLocalBounds(), true, 2.0f);
-        juce::FileOutputStream stream (juce::File::getCurrentWorkingDirectory().getChildFile (name));
-        REQUIRE (stream.openedOk());
-        stream.setPosition (0);
-        stream.truncate();
-        REQUIRE (juce::PNGImageFormat().writeImageToStream (image, stream));
+        saveScreenshot (editor, directory, name);
     };
     auto* pad = dynamic_cast<livecut::ui::XYPad*> (findById (editor, "padTouch"));
     REQUIRE (pad != nullptr);
