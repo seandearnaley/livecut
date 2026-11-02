@@ -35,6 +35,7 @@ add_library(LivecutEngine STATIC
     src/engine/RouteRack.cpp
     src/engine/Fracture.cpp
     src/engine/LivePlayer.cpp
+    src/engine/PadPrograms.cpp
     src/engine/PhraseSeed.cpp
     src/engine/Random.cpp
     src/engine/SQPusher.cpp
@@ -177,6 +178,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/DelayTimelineTests.cpp
         tests/engine/OnsetDetectorTests.cpp
         tests/engine/BounceTests.cpp
+        tests/engine/PadProgramsTests.cpp
         tests/engine/CutProc11Tests.cpp
         tests/engine/CutterTests.cpp
         tests/engine/EffectsTests.cpp
