@@ -63,6 +63,16 @@ void Cutter::setUnitsPerBar (int newUnitsPerBar)
     pendingUnitsPerBar = newUnitsPerBar;
 }
 
+void Cutter::setIdle (bool newIdle)
+{
+    pendingIdle = newIdle;
+}
+
+void Cutter::restartAtNextUnit()
+{
+    restartPending = true;
+}
+
 void Cutter::setParameters (const CutParameters& newParameters)
 {
     params = newParameters;
@@ -145,6 +155,7 @@ void Cutter::reset()
 void Cutter::resetRendering()
 {
     cutting = false;
+    restartPending = false;
     phraseCompletionNotified = false;
     havePosition = false;
     emittedBar = false;
@@ -160,6 +171,18 @@ void Cutter::resetRendering()
     fractureOrdinal = 0;
     impactCut.reset();
     renderContextActive = false;
+}
+
+void Cutter::drop (int sampleOffset, Observer* observer)
+{
+    cutting = false;
+    queueHead = queued = 0;
+    hasActivePlan = false;
+    livePlayer.resetRendering();
+    if (processingError == Error::planOverflow || processingError == Error::sourceUnavailable)
+        processingError = Error::none;
+    if (observer != nullptr)
+        observer->discontinuity (sampleOffset);
 }
 
 void Cutter::process (float* left, float* right, int numSamples, const Timing& timing, const Position& position, Observer* observer)
@@ -247,6 +270,13 @@ void Cutter::beginRenderContext (const Timing& timing, const Position& position,
     renderContextActive = true;
 }
 
+Position Cutter::renderPosition() const
+{
+    if (renderBeats >= renderTiming.beatsPerBar - 0.5 * renderBeatsPerSample)
+        return { renderBar + 1, renderBeats - renderTiming.beatsPerBar };
+    return { renderBar, renderBeats };
+}
+
 void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampleOffset, Observer* observer)
 {
     if (! renderContextActive || frame != renderCursor || frame >= nextInputFrame())
@@ -276,6 +306,30 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
     {
         beats -= timing.beatsPerBar;
         ++bar;
+    }
+
+    if (idle != pendingIdle)
+    {
+        idle = pendingIdle;
+        if (idle && cutting)
+            drop (sampleOffset, observer);
+    }
+
+    if (restartPending)
+    {
+        if (! cutting)
+            restartPending = false;
+        else
+        {
+            // Check the current grid before applying a pending subdivision.
+            const auto unitsIntoBar = beats * unitsPerBar / timing.beatsPerBar;
+            const auto halfSample = halfSampleBeats * unitsPerBar / timing.beatsPerBar;
+            if (std::ceil (unitsIntoBar - halfSample) < unitsIntoBar + halfSample)
+            {
+                restartPending = false;
+                drop (sampleOffset, observer);
+            }
+        }
     }
 
     // While nothing is being cut, structural changes take effect at once,
@@ -310,7 +364,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
         // Phrases may begin on any unit boundary, counted from the start of the bar.
         const auto boundary = std::ceil (unitsIntoBar - halfSample);
 
-        if (boundary < unitsIntoBar + halfSample)
+        if (! idle && boundary < unitsIntoBar + halfSample)
         {
             startPhrase (bar, static_cast<int> (boundary), timing);
             if (observer != nullptr)
