@@ -972,7 +972,29 @@ TEST_CASE ("A band resets cleanly and allocates no memory", "[impact]")
         auto left = static_cast<float> (0.6 * std::sin (0.2 * i)), right = -left;
         first.process (left, right);
     }
+    const auto clearedDiagnostics = [&first]
+    {
+        const auto& d = first.diagnostics();
+        return d.levelHoldGain == 1.0 && d.bandLowHz == 0.0 && d.bandHighHz == 0.0;
+    };
+    REQUIRE (first.diagnostics().levelHoldGain != 1.0);
+    REQUIRE (! clearedDiagnostics());
+    auto silenced = bandParameters (900.0f, 1000.0f, 3.0f);
+    silenced.filter.chance = 0.0f;
+    first.setParameters (silenced);
+    first.startCut ({});
+    settle (first, 96); // The 2 ms wet ramp reaches 0.
+    CHECK (clearedDiagnostics());
+    first.setParameters (bandParameters (900.0f, 1000.0f, 3.0f));
+    first.startCut ({});
+    settle (first, 200);
+    auto classic = p;
+    classic.filter.type = ImpactParameters::Filter::Type::highPass;
+    first.setParameters (classic);
+    first.setParameters (p);
+    CHECK (clearedDiagnostics());
     first.reset();
+    CHECK (clearedDiagnostics());
     first.setParameters (p);
     first.startCut ({});
     second.startCut ({});
@@ -992,4 +1014,77 @@ TEST_CASE ("A band resets cleanly and allocates no memory", "[impact]")
     }
     CHECK (identical);
     CHECK (allocations == 0);
+}
+
+TEST_CASE ("A band switched on mid-cut starts fresh", "[impact]")
+{
+    // The fresh instance runs band on silence up to the switch, so its wet mix
+    // and envelope match while its band state, followers and glide stay clean.
+    const auto band = bandParameters (300.0f, 3000.0f, 2.0f);
+    auto classic = band;
+    classic.filter.type = ImpactParameters::Filter::Type::lowPass;
+    classic.filter.cutoffHz = 500.0f;
+    for (const auto staleBand : { false, true })
+    {
+        CAPTURE (staleBand);
+        ImpactEffects switched, fresh;
+        switched.prepare (rate);
+        fresh.prepare (rate);
+        switched.setParameters (staleBand ? bandParameters (100.0f, 8000.0f, 4.0f) : classic);
+        fresh.setParameters (band);
+        switched.startCut ({});
+        fresh.startCut ({});
+        const auto signal = [] (int i) { return static_cast<float> (0.5 * std::sin (0.07 * i) + 0.2 * std::sin (0.9 * i)); };
+        for (int i = 0; i < 4000; ++i)
+        {
+            if (staleBand && i == 2000)
+                switched.setParameters (classic);
+            auto left = signal (i), right = -0.5f * left;
+            switched.process (left, right);
+            float silentLeft = 0.0f, silentRight = 0.0f;
+            fresh.process (silentLeft, silentRight);
+        }
+        switched.setParameters (band);
+        bool identical = true;
+        for (int i = 4000; i < 8000; ++i)
+        {
+            auto l1 = signal (i), r1 = -0.5f * l1;
+            auto l2 = l1, r2 = r1;
+            switched.process (l1, r1);
+            fresh.process (l2, r2);
+            identical = identical && l1 == l2 && r1 == r2;
+        }
+        CHECK (identical);
+    }
+}
+
+TEST_CASE ("A band's level gate opens continuously", "[impact]")
+{
+    // A 1 kHz tone through a 4-8 kHz band is cut by more than 18 dB, so the raw
+    // hold sits at its +18 dB ceiling c and only the gate's knee weight w moves.
+    // The 150 ms follower moves its mean square P by a = 1 - exp(-1/(0.15 fs))
+    // of (x^2 - P) per sample. In the knee P <= G, the -80 dBFS gate power, and
+    // x^2 <= 3G (2G for a sine with mean square G, plus the follower's lag on a
+    // 5 dB/s sweep). Over the knee's 3G/4 width, w moves at most 4a per sample,
+    // so the hold moves at most 4a(c - 1); a hard gate would step by c - 1.
+    const auto ceiling = std::pow (10.0, 18.0 / 20.0);
+    const auto bound = 4.0 * (1.0 - std::exp (-1.0 / (0.15 * rate))) * (ceiling - 1.0);
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (bandParameters (4000.0f, 8000.0f));
+    effects.startCut ({});
+    const auto length = static_cast<int> (4.0 * rate);
+    auto previous = 1.0, largest = 0.0;
+    for (int i = 0; i < length; ++i)
+    {
+        const auto db = -90.0 + 20.0 * i / length;
+        const auto input = static_cast<float> (std::pow (10.0, db / 20.0) * std::sin (2.0 * pi * 1000.0 * i / rate));
+        auto left = input, right = input;
+        effects.process (left, right);
+        const auto hold = effects.diagnostics().levelHoldGain;
+        largest = std::max (largest, std::abs (hold - previous));
+        previous = hold;
+    }
+    CHECK (previous > 0.99 * ceiling); // The sweep crossed the whole knee.
+    CHECK (largest <= bound);
 }

@@ -18,6 +18,7 @@ constexpr double semitone = 1.0594630943592953; // 2^(1/12)
 constexpr double holdFloor = 0.5011872336272722; // -6 dB
 constexpr double holdCeiling = 7.943282347242815; // +18 dB
 constexpr double holdGatePower = 1.0e-8; // -80 dBFS, as mean square
+constexpr double holdKneePower = 0.25 * holdGatePower; // -86 dBFS
 
 // SplitMix64's finaliser, used as a stateless hash rather than an RNG stream.
 std::uint64_t hash (std::uint64_t x)
@@ -100,11 +101,16 @@ void ImpactEffects::reset()
     attackPosition = 0;
 }
 
+// Clears everything the band runs on, including the high-pass stage it shares
+// with the single-SVF types.
 void ImpactEffects::resetBand()
 {
+    filterState = {};
     bandState = {};
     inputPower = outputPower = 0.0;
     bandPrimed = false;
+    state.bandLowHz = state.bandHighHz = 0.0;
+    state.levelHoldGain = 1.0;
 }
 
 void ImpactEffects::setParameters (const ImpactParameters& next)
@@ -112,6 +118,9 @@ void ImpactEffects::setParameters (const ImpactParameters& next)
     if (next.drive.mode != parameters.drive.mode)
         for (auto& channel : driveState)
             channel.primed = false;
+    if (next.filter.type == ImpactParameters::Filter::Type::band
+        && parameters.filter.type != ImpactParameters::Filter::Type::band)
+        resetBand(); // A band switched on never inherits classic or stale band state.
     parameters = next;
     auto& f = parameters.filter;
     f.chance = std::clamp (f.chance, 0.0f, 1.0f);
@@ -279,16 +288,17 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
     const auto bandRight = channel (right, filterState[1], bandState[1]);
 
     // Level hold: 150 ms mean-square followers on the stereo input and the band.
-    // Their ratio sets one linked gain in [-6, +18] dB, held at 0 dB until the
-    // input passes -80 dBFS so silence and noise floors are never lifted.
+    // Their ratio sets one linked gain in [-6, +18] dB. A gate blends it in
+    // linearly in power from -86 to -80 dBFS, so it stays exactly 0 dB on
+    // silence and noise floors, and opens without a step.
     const auto inputSquare = 0.5 * (left * left + right * right);
     const auto outputSquare = 0.5 * (bandLeft * bandLeft + bandRight * bandRight);
     inputPower = cleanState (inputSquare + followerPole * (inputPower - inputSquare));
     outputPower = cleanState (outputSquare + followerPole * (outputPower - outputSquare));
-    auto hold = 1.0;
-    if (inputPower > holdGatePower)
-        hold = outputPower * holdCeiling * holdCeiling <= inputPower
-            ? holdCeiling : std::max (std::sqrt (inputPower / outputPower), holdFloor);
+    const auto ratio = outputPower * holdCeiling * holdCeiling <= inputPower
+        ? holdCeiling : std::max (std::sqrt (inputPower / outputPower), holdFloor);
+    const auto gate = std::clamp ((inputPower - holdKneePower) / (holdGatePower - holdKneePower), 0.0, 1.0);
+    const auto hold = std::lerp (1.0, ratio, gate);
     state.levelHoldGain = hold;
     left += mix * (hold * bandLeft - left);
     right += mix * (hold * bandRight - right);

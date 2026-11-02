@@ -79,8 +79,11 @@ public:
         bool filterActive = false;
         bool driveActive = false;
         bool transientActive = false;
-        double bandLowHz = 0.0, bandHighHz = 0.0; // the band's effective edges
-        double levelHoldGain = 1.0; // the band's linear level-hold gain
+        // The band's effective edges and linear level-hold gain on its latest
+        // sample; 0 Hz and a gain of 1 after a reset, a silent wet mix or a
+        // switch into band, until the band next runs.
+        double bandLowHz = 0.0, bandHighHz = 0.0;
+        double levelHoldGain = 1.0;
     };
 
     void prepare (double sampleRate);
