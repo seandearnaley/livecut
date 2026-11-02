@@ -63,6 +63,17 @@ struct ImpactParameters
     float decayMs = 80.0f; // [5, 1000], decay time to -60 dB
 };
 
+// The pink-noise power a band keeps, with its edges widthOctaves apart and
+// resonance q, from the analogue high-pass/low-pass pair the band's SVFs
+// approximate. In octaves: a flat band that wide keeps the same power. It is
+// scale-invariant, so it depends only on the width and q. The first
+// ImpactEffects::prepare() tabulates it; this interpolates that table.
+inline constexpr double bandOpenOctaves = 9.23, bandOpenQ = 0.707; // 30 Hz-18 kHz, flat
+inline constexpr double bandPowerStep = 1.0 / 16.0, bandPowerMargin = 6.0; // octaves
+double bandPinkPower (double widthOctaves, double q);
+// The same integral, computed directly at any step, for checking the table.
+double integrateBandPinkPower (double widthOctaves, double q, double stepOctaves);
+
 // JUCE-free, allocation-free stereo processing. Production rates are 8–384 kHz;
 // the engine also accepts 1 kHz for the existing deterministic timing fixtures.
 // Order: TPT state-variable filter, first-order ADAA drive, linked transient dynamics.
@@ -111,13 +122,21 @@ private:
     };
 
     double nextEnvelope();
+    void adoptFilter();
     void resetBand();
-    void processFilter (double& left, double& right, double envelope);
-    void processBand (double& left, double& right, double envelope, double mix);
+    void processFilter (double& left, double& right, double envelope, double repeatProgress);
+    void processBand (double& left, double& right, double envelope, double repeatProgress, double mix);
     void processDrive (double& left, double& right, double envelope);
     void processTransient (double& left, double& right);
 
+    // The filter runs parameters.filter; a disabled filter adopts the
+    // requested one only once its wet has ramped out.
     ImpactParameters parameters;
+    ImpactParameters::Filter requestedFilter;
+    // While held, the next cut detaches the filter from the shared envelope:
+    // it decays on at its held rate from where it was, and keeps its repeat.
+    bool filterHeld = false, filterDetached = false;
+    double filterEnvelope = 0.0, filterRepeatProgress = 0.0, heldDecayMultiplier = 0.0;
     Diagnostics state;
     double sampleRate = 48000.0;
     std::uint32_t rampSamples = 96;
@@ -133,8 +152,7 @@ private:
     double bandLowTarget = 0.0, bandHighTarget = 0.0;
     double bandLow = 0.0, bandHigh = 0.0, bandQ = 0.0;
     bool bandPrimed = false;
-    double smoothingPole = 0.0, followerPole = 0.0;
-    double inputPower = 0.0, outputPower = 0.0;
+    double smoothingPole = 0.0;
     std::array<DriveState, 2> driveState;
     double fastEnvelope = 0.0, slowEnvelope = 0.0;
     double transientAttack = 0.0, transientRelease = 0.0;

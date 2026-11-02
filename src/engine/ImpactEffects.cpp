@@ -15,10 +15,71 @@ namespace
 constexpr double pi = std::numbers::pi;
 constexpr double log1000 = 6.907755278982137;
 constexpr double semitone = 1.0594630943592953; // 2^(1/12)
-constexpr double holdFloor = 0.5011872336272722; // -6 dB
-constexpr double holdCeiling = 7.943282347242815; // +18 dB
-constexpr double holdGatePower = 1.0e-8; // -80 dBFS, as mean square
-constexpr double holdKneePower = 0.25 * holdGatePower; // -86 dBFS
+constexpr double makeupCeiling = 2.0; // +6 dB
+
+// The band's pink-noise power, tabulated over its width w (octaves) and log2 q.
+// The widest band the clamps allow is log2 (0.45 * 384 kHz / 30 Hz) = 12.49
+// octaves; the narrowest is the semitone floor. Bilinear interpolation of
+// ln P on 1/16 octave by 1/8 octave of q is within 0.05 dB of the integral
+// across the whole table (worst near w 0.1, q 7); the gain halves that.
+constexpr double tableWidthMin = 1.0 / 12.0, tableWidthStep = 1.0 / 16.0;
+constexpr std::size_t tableWidths = 200; // 1/12 to 12.52 octaves
+constexpr double tableLogQMin = -1.0, tableLogQStep = 1.0 / 8.0;
+constexpr std::size_t tableQs = 33; // q 0.5 to 8
+
+// The analogue prototypes the SVFs approximate: a high-pass at 1 and a
+// low-pass at 2^width, both with this q. Each edge's tail falls 12 dB an
+// octave, so 6 octaves beyond the edges leave out under 1e-6 dB; 1/16-octave
+// trapezoids resolve q 8's resonance (about 0.18 octaves wide) to 0.002 dB.
+double integratePinkPower (double width, double q, double step, double margin)
+{
+    const auto damping = 1.0 / (q * q);
+    const auto scale = std::exp2 (-2.0 * width);
+    const auto count = static_cast<int> (std::ceil ((width + 2.0 * margin) / step));
+    auto sum = 0.0;
+    for (int i = 0; i <= count; ++i)
+    {
+        const auto x = std::exp2 (2.0 * (i * step - margin)); // squared frequency at the low edge
+        const auto y = x * scale; // and at the high edge
+        const auto highPass = x * x / ((1.0 - x) * (1.0 - x) + damping * x);
+        const auto lowPass = 1.0 / ((1.0 - y) * (1.0 - y) + damping * y);
+        sum += (i == 0 || i == count ? 0.5 : 1.0) * highPass * lowPass;
+    }
+    return sum * step;
+}
+
+struct PinkPowerTable
+{
+    PinkPowerTable()
+    {
+        for (std::size_t i = 0; i < tableWidths; ++i)
+            for (std::size_t j = 0; j < tableQs; ++j)
+                logPower[i * tableQs + j] = std::log (integratePinkPower (tableWidthMin + static_cast<double> (i) * tableWidthStep,
+                                                                          std::exp2 (tableLogQMin + static_cast<double> (j) * tableLogQStep),
+                                                                          bandPowerStep, bandPowerMargin));
+    }
+
+    double interpolate (double width, double q) const
+    {
+        const auto u = std::clamp ((width - tableWidthMin) / tableWidthStep, 0.0, static_cast<double> (tableWidths - 1));
+        const auto v = std::clamp ((std::log2 (q) - tableLogQMin) / tableLogQStep, 0.0, static_cast<double> (tableQs - 1));
+        const auto i = std::min (static_cast<std::size_t> (u), tableWidths - 2);
+        const auto j = std::min (static_cast<std::size_t> (v), tableQs - 2);
+        const auto a = u - static_cast<double> (i), b = v - static_cast<double> (j);
+        const auto at = [this] (std::size_t wi, std::size_t qi) { return logPower[wi * tableQs + qi]; };
+        return std::lerp (std::lerp (at (i, j), at (i, j + 1), b), std::lerp (at (i + 1, j), at (i + 1, j + 1), b), a);
+    }
+
+    std::array<double, tableWidths * tableQs> logPower {};
+    double logOpen = std::log (integratePinkPower (bandOpenOctaves, bandOpenQ, bandPowerStep, bandPowerMargin));
+};
+
+// Built once, by the first prepare(), never on the audio thread.
+const PinkPowerTable& pinkPowerTable()
+{
+    static const PinkPowerTable table;
+    return table;
+}
 
 // SplitMix64's finaliser, used as a stateless hash rather than an RNG stream.
 std::uint64_t hash (std::uint64_t x)
@@ -62,6 +123,16 @@ double logCosh (double x)
 double cleanState (double x) { return std::abs (x) < 1.0e-30 ? 0.0 : x; }
 } // namespace
 
+double bandPinkPower (double widthOctaves, double q)
+{
+    return std::exp (pinkPowerTable().interpolate (widthOctaves, q));
+}
+
+double integrateBandPinkPower (double widthOctaves, double q, double stepOctaves)
+{
+    return integratePinkPower (widthOctaves, q, stepOctaves, bandPowerMargin);
+}
+
 void ImpactEffects::Ramp::setTarget (double value, std::uint32_t samples)
 {
     if (value == target)
@@ -85,7 +156,7 @@ void ImpactEffects::prepare (double newSampleRate)
     rampSamples = static_cast<std::uint32_t> (std::ceil (0.002 * sampleRate));
     dcPole = std::exp (-2.0 * pi * 5.0 / sampleRate);
     smoothingPole = std::exp (-1.0 / (0.020 * sampleRate));
-    followerPole = std::exp (-1.0 / (0.150 * sampleRate));
+    pinkPowerTable(); // Builds the band's makeup table off the audio thread.
     reset();
     setParameters (parameters);
 }
@@ -94,6 +165,7 @@ void ImpactEffects::reset()
 {
     state = {};
     wet = {};
+    adoptFilter();
     filterState = {};
     driveState = {};
     resetBand();
@@ -107,10 +179,20 @@ void ImpactEffects::resetBand()
 {
     filterState = {};
     bandState = {};
-    inputPower = outputPower = 0.0;
     bandPrimed = false;
     state.bandLowHz = state.bandHighHz = 0.0;
     state.levelHoldGain = 1.0;
+}
+
+void ImpactEffects::adoptFilter()
+{
+    if (requestedFilter.type == ImpactParameters::Filter::Type::band
+        && parameters.filter.type != ImpactParameters::Filter::Type::band)
+        resetBand(); // A band switched on never inherits classic or stale band state.
+    parameters.filter = requestedFilter;
+    filterHeld = filterDetached = false;
+    bandLowTarget = std::log2 (static_cast<double> (requestedFilter.bandLowHz));
+    bandHighTarget = std::log2 (static_cast<double> (requestedFilter.bandHighHz));
 }
 
 void ImpactEffects::setParameters (const ImpactParameters& next)
@@ -118,11 +200,8 @@ void ImpactEffects::setParameters (const ImpactParameters& next)
     if (next.drive.mode != parameters.drive.mode)
         for (auto& channel : driveState)
             channel.primed = false;
-    if (next.filter.type == ImpactParameters::Filter::Type::band
-        && parameters.filter.type != ImpactParameters::Filter::Type::band)
-        resetBand(); // A band switched on never inherits classic or stale band state.
-    parameters = next;
-    auto& f = parameters.filter;
+    requestedFilter = next.filter;
+    auto& f = requestedFilter;
     f.chance = std::clamp (f.chance, 0.0f, 1.0f);
     f.cutoffHz = std::clamp (f.cutoffHz, 30.0f, 18000.0f);
     f.q = std::clamp (f.q, 0.5f, 8.0f);
@@ -130,9 +209,23 @@ void ImpactEffects::setParameters (const ImpactParameters& next)
     f.repeatOctaves = std::clamp (f.repeatOctaves, -4.0f, 4.0f);
     f.bandLowHz = std::clamp (f.bandLowHz, 30.0f, 18000.0f);
     f.bandHighHz = std::clamp (f.bandHighHz, 30.0f, 18000.0f);
-    bandLowTarget = std::log2 (static_cast<double> (f.bandLowHz));
-    bandHighTarget = std::log2 (static_cast<double> (f.bandHighHz));
     f.mix = std::clamp (f.mix, 0.0f, 1.0f);
+    const auto filter = parameters.filter;
+    parameters = next;
+    parameters.filter = filter;
+    // A filter switched off while it still sounds keeps its last shape, its
+    // breathing included, until its wet ramps out; it never changes shape while
+    // audible.
+    if (f.enabled || (wet[0].current == 0.0 && wet[0].target == 0.0))
+        adoptFilter();
+    else
+    {
+        if (! filterHeld)
+            heldDecayMultiplier = decayMultiplier;
+        filterHeld = true;
+        parameters.filter.enabled = false;
+        parameters.filter.chance = f.chance;
+    }
     auto& d = parameters.drive;
     d.chance = std::clamp (d.chance, 0.0f, 1.0f);
     d.driveDb = std::clamp (d.driveDb, 0.0f, 30.0f);
@@ -162,6 +255,15 @@ void ImpactEffects::setParameters (const ImpactParameters& next)
 void ImpactEffects::startCut (const CutIdentity& identity)
 {
     ++state.cutsStarted;
+    if (filterHeld && ! filterDetached)
+    {
+        // A filter fading out shouldn't breathe: this cut would open a held band
+        // 1.5 octaves while it fades, an audible change of shape. So it fades on
+        // its own envelope, decaying on from where it was.
+        filterDetached = true;
+        filterEnvelope = adEnvelope;
+        filterRepeatProgress = state.repeatProgress;
+    }
     state.repeatProgress = identity.cutCount > 1
         ? static_cast<double> (std::min (identity.cutIndex, identity.cutCount - 1))
             / static_cast<double> (identity.cutCount - 1) : 0.0;
@@ -190,24 +292,25 @@ double ImpactEffects::nextEnvelope()
     return adEnvelope;
 }
 
-void ImpactEffects::processFilter (double& left, double& right, double envelope)
+void ImpactEffects::processFilter (double& left, double& right, double envelope, double repeatProgress)
 {
     const auto mix = wet[0].next();
     if (mix == 0.0)
     {
         filterState = {};
         resetBand();
+        adoptFilter();
         return;
     }
     if (parameters.filter.type == ImpactParameters::Filter::Type::band)
     {
-        processBand (left, right, envelope, mix);
+        processBand (left, right, envelope, repeatProgress, mix);
         return;
     }
     const auto& p = parameters.filter;
     // Octave modulation operates in log Hz; the physical coefficient is bounded
     // before tan() so extreme sweeps remain below Nyquist at every supported rate.
-    const auto octaves = p.envelopeOctaves * envelope + p.repeatOctaves * state.repeatProgress;
+    const auto octaves = p.envelopeOctaves * envelope + p.repeatOctaves * repeatProgress;
     const auto cutoff = std::clamp (p.cutoffHz * std::exp2 (octaves), 30.0, 0.45 * sampleRate);
     const auto g = std::tan (pi * cutoff / sampleRate);
     const auto k = 1.0 / p.q;
@@ -230,7 +333,7 @@ void ImpactEffects::processFilter (double& left, double& right, double envelope)
     right = channel (right, filterState[1]);
 }
 
-void ImpactEffects::processBand (double& left, double& right, double envelope, double mix)
+void ImpactEffects::processBand (double& left, double& right, double envelope, double repeatProgress, double mix)
 {
     const auto& p = parameters.filter;
     if (! bandPrimed)
@@ -251,7 +354,7 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
     // The high edge stays at least a semitone above the low edge, so crossed
     // edges hold a semitone apart, and both stay inside [30, 0.45 * rate].
     const auto opening = p.envelopeOctaves * envelope;
-    const auto shift = p.repeatOctaves * state.repeatProgress;
+    const auto shift = p.repeatOctaves * repeatProgress;
     const auto limit = 0.45 * sampleRate;
     auto low = std::clamp (std::exp2 (bandLow - opening + shift), 30.0, limit);
     auto high = std::clamp (std::exp2 (bandHigh + opening + shift), 30.0, limit);
@@ -287,18 +390,12 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
     const auto bandLeft = channel (left, filterState[0], bandState[0]);
     const auto bandRight = channel (right, filterState[1], bandState[1]);
 
-    // Level hold: 150 ms mean-square followers on the stereo input and the band.
-    // Their ratio sets one linked gain in [-6, +18] dB. A gate blends it in
-    // linearly in power from -86 to -80 dBFS, so it stays exactly 0 dB on
-    // silence and noise floors, and opens without a step.
-    const auto inputSquare = 0.5 * (left * left + right * right);
-    const auto outputSquare = 0.5 * (bandLeft * bandLeft + bandRight * bandRight);
-    inputPower = cleanState (inputSquare + followerPole * (inputPower - inputSquare));
-    outputPower = cleanState (outputSquare + followerPole * (outputPower - outputSquare));
-    const auto ratio = outputPower * holdCeiling * holdCeiling <= inputPower
-        ? holdCeiling : std::max (std::sqrt (inputPower / outputPower), holdFloor);
-    const auto gate = std::clamp ((inputPower - holdKneePower) / (holdGatePower - holdKneePower), 0.0, 1.0);
-    const auto hold = std::lerp (1.0, ratio, gate);
+    // Level hold: makeup from the band's shape this sample, so pink material
+    // keeps the open band's power, including where the resonant edges overlap.
+    // It is at most +6 dB. It follows the breathing edges exactly, so it never
+    // lags or overshoots.
+    const auto& table = pinkPowerTable();
+    const auto hold = std::min (makeupCeiling, std::exp (0.5 * (table.logOpen - table.interpolate (std::log2 (high / low), bandQ))));
     state.levelHoldGain = hold;
     left += mix * (hold * bandLeft - left);
     right += mix * (hold * bandRight - right);
@@ -383,7 +480,13 @@ void ImpactEffects::process (float& left, float& right)
         && wet[2].current == 0.0 && wet[2].target == 0.0)
         return;
     auto l = static_cast<double> (left), r = static_cast<double> (right);
-    processFilter (l, r, envelope);
+    if (filterDetached)
+    {
+        filterEnvelope = cleanState (filterEnvelope * heldDecayMultiplier);
+        processFilter (l, r, filterEnvelope, filterRepeatProgress);
+    }
+    else
+        processFilter (l, r, envelope, state.repeatProgress);
     processDrive (l, r, envelope);
     processTransient (l, r);
     left = static_cast<float> (l);

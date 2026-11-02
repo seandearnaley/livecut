@@ -16,6 +16,7 @@
 
 using namespace livecut::engine;
 using Catch::Matchers::WithinAbs;
+using Catch::Matchers::WithinRel;
 
 namespace
 {
@@ -163,6 +164,32 @@ ImpactParameters bandParameters (float lowHz, float highHz, float q = 0.707f)
 }
 
 double decibels (double ratio) { return 20.0 * std::log10 (ratio); }
+
+// The pad's Suction curve: x picks the centre, y squeezes the edges toward it.
+ImpactParameters suctionBand (double x, double y)
+{
+    const auto centre = 120.0 * std::pow (5000.0 / 120.0, x);
+    const auto squeeze = 0.85 * y;
+    return bandParameters (static_cast<float> (std::pow (30.0, 1.0 - squeeze) * std::pow (centre, squeeze)),
+                           static_cast<float> (std::pow (18000.0, 1.0 - squeeze) * std::pow (centre, squeeze)),
+                           static_cast<float> (0.707 + 1.8 * y));
+}
+
+// Suction's tightest band, breathing as the pad plays it.
+ImpactParameters breathingSuction (double x)
+{
+    auto p = suctionBand (x, 1.0);
+    p.filter.envelopeOctaves = 1.5f;
+    p.attackMs = 1.0f;
+    p.decayMs = 180.0f;
+    return p;
+}
+
+// The Suction y whose band is this many octaves wide.
+double squeezeForWidth (double octaves)
+{
+    return (1.0 - octaves / std::log2 (18000.0 / 30.0)) / 0.85;
+}
 
 // The band's steady-state sine gain with the level hold divided back out,
 // sample by sample, using the hold gain the diagnostics report.
@@ -808,10 +835,10 @@ TEST_CASE ("A band breathes open at each cut", "[impact]")
     CHECK_THAT (openHigh, WithinAbs (3000.0 * std::exp2 (1.5), 10.0));
 }
 
-TEST_CASE ("A band holds its level", "[impact]")
+TEST_CASE ("A band holds its level along Suction's path", "[impact]")
 {
-    const auto open = bandParameters (30.0f, 18000.0f);
-    const auto squeezed = bandParameters (600.0f, 1500.0f, 2.5f);
+    // Pink noise in, measured against the open band's output, so the synthetic
+    // noise's energy outside 30 Hz-18 kHz, which every band removes, cancels.
     const auto measure = [] (const ImpactParameters& first, const ImpactParameters& second)
     {
         ImpactEffects effects;
@@ -837,54 +864,189 @@ TEST_CASE ("A band holds its level", "[impact]")
         }
         return decibels (std::sqrt (outputEnergy / inputEnergy));
     };
-    CHECK_THAT (measure (open, open), WithinAbs (0.0, 1.5));
-    CHECK_THAT (measure (squeezed, squeezed), WithinAbs (0.0, 1.5));
-    CHECK_THAT (measure (open, squeezed), WithinAbs (0.0, 1.5));
-    CHECK_THAT (measure (squeezed, open), WithinAbs (0.0, 1.5));
-}
-
-TEST_CASE ("A band never lifts silence or a whisper", "[impact]")
-{
-    const auto whisper = std::pow (10.0, -90.0 / 20.0);
-    for (const auto amplitude : { 0.0, whisper })
+    const auto open = bandParameters (30.0f, 18000.0f);
+    const auto reference = measure (open, open);
+    for (const auto x : { 0.0, 0.5, 1.0 })
     {
-        CAPTURE (amplitude);
-        ImpactEffects effects;
-        effects.prepare (rate);
-        effects.setParameters (bandParameters (600.0f, 1500.0f, 2.5f));
-        effects.startCut ({});
-        for (int i = 0; i < static_cast<int> (rate); ++i)
+        for (int step = 0; step <= 10; ++step)
         {
-            const auto input = static_cast<float> (amplitude * std::sin (2.0 * pi * 1000.0 * i / rate));
-            auto left = input, right = input;
-            effects.process (left, right);
-            REQUIRE (effects.diagnostics().levelHoldGain == 1.0);
-            REQUIRE (std::abs (left) <= 4.0f * static_cast<float> (amplitude));
+            const auto y = step / 10.0;
+            const auto p = suctionBand (x, y);
+            const auto width = std::log2 (p.filter.bandHighHz / static_cast<double> (p.filter.bandLowHz));
+            const auto capped = std::log2 (18000.0 / 30.0) / width * (0.707 / p.filter.q) >= 4.0;
+            const auto steady = measure (p, p) - reference;
+            const auto squeezing = measure (open, p) - reference;
+            const auto opening = measure (p, open) - reference;
+            CAPTURE (x, y, capped, steady, squeezing, opening);
+            if (capped) // The band may thin, but by no more than 6 dB.
+            {
+                CHECK (steady >= -6.0);
+                CHECK (steady <= 1.5);
+                CHECK (squeezing >= -6.0);
+            }
+            else
+            {
+                CHECK_THAT (steady, WithinAbs (0.0, 1.5));
+                CHECK_THAT (squeezing, WithinAbs (0.0, 1.5));
+            }
+            CHECK_THAT (opening, WithinAbs (0.0, 1.5));
         }
     }
 }
 
-TEST_CASE ("A band's resonant peak stays bounded", "[impact]")
+TEST_CASE ("A band keeps silence silent", "[impact]")
 {
-    for (const auto highHz : { 1000.0f, 1100.0f, 1200.0f })
-        for (const auto frequency : { 1000.0, static_cast<double> (highHz) })
+    const auto p = breathingSuction (0.5);
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (p);
+    for (int i = 0; i < static_cast<int> (rate); ++i)
+    {
+        if (i % 6000 == 0)
+            effects.startCut ({ 404, 0, 0.0, 0.0, static_cast<std::size_t> (i / 6000), 8 });
+        float left = 0.0f, right = 0.0f;
+        effects.process (left, right);
+        REQUIRE (left == 0.0f);
+        REQUIRE (right == 0.0f);
+    }
+    CHECK (effects.diagnostics().filterActive);
+}
+
+TEST_CASE ("A band's makeup never steps", "[impact]")
+{
+    // The makeup is g = min (2, sqrt (P_open / P (w, q))), so where g < 2,
+    // |dg/dw| = g / 2 * |d ln P / dw|, and it is 0 where capped. With q and the
+    // targets settled, only the envelope moves the edges, and only outward, so
+    // w stays in [w0, w0 + 3]. Each edge opens by envelopeOctaves times the
+    // envelope's change, and the clamps and the semitone floor only shrink
+    // that, so w moves by at most 2 * 1.5 * |d env| a sample. The attack rises
+    // by 1 / 48 a sample at 48 kHz; the decay, and a new cut's restart from
+    // env (6000 samples) = 0.0083, move it less. The table's slope in each
+    // 1/16-octave cell is a secant of ln P, so it stays within the exact
+    // slope's range one cell either side; 5% covers the table's error.
+    const auto p = breathingSuction (0.5);
+    const auto q = static_cast<double> (p.filter.q);
+    const auto settledWidth = std::log2 (p.filter.bandHighHz / static_cast<double> (p.filter.bandLowHz));
+    const auto exactGain = [q] (double width)
+    {
+        return std::min (2.0, std::sqrt (integrateBandPinkPower (bandOpenOctaves, bandOpenQ, 1.0 / 256.0)
+                                         / integrateBandPinkPower (width, q, 1.0 / 256.0)));
+    };
+    constexpr double h = 1.0 / 256.0;
+    double steepest = 0.0, exactLowest = 2.0, exactHighest = 0.0;
+    for (auto width = settledWidth - 1.0 / 16.0; width <= settledWidth + 3.0 + 1.0 / 16.0; width += h)
+    {
+        const auto g = exactGain (width);
+        steepest = std::max (steepest, std::abs (exactGain (width + h) - g) / h);
+        if (width >= settledWidth && width <= settledWidth + 3.0)
         {
-            CAPTURE (highHz, frequency);
+            exactLowest = std::min (exactLowest, g);
+            exactHighest = std::max (exactHighest, g);
+        }
+    }
+    const auto bound = 1.05 * steepest * 2.0 * 1.5 / 48.0;
+
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (p);
+    auto previous = 0.0, largest = 0.0, lowest = 2.0, highest = 0.0;
+    for (int i = 0; i < static_cast<int> (rate); ++i)
+    {
+        if (i % 6000 == 0)
+            effects.startCut ({ 404, 0, 0.0, 0.0, static_cast<std::size_t> (i / 6000), 8 });
+        auto left = static_cast<float> (0.5 * std::sin (2.0 * pi * 99.0 * i / rate)), right = left;
+        effects.process (left, right);
+        const auto gain = effects.diagnostics().levelHoldGain;
+        if (i > 0)
+            largest = std::max (largest, std::abs (gain - previous));
+        lowest = std::min (lowest, gain);
+        highest = std::max (highest, gain);
+        previous = gain;
+    }
+    CAPTURE (largest, bound, lowest, highest, exactLowest, exactHighest);
+    // The breathing sweeps the makeup across exactly the range its widths give,
+    CHECK_THAT (lowest, WithinRel (exactLowest, 0.01));
+    CHECK_THAT (highest, WithinRel (exactHighest, 0.01));
+    // and never faster than the bound.
+    CHECK (largest <= bound);
+}
+
+TEST_CASE ("A band's pink power table matches its integral", "[impact]")
+{
+    ImpactEffects effects;
+    effects.prepare (rate); // builds the table
+    const auto powerDecibels = [] (double ratio) { return 10.0 * std::log10 (ratio); };
+
+    // The open band, against a direct integration at 64 times the resolution.
+    const auto open = integrateBandPinkPower (bandOpenOctaves, bandOpenQ, 1.0 / 1024.0);
+    CHECK_THAT (powerDecibels (bandPinkPower (bandOpenOctaves, bandOpenQ) / open), WithinAbs (0.0, 0.05));
+    CHECK_THAT (open, WithinRel (bandOpenOctaves, 0.01)); // A flat band keeps its width in octaves.
+
+    // Off the table's grid, everywhere it reaches.
+    for (const auto q : { 0.5, 0.707, 1.3, 2.507, 5.0, 8.0 })
+        for (const auto width : { 1.0 / 12.0, 0.1, 0.37, 1.385, 2.9, 4.385, 9.23, 12.49 })
+        {
+            CAPTURE (q, width);
+            const auto direct = integrateBandPinkPower (width, q, 1.0 / 1024.0);
+            CHECK_THAT (powerDecibels (bandPinkPower (width, q) / direct), WithinAbs (0.0, 0.05));
+        }
+
+    // Wider keeps more, up to a moderate q,
+    for (const auto q : { 0.5, 0.707, 1.0, 1.4 })
+    {
+        CAPTURE (q);
+        auto previous = 0.0;
+        bool increasing = true;
+        for (auto width = 1.0 / 12.0; width <= 12.5; width += 1.0 / 64.0)
+        {
+            const auto power = bandPinkPower (width, q);
+            increasing = increasing && power > previous;
+            previous = power;
+        }
+        CHECK (increasing);
+    }
+    // but not above about q 2, where the two resonant edges overlap in a
+    // narrow band and reinforce each other.
+    CHECK (bandPinkPower (1.0 / 12.0, 2.507) > bandPinkPower (2.0, 2.507));
+}
+
+TEST_CASE ("A band's peak stays within twice its resonance", "[impact]")
+{
+    // The pad's tightest band, breathing with cuts at Suction's 16ths. Its
+    // resonant peak with no makeup is the largest band output over the sweep.
+    for (const auto x : { 0.0, 0.5, 1.0 })
+    {
+        CAPTURE (x);
+        const auto p = breathingSuction (x);
+        std::vector<double> frequencies { 30.0, 18000.0, p.filter.bandLowHz, p.filter.bandHighHz, 99.0 };
+        for (int i = 0; i <= 24; ++i)
+            frequencies.push_back (30.0 * std::pow (600.0, i / 24.0));
+        double resonance = 0.0;
+        std::vector<double> peaks;
+        for (const auto frequency : frequencies)
+        {
             ImpactEffects effects;
             effects.prepare (rate);
-            effects.setParameters (bandParameters (1000.0f, highHz, 2.5f));
-            effects.startCut ({});
-            float peak = 0.0f;
-            for (int i = 0; i < static_cast<int> (rate); ++i)
+            effects.setParameters (p);
+            double peak = 0.0;
+            for (int i = 0; i < 24000; ++i)
             {
-                const auto input = static_cast<float> (0.5 * std::sin (2.0 * pi * frequency * i / rate));
-                auto left = input, right = input;
+                if (i % 6000 == 0)
+                    effects.startCut ({ 404, 0, 0.0, 0.0, static_cast<std::size_t> (i / 6000), 8 });
+                auto left = static_cast<float> (std::sin (2.0 * pi * frequency * i / rate)), right = left;
                 effects.process (left, right);
                 REQUIRE (std::isfinite (left));
-                peak = std::max (peak, std::abs (left));
+                peak = std::max (peak, static_cast<double> (std::abs (left)));
+                resonance = std::max (resonance, std::abs (left / effects.diagnostics().levelHoldGain));
             }
-            CHECK (peak <= 4.0f * 0.5f);
+            peaks.push_back (peak);
         }
+        for (std::size_t i = 0; i < frequencies.size(); ++i)
+        {
+            CAPTURE (frequencies[i], peaks[i], resonance);
+            CHECK (peaks[i] <= 2.0 * resonance);
+        }
+    }
 }
 
 TEST_CASE ("A band at extreme rates stays finite", "[impact]")
@@ -1058,33 +1220,68 @@ TEST_CASE ("A band switched on mid-cut starts fresh", "[impact]")
     }
 }
 
-TEST_CASE ("A band's level gate opens continuously", "[impact]")
+TEST_CASE ("A filter switched off keeps its shape while it fades", "[impact]")
 {
-    // A 1 kHz tone through a 4-8 kHz band is cut by more than 18 dB, so the raw
-    // hold sits at its +18 dB ceiling c and only the gate's knee weight w moves.
-    // The 150 ms follower moves its mean square P by a = 1 - exp(-1/(0.15 fs))
-    // of (x^2 - P) per sample. In the knee P <= G, the -80 dBFS gate power, and
-    // x^2 <= 3G (2G for a sine with mean square G, plus the follower's lag on a
-    // 5 dB/s sweep). Over the knee's 3G/4 width, w moves at most 4a per sample,
-    // so the hold moves at most 4a(c - 1); a hard gate would step by c - 1.
-    const auto ceiling = std::pow (10.0, 18.0 / 20.0);
-    const auto bound = 4.0 * (1.0 - std::exp (-1.0 / (0.15 * rate))) * (ceiling - 1.0);
-    ImpactEffects effects;
-    effects.prepare (rate);
-    effects.setParameters (bandParameters (4000.0f, 8000.0f));
-    effects.startCut ({});
-    const auto length = static_cast<int> (4.0 * rate);
-    auto previous = 1.0, largest = 0.0;
-    for (int i = 0; i < length; ++i)
+    // At the next cut the wet ramps out over 2 ms. Meanwhile the band runs on
+    // exactly as if nothing had changed, not even that cut, which would open
+    // it: the output is the input plus the ramp times the unchanged band's wet
+    // difference. Then the new parameters take over.
+    const auto band = breathingSuction (0.5);
+    auto off = band; // Cut's Impact: off, with every other filter setting changed too
+    off.filter = ImpactParameters::Filter {};
+    ImpactEffects switched, unchanged;
+    for (auto* effects : { &switched, &unchanged })
     {
-        const auto db = -90.0 + 20.0 * i / length;
-        const auto input = static_cast<float> (std::pow (10.0, db / 20.0) * std::sin (2.0 * pi * 1000.0 * i / rate));
-        auto left = input, right = input;
-        effects.process (left, right);
-        const auto hold = effects.diagnostics().levelHoldGain;
-        largest = std::max (largest, std::abs (hold - previous));
-        previous = hold;
+        effects->prepare (rate);
+        effects->setParameters (band);
+        effects->startCut ({ 404, 0, 0.0, 0.0, 0, 8 });
     }
-    CHECK (previous > 0.99 * ceiling); // The sweep crossed the whole knee.
-    CHECK (largest <= bound);
+    const auto signal = [] (int i)
+    {
+        return static_cast<float> (0.6 * std::sin (2.0 * pi * 99.0 * i / rate) + 0.2 * std::sin (0.9 * i));
+    };
+    int i = 0;
+    for (; i < 6000; ++i)
+    {
+        auto l1 = signal (i), r1 = -0.5f * l1, l2 = l1, r2 = r1;
+        switched.process (l1, r1);
+        unchanged.process (l2, r2);
+        REQUIRE (l1 == l2);
+    }
+    switched.setParameters (off);
+    switched.startCut ({ 404, 0, 0.0, 0.0, 1, 8 });
+    CHECK_FALSE (switched.diagnostics().filterActive);
+    double largestError = 0.0;
+    bool sameEdges = true;
+    for (int k = 0; k < 96; ++k, ++i)
+    {
+        const auto input = signal (i);
+        auto l1 = input, r1 = -0.5f * input, l2 = l1, r2 = r1;
+        switched.process (l1, r1);
+        unchanged.process (l2, r2);
+        const auto ramp = 1.0 - (k + 1) / 96.0;
+        const auto expected = input + ramp * (static_cast<double> (l2) - input);
+        largestError = std::max (largestError, std::abs (l1 - expected));
+        if (k < 95)
+            sameEdges = sameEdges && switched.diagnostics().bandLowHz == unchanged.diagnostics().bandLowHz;
+    }
+    CHECK (largestError < 1.0e-6);
+    CHECK (sameEdges);
+
+    // Faded out, it is exactly bypassed, and the new shape is what runs next.
+    for (int k = 0; k < 100; ++k, ++i)
+    {
+        auto left = signal (i), right = -0.5f * left;
+        const auto inLeft = left, inRight = right;
+        switched.process (left, right);
+        REQUIRE (left == inLeft);
+        REQUIRE (right == inRight);
+    }
+    auto lowPass = off;
+    lowPass.filter.enabled = true;
+    switched.setParameters (lowPass);
+    switched.startCut ({ 404, 0, 0.0, 0.0, 2, 8 });
+    settle (switched, 200);
+    CHECK (switched.diagnostics().filterActive);
+    CHECK (switched.diagnostics().bandLowHz == 0.0); // a low-pass now, not the band
 }
