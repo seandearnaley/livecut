@@ -2,6 +2,7 @@
 
 #include "Parameters.h"
 #include "PluginProcessor.h"
+#include "ProcessorTestSupport.h"
 #include "engine/AllocationCounter.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -144,6 +145,7 @@ TEST_CASE ("Processor passes audio through while the host is stopped", "[process
 TEST_CASE ("Processor cuts in time with a playing host", "[processor][audio]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     TestPlayHead playHead;
     playFromBarOne (playHead);
     processor.setPlayHead (&playHead);
@@ -162,6 +164,7 @@ TEST_CASE ("Processor cuts in time with a playing host", "[processor][audio]")
 TEST_CASE ("Processor applies parameter changes to the cutter", "[processor][parameters]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     TestPlayHead playHead;
     playFromBarOne (playHead);
     processor.setPlayHead (&playHead);
@@ -260,6 +263,7 @@ TEST_CASE ("The display says the host isn't playing", "[processor][display]")
 TEST_CASE ("The display follows the phrase while cutting", "[processor][display]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     TestPlayHead playHead;
     playFromBarOne (playHead);
     processor.setPlayHead (&playHead);
@@ -332,6 +336,7 @@ TEST_CASE ("Old state resets new controls even on a previously adjusted instance
 TEST_CASE ("Default mixer preserves exact classic output across host buffers", "[processor][capture][mixer]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     TestPlayHead playHead;
     playFromBarOne (playHead);
     processor.setPlayHead (&playHead);
@@ -363,6 +368,7 @@ TEST_CASE ("Default mixer preserves exact classic output across host buffers", "
 TEST_CASE ("Final output capture spans multiple phrases in one host buffer and survives stop", "[processor][capture]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     auto& state = processor.getParameterState();
     for (const auto* id : { livecut::ids::minPhraseBars, livecut::ids::maxPhraseBars })
     {
@@ -406,6 +412,7 @@ TEST_CASE ("A phrase completed at the buffer end is retained before stop or loop
     {
         INFO (blockSize);
         LivecutAudioProcessor processor;
+        useClassicSurface (processor);
         auto& state = processor.getParameterState();
         for (const auto* id : { livecut::ids::minPhraseBars, livecut::ids::maxPhraseBars })
         {
@@ -446,6 +453,7 @@ TEST_CASE ("A phrase completed at the buffer end is retained before stop or loop
 TEST_CASE ("Processing with mix capture boundaries and a leased export never allocates", "[processor][capture][allocations]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     auto& state = processor.getParameterState();
     for (const auto* id : { livecut::ids::minPhraseBars, livecut::ids::maxPhraseBars })
     {
@@ -483,6 +491,7 @@ TEST_CASE ("Capture follows real-rate tempo changes and discards meter-interrupt
 {
     const auto rate = GENERATE (44100, 48000, 96000);
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     auto& state = processor.getParameterState();
     for (const auto* id : { livecut::ids::minPhraseBars, livecut::ids::maxPhraseBars })
     {
@@ -551,6 +560,7 @@ TEST_CASE ("Hold-capable processor advertises an infinite tail", "[processor][pe
 TEST_CASE ("Audio Hold uses pre-mix wet audio and current live dry then releases on a bar", "[processor][perform][hold]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     auto& state = processor.getParameterState();
     const auto set = [&] (const char* id, float value)
     {
@@ -602,6 +612,7 @@ TEST_CASE ("Audio Hold uses pre-mix wet audio and current live dry then releases
 TEST_CASE ("Restoring a Hold request waits for fresh PCM and older state resets all Perform controls", "[processor][state][perform]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     auto& parameters = processor.getParameterState();
     for (const auto* id : { livecut::ids::swing, livecut::ids::accent, livecut::ids::hold })
         parameters.getParameter (id)->setValueNotifyingHost (1.0f);
@@ -636,6 +647,7 @@ TEST_CASE ("Restoring a Hold request waits for fresh PCM and older state resets 
 TEST_CASE ("Swing Hold entry release and leased final capture do not allocate in the callback", "[processor][perform][allocations]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     auto& state = processor.getParameterState();
     const auto set = [&] (const char* id, float value)
     {

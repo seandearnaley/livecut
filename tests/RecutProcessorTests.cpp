@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "PluginProcessor.h"
+#include "ProcessorTestSupport.h"
 #include "HostSync.h"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -36,6 +37,7 @@ void setRecut (LivecutAudioProcessor& processor, const char* id, float value)
 TEST_CASE ("Studio capture completes before delayed bar entry across original context splits", "[processor][recut][capture]")
 {
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     setRecut (processor, "mode", 1.0f);
     setRecut (processor, "wet", 0.0f);
     setRecut (processor, "minPhraseBars", 1.0f);
@@ -728,6 +730,7 @@ TEST_CASE ("Studio transforms feed one delayed mixer and final-output capture wi
 {
     const auto reverse = GENERATE (false, true);
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     for (const auto* id : { "mode", "attackAlign", "minPhraseBars", "maxPhraseBars", "straightChance" })
         setRecut (processor, id, 1.0f);
     setRecut (processor, "reverseChance", reverse ? 1.0f : 0.0f);

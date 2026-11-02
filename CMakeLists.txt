@@ -98,6 +98,8 @@ target_sources(LivecutCode
         src/DisplayState.h
         src/HostSync.cpp
         src/HostSync.h
+        src/PadSurface.cpp
+        src/PadSurface.h
         src/Parameters.cpp
         src/Parameters.h
         src/PluginEditor.cpp
@@ -145,6 +147,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/EditorTests.cpp
         tests/HostSyncTests.cpp
         tests/ParametersTests.cpp
+        tests/PadProcessorTests.cpp
         tests/PluginProcessorTests.cpp
         tests/FractureStateTests.cpp
         tests/FractureProcessorTests.cpp

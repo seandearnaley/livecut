@@ -103,6 +103,8 @@ class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut
     void observeTransport ();
     void observeTransport (const juce::Optional<juce::AudioPlayHead::PositionInfo> &);
     void process (juce::AudioBuffer<float> &, bool bypass);
+    livecut::Settings effectiveSettings (const livecut::Settings& user);
+    void applyRenderSettings (const livecut::Settings& user);
     void publishDisplay ();
     void publishTransformDisplay ();
     void discontinuity (int) override;
@@ -129,6 +131,10 @@ class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut
     livecut::OutputMixer mixer;
     livecut::CaptureService capture;
     livecut::engine::WetHold wetHold;
+    livecut::engine::PadGate padGate;
+    livecut::engine::PadMapping currentMapping = livecut::engine::mapPad (padGate.activeProgram (), .5f, .5f, {});
+    livecut::Settings renderSettings;
+    float padGain = 0.0f;
     double processingSampleRate = 48000.0, processingBeatsPerSample = 0.0, processingBeatsPerBar = 4.0;
     std::atomic<bool> resetHoldRequested{false};
     std::uint64_t transportEpochCounter = 1;

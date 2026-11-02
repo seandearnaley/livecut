@@ -3,6 +3,7 @@
 #include "PluginProcessor.h"
 
 #include "HostSync.h"
+#include "PadSurface.h"
 #include "PluginEditor.h"
 #include <limits>
 #include <thread>
@@ -103,7 +104,6 @@ void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
         auto prepared = std::make_unique<livecut::StreamResources> (sampleRate, settings.requestedMode, settings.requestedSpectral, spectralTestHooks);
         livecut::engine::WetHold preparedHold;
         preparedHold.prepare (sampleRate);
-        preparedHold.request (settings.hold);
         auto preparedCapture = livecut::PhraseCapture::prepareStorage (sampleRate);
         livecut::PhraseCapture::Prepared retiredCapture;
         if (!enterCurrentOperation (operation))
@@ -112,11 +112,17 @@ void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
             const AdoptCallbackLock guard (getCallbackLock ());
             if (configurationGeneration != operation)
                 return;
+            padGate.prepare (sampleRate);
+            currentMapping = livecut::engine::mapPad (padGate.activeProgram (), settings.padX, settings.padY, {});
+            const auto effective = effectiveSettings (settings);
+            preparedHold.request (effective.hold);
+            prepared->cutter.setIdle (settings.surface == livecut::Surface::pad);
+            padGain = settings.surface == livecut::Surface::pad ? 0.0f : 1.0f;
             std::swap (wetHold, preparedHold);
             retiredCapture = capture.rolling ().installPrepared (std::move (preparedCapture));
-            mixer.prepare (sampleRate, settings.wet, settings.outputTrimDb);
+            mixer.prepare (sampleRate, effective.wet, effective.outputTrimDb);
             spectralMix.reset (sampleRate, 0.002);
-            spectralMix.setCurrentAndTargetValue (settings.spectralMix);
+            spectralMix.setCurrentAndTargetValue (effective.spectralMix);
             processingRunning = false;
             haveDelayedDisplay = false;
             stream = std::move (prepared);
@@ -355,10 +361,14 @@ void LivecutAudioProcessor::tryApplyMode ()
         observedTransport = AudioObservation::unknown;
         capture.rolling ().interrupt ();
         wetHold.interrupt ();
-        wetHold.request (requested.hold);
-        mixer.prepare (rate, requested.wet, requested.outputTrimDb);
+        padGate.reset ();
+        stream->cutter.setIdle (requested.surface == livecut::Surface::pad);
+        padGain = requested.surface == livecut::Surface::pad ? 0.0f : 1.0f;
+        const auto effective = effectiveSettings (requested);
+        wetHold.request (effective.hold);
+        mixer.prepare (rate, effective.wet, effective.outputTrimDb);
         spectralMix.reset (rate, 0.002);
-        spectralMix.setCurrentAndTargetValue (requested.spectralMix);
+        spectralMix.setCurrentAndTargetValue (effective.spectralMix);
         processingRunning = false;
         display.hold = wetHold.state ();
     }
@@ -521,19 +531,32 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
             resources.renderEpoch = segment.transportEpoch;
             if (newEpoch)
                 resources.cutter.resetRendering ();
-            livecut::applySettings (resources.cutter, context.settings);
-            processingBeatsPerSample = context.timing.bpm / 60.0 / processingSampleRate;
-            processingBeatsPerBar = context.timing.beatsPerBar;
-            if (resources.spectral)
-                spectralMix.setTargetValue (context.settings.spectralMix);
+            if (newEpoch || !context.running)
+            {
+                padGate.reset ();
+                padGain = context.settings.surface == livecut::Surface::pad ? 0.0f : 1.0f;
+                resources.cutter.setIdle (context.settings.surface == livecut::Surface::pad);
+            }
+            if (context.settings.surface == livecut::Surface::pad)
+            {
+                const auto mapping = livecut::engine::mapPad (padGate.activeProgram (), context.settings.padX,
+                                                             context.settings.padY, currentMapping.zones);
+                if (padGate.engaged () && !livecut::engine::sameDiscreteState (mapping, currentMapping))
+                    resources.cutter.restartAtNextUnit ();
+                currentMapping = mapping;
+            }
             else
             {
-                mixer.setTargets (context.settings.wet, context.settings.outputTrimDb);
-                if (context.resetHold)
-                    wetHold.interrupt ();
-                wetHold.request (context.settings.hold);
-                processingRunning = context.running;
+                resources.cutter.setIdle (false);
+                padGain = 1.0f;
             }
+            processingBeatsPerSample = context.timing.bpm / 60.0 / processingSampleRate;
+            processingBeatsPerBar = context.timing.beatsPerBar;
+            if (!resources.spectral && context.resetHold)
+                wetHold.interrupt ();
+            applyRenderSettings (context.settings);
+            if (!resources.spectral)
+                processingRunning = context.running;
             if (context.running)
                 resources.cutter.beginRenderContext (context.timing, context.position, *rendered, i, this);
             else if (newEpoch)
@@ -551,14 +574,41 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
         if (resources.spectral)
         {
             packet.raw = {raw->left, raw->right};
-            packet.spectral = {context.settings.spectralFreeze, context.settings.spectralSmearMs, spectralMix.getNextValue ()};
-            packet.output = {processingBeatsPerSample, context.settings.wet,  context.settings.outputTrimDb,          context.running,
-                             context.bypass,           context.settings.hold, firstContextSample && context.resetHold};
+            packet.spectral = {renderSettings.spectralFreeze, renderSettings.spectralSmearMs, spectralMix.getNextValue ()};
+            packet.output = {processingBeatsPerSample, renderSettings.wet, renderSettings.outputTrimDb, context.running,
+                             context.bypass, renderSettings.hold, firstContextSample && context.resetHold};
         }
         left = raw->left;
         right = raw->right;
         if (context.running)
+        {
+            if (context.settings.surface == livecut::Surface::pad)
+            {
+                if (!resources.cutter.isTimingSupported ())
+                {
+                    padGate.reset ();
+                    padGain = 0.0f;
+                    resources.cutter.setIdle (true);
+                }
+                else
+                {
+                    const auto& settings = context.settings;
+                    const auto position = resources.cutter.renderPosition ();
+                    const auto step = padGate.process ({false, settings.padTouch, settings.padHold,
+                                                       settings.padProgram, settings.padQuantize},
+                                                      position.beatsIntoBar, processingBeatsPerBar, processingBeatsPerSample);
+                    if (step.programChanged)
+                    {
+                        currentMapping = livecut::engine::mapPad (padGate.activeProgram (), settings.padX, settings.padY, {-1, -1});
+                        applyRenderSettings (settings);
+                        resources.cutter.restartAtNextUnit ();
+                    }
+                    resources.cutter.setIdle (step.idle);
+                    padGain = step.gain;
+                }
+            }
             resources.cutter.renderOne (*rendered, left, right, i, this);
+        }
         else if (!resources.spectral)
             mixer.process (raw->left, raw->right, left, right);
         if (resources.spectral)
@@ -681,6 +731,11 @@ void LivecutAudioProcessor::phraseStarted (int, bool fullStart)
 }
 void LivecutAudioProcessor::processOutput (int, float dryLeft, float dryRight, float &left, float &right)
 {
+    if (renderSettings.surface == livecut::Surface::pad)
+    {
+        left = dryLeft + padGain * (left - dryLeft);
+        right = dryRight + padGain * (right - dryRight);
+    }
     if (collectingPacket)
         return; // collect inner wet; consumers run at its delayed boundary
     wetHold.process (left, right, processingBeatsPerSample);
@@ -803,9 +858,34 @@ void LivecutAudioProcessor::publishTransformDisplay ()
         publishSourceDisplay (sourceDisplay ());
 }
 
+livecut::Settings LivecutAudioProcessor::effectiveSettings (const livecut::Settings& user)
+{
+    if (user.surface == livecut::Surface::classic)
+        return user;
+    return livecut::padSettings (user, currentMapping);
+}
+
+void LivecutAudioProcessor::applyRenderSettings (const livecut::Settings& user)
+{
+    renderSettings = effectiveSettings (user);
+    livecut::applySettings (stream->cutter, renderSettings);
+    if (stream->spectral)
+        spectralMix.setTargetValue (renderSettings.spectralMix);
+    else
+    {
+        mixer.setTargets (renderSettings.wet, renderSettings.outputTrimDb);
+        wetHold.request (renderSettings.hold);
+    }
+}
+
 void LivecutAudioProcessor::publishDisplay ()
 {
     using Status = livecut::DisplayState::Status;
+    display.padActiveProgram = static_cast<int> (padGate.activeProgram ());
+    const auto pending = padGate.pendingProgram ();
+    display.padPendingProgram = pending ? static_cast<int> (*pending) : -1;
+    display.padEngaged = padGate.engaged ();
+    display.padUnavailable = !livecut::engine::isAvailable (renderSettings.padProgram);
     display.hold = wetHold.state ();
     const auto source = stream->spectral ? delayedDisplay : sourceDisplay ();
     publishSourceDisplay (source);
