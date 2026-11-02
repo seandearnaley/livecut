@@ -30,6 +30,8 @@ public:
 
     void prepare (double sampleRate);
     void reset();
+    // beatsIntoBar must be normalised to [-h, beatsPerBar - h), where h = .5 *
+    // beatsPerSample, as returned by Cutter::renderPosition().
     Step process (const Input&, double beatsIntoBar, double beatsPerBar, double beatsPerSample);
 
     PadProgram activeProgram() const { return active; }

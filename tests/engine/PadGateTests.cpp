@@ -29,7 +29,9 @@ struct Driver
 
     PadGate::Step next()
     {
-        const auto position = std::fmod (sample * beatsPerSample, 4.0);
+        auto position = std::fmod (sample * beatsPerSample, beatsPerBar);
+        if (position >= beatsPerBar - .5 * beatsPerSample)
+            position -= beatsPerBar;
         ++sample;
         return gate.process (input, position, beatsPerBar, beatsPerSample);
     }
@@ -115,6 +117,75 @@ TEST_CASE ("Bar quantize waits for the bar line", "[padgate]")
         checkStep (d.next(), 1.f, false);
     for (int i = 0; i < fade; ++i)
         checkStep (d.next(), 1.f - static_cast<float> (i + 1) / 240.f, i == fade - 1);
+}
+
+TEST_CASE ("A beat line exactly midway between two samples is caught once, on the later sample", "[padgate][padgate-boundary]")
+{
+    Driver d;
+    const double h = .5 * beatsPerSample;
+    // L = 0 keeps the exact half-sample tie free of subtraction rounding.
+    d.input.touch = true;
+    checkStep (d.gate.process (d.input, 4 - 5 * h, beatsPerBar, beatsPerSample), 1.f, false);
+    d.input.touch = false;
+    checkStep (d.gate.process (d.input, 4 - 3 * h, beatsPerBar, beatsPerSample), 1.f, false);
+    d.input.program = PadProgram::bounce;
+    const auto earlier = d.gate.process (d.input, -h, beatsPerBar, beatsPerSample);
+    checkStep (earlier, 1.f, false);
+    CHECK_FALSE (earlier.programChanged);
+    const auto later = d.gate.process (d.input, h, beatsPerBar, beatsPerSample);
+    checkStep (later, 1.f - 1.f / 240.f, false);
+    CHECK (later.programChanged);
+    CHECK (d.gate.activeProgram() == PadProgram::bounce);
+    d.input.program = PadProgram::glitch;
+    const auto following = d.gate.process (d.input, 3 * h, beatsPerBar, beatsPerSample);
+    checkStep (following, 1.f - 2.f / 240.f, false);
+    CHECK_FALSE (following.programChanged);
+    CHECK (d.gate.pendingProgram() == PadProgram::glitch);
+}
+
+TEST_CASE ("A beat line a quarter sample before a sample is caught on that sample, and only once", "[padgate][padgate-boundary]")
+{
+    Driver d;
+    const double b = beatsPerSample;
+    d.input.touch = true;
+    checkStep (d.gate.process (d.input, 1 - 1.75 * b, beatsPerBar, b), 1.f, false);
+    d.input.touch = false;
+    d.input.program = PadProgram::bounce;
+    const auto earlier = d.gate.process (d.input, 1 - .75 * b, beatsPerBar, b);
+    checkStep (earlier, 1.f, false);
+    CHECK_FALSE (earlier.programChanged);
+    const auto boundary = d.gate.process (d.input, 1 + .25 * b, beatsPerBar, b);
+    checkStep (boundary, 1.f - 1.f / 240.f, false);
+    CHECK (boundary.programChanged);
+    CHECK (d.gate.activeProgram() == PadProgram::bounce);
+    d.input.program = PadProgram::glitch;
+    const auto following = d.gate.process (d.input, 1 + 1.25 * b, beatsPerBar, b);
+    checkStep (following, 1.f - 2.f / 240.f, false);
+    CHECK_FALSE (following.programChanged);
+    CHECK (d.gate.pendingProgram() == PadProgram::glitch);
+}
+
+TEST_CASE ("A bar line reached through the normalised wrap is caught", "[padgate][padgate-boundary]")
+{
+    Driver d;
+    const double b = beatsPerSample;
+    d.input.quantize = PadQuantize::bar;
+    d.input.touch = true;
+    checkStep (d.gate.process (d.input, 4 - 2.25 * b, beatsPerBar, b), 1.f, false);
+    d.input.touch = false;
+    d.input.program = PadProgram::bounce;
+    const auto earlier = d.gate.process (d.input, 4 - 1.25 * b, beatsPerBar, b);
+    checkStep (earlier, 1.f, false);
+    CHECK_FALSE (earlier.programChanged);
+    const auto boundary = d.gate.process (d.input, -.25 * b, beatsPerBar, b);
+    checkStep (boundary, 1.f - 1.f / 240.f, false);
+    CHECK (boundary.programChanged);
+    CHECK (d.gate.activeProgram() == PadProgram::bounce);
+    d.input.program = PadProgram::glitch;
+    const auto following = d.gate.process (d.input, .75 * b, beatsPerBar, b);
+    checkStep (following, 1.f - 2.f / 240.f, false);
+    CHECK_FALSE (following.programChanged);
+    CHECK (d.gate.pendingProgram() == PadProgram::glitch);
 }
 
 TEST_CASE ("Pressing again during the fade restores full gain without going idle", "[padgate]")

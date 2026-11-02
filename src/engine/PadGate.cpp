@@ -31,9 +31,10 @@ PadGate::Step PadGate::process (const Input& input, double beatsIntoBar,
     const bool available = isAvailable (input.program);
     latch = input.hold && (input.touch || latch);
     const bool want = available && (input.alwaysEngaged || input.touch || latch);
+    const double h = .5 * beatsPerSample;
     const bool boundary = input.quantize == PadQuantize::beat
-        ? std::abs (beatsIntoBar - std::round (beatsIntoBar)) < .5 * beatsPerSample
-        : beatsIntoBar < .5 * beatsPerSample;
+        ? std::ceil (beatsIntoBar - h) < beatsIntoBar + h
+        : beatsIntoBar < h;
 
     // Only the current selection may be pending; reselection cancels an older request.
     pending.reset();
