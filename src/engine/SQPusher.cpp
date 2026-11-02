@@ -100,8 +100,9 @@ void SQPusher::chooseBlock (Random& random,
 
     if (startsLastBar)
     {
-        fill = params.straight ? straightFills[static_cast<std::size_t> (random.integer (0, 5))]
-                               : random.integer (0, static_cast<int> (fillTable.size()) - 1);
+        fill = params.straight
+             ? straightFills[static_cast<std::size_t> (random.integer (0, static_cast<int> (straightFills.size()) - 1))]
+             : random.integer (0, static_cast<int> (fillTable.size()) - 1);
         fillBlock = 0;
     }
 
