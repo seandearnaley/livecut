@@ -35,10 +35,16 @@ public:
     static juce::String describe (const Snapshot& snapshot);
     juce::String statusText() const { return describe (current); }
 
+    // A line shown in place of the status text, such as the pad's program and
+    // bar. Empty shows the status text.
+    void setHeadline (const juce::String& text);
+    const juce::String& headlineText() const { return headline; }
+
     void paint (juce::Graphics& g) override;
 
 private:
     Snapshot current;
+    juce::String headline;
 };
 
 } // namespace livecut::ui

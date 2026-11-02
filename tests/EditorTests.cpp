@@ -3,6 +3,7 @@
 #include "Parameters.h"
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
+#include "ProcessorTestSupport.h"
 #include "ui/Controls.h"
 #include "ui/RangeSlider.h"
 
@@ -185,6 +186,7 @@ TEST_CASE ("Only the active procedure's controls are shown", "[editor]")
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     LivecutAudioProcessorEditor editor (processor);
     auto& state = processor.getParameterState();
 
@@ -261,6 +263,7 @@ TEST_CASE ("Render the editor for design review", "[.screenshot]")
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
 
     struct PlayHead final : juce::AudioPlayHead
     {
@@ -374,6 +377,7 @@ TEST_CASE ("The editor exposes capture save and capture status", "[editor][captu
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     LivecutAudioProcessorEditor editor (processor);
     for (const auto* id : { "capture", "saveCapture", "captureStatus" })
     {
@@ -433,6 +437,7 @@ TEST_CASE ("Recut has accessible mode and transform controls within the existing
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     LivecutAudioProcessorEditor editor (processor);
     editor.addToDesktop (0); // JUCE creates accessibility handlers only when a native peer exists.
     CHECK (editor.getWidth() == 880);
@@ -689,6 +694,7 @@ TEST_CASE ("Impact page exposes three modules without displacing shared performa
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     LivecutAudioProcessorEditor editor (processor);
     auto* impact = dynamic_cast<juce::TextButton*> (findById (editor, "impactTab"));
     REQUIRE (impact != nullptr);
@@ -785,6 +791,7 @@ TEST_CASE ("Render the Impact editor for design review", "[.screenshot][impact]"
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     LivecutAudioProcessorEditor editor (processor);
     auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "impactTab"));
     REQUIRE (tab != nullptr);
@@ -804,6 +811,7 @@ TEST_CASE ("Fracture page exposes reader families and frequency controls at the 
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     LivecutAudioProcessorEditor editor (processor);
     auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "fractureTab"));
     REQUIRE (tab != nullptr);
@@ -838,6 +846,7 @@ TEST_CASE ("Fracture families disable incompatible controls and preserve common 
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     LivecutAudioProcessorEditor editor (processor);
     editor.addToDesktop (0);
     auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "fractureTab"));
@@ -978,6 +987,7 @@ TEST_CASE ("Render the Fracture editor for design review", "[.screenshot][fractu
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     LivecutAudioProcessorEditor editor (processor);
     auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "fractureTab"));
     REQUIRE (tab != nullptr);
@@ -1018,6 +1028,7 @@ TEST_CASE ("Resonance controls bind parameters and fit the editor", "[editor][re
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     LivecutAudioProcessorEditor editor (processor);
     auto* tab = dynamic_cast<juce::TextButton*> (findById (editor, "resonanceTab"));
     REQUIRE (tab != nullptr);
@@ -1060,6 +1071,7 @@ TEST_CASE ("Render the Resonance editor for design review", "[.screenshot][reson
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
+    useClassicSurface (processor);
     struct Head final : juce::AudioPlayHead
     {
         juce::Optional<PositionInfo> getPosition() const override { return info; }

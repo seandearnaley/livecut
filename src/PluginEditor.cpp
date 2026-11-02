@@ -4,6 +4,7 @@
 
 #include "Parameters.h"
 #include "ui/Controls.h"
+#include "ui/PadPage.h"
 #include "ui/PhraseRuler.h"
 #include "ui/RangeSlider.h"
 
@@ -514,7 +515,12 @@ public:
           fractureControls (state),
           resonanceControls (processor),
           captures (captureService),
-          hostProcessor (processor)
+          hostProcessor (processor),
+          padPage (state),
+          surfaceAttachment (parameter (state, ids::surface), [this] (float value)
+          {
+              showSurface (value > 0.5f ? livecut::Surface::classic : livecut::Surface::pad);
+          })
     {
         for (auto* component : std::initializer_list<juce::Component*> {
                  &procedureSwitch, &ruler, &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty,
@@ -531,6 +537,14 @@ public:
         addChildComponent (impactControls);
         addChildComponent (fractureControls);
         addChildComponent (resonanceControls);
+        addChildComponent (padPage);
+        addAndMakeVisible (surfaceButton);
+        surfaceButton.setComponentID ("surface");
+        surfaceButton.setTitle ("Surface");
+        surfaceButton.onClick = [this]
+        {
+            surfaceAttachment.setValueAsCompleteGesture (surface == livecut::Surface::pad ? 1.0f : 0.0f);
+        };
         resonanceTab.setComponentID ("resonanceTab");
         resonanceTab.setTitle ("Resonance and spectral controls");
         resonanceTab.setTooltip ("Show tuned resonator, effect order and Spectral Freeze / Smear");
@@ -638,16 +652,36 @@ public:
         dim (comb.isOn(), { &combType, &combFeedback, &delay });
         showProcedure (static_cast<int> (std::lround (state.getRawParameterValue (ids::procedure)->load())));
         showPage (Page::pattern);
+        surfaceAttachment.sendInitialUpdate();
         setSize (baseWidth, baseHeight);
+    }
+
+    // The Pad surface shows the ruler and the pad page; Classic shows the tabs
+    // and their pages. The Classic controls stay instantiated either way.
+    void showSurface (livecut::Surface next)
+    {
+        surface = next;
+        const auto classic = next == livecut::Surface::classic;
+        for (auto* component : std::initializer_list<juce::Component*> {
+                 &procedureSwitch, &patternTab, &recutTab, &impactTab, &fractureTab, &resonanceTab,
+                 &wet, &trim, &captureButton, &saveButton, &captureStatus, &swing, &accent, &hold, &holdStatus })
+            component->setVisible (classic);
+        padPage.setVisible (! classic);
+        surfaceButton.setButtonText (classic ? "Pad" : "Classic");
+        surfaceButton.setTooltip (classic ? "Play the pad" : "Show the Classic pages");
+        placeSurfaceButton();
+        showPage (selectedPage);
+        refreshRuler (hostProcessor.getDisplayState());
     }
 
     void showProcedure (int index)
     {
+        const auto pattern = surface == livecut::Surface::classic && selectedPage == Page::pattern;
         activeProcedure = juce::jlimit (0, static_cast<int> (procedures.size()) - 1, index);
-        cutProc11Controls.setVisible (selectedPage == Page::pattern && activeProcedure == 0);
-        warpCutControls.setVisible (selectedPage == Page::pattern && activeProcedure == 1);
-        sqPusherControls.setVisible (selectedPage == Page::pattern && activeProcedure == 2);
-        bounceControls.setVisible (selectedPage == Page::pattern && activeProcedure == 3);
+        cutProc11Controls.setVisible (pattern && activeProcedure == 0);
+        warpCutControls.setVisible (pattern && activeProcedure == 1);
+        sqPusherControls.setVisible (pattern && activeProcedure == 2);
+        bounceControls.setVisible (pattern && activeProcedure == 3);
         const auto family = fractureControls.requestedFamily();
         const auto classic = family == livecut::engine::FractureProcedure::classic;
         const auto tape = family == livecut::engine::FractureProcedure::tapeCut;
@@ -671,19 +705,20 @@ public:
     void showPage (Page page)
     {
         selectedPage = page;
+        const auto classic = surface == livecut::Surface::classic;
         for (auto* component : std::initializer_list<juce::Component*> {
                  &subdivision, &phraseBars, &seed, &fade, &duty, &fillDuty, &amp, &pan, &pitch })
-            component->setVisible (page == Page::pattern);
+            component->setVisible (classic && page == Page::pattern);
         for (auto* component : std::initializer_list<juce::Component*> {
                  &processingMode, &attackAlign, &attackThreshold, &reverseChance,
                  &applyMode, &modeSummary, &modeStatus, &modeHelp, &transformStatus })
-            component->setVisible (page == Page::recut);
+            component->setVisible (classic && page == Page::recut);
         for (auto* component : std::initializer_list<juce::Component*> {
                  &crusher, &bits, &rate, &comb, &combType, &combFeedback, &delay })
-            component->setVisible (page == Page::pattern || page == Page::recut);
-        impactControls.setVisible (page == Page::impact);
-        fractureControls.setVisible (page == Page::fracture);
-        resonanceControls.setVisible (page == Page::resonance);
+            component->setVisible (classic && (page == Page::pattern || page == Page::recut));
+        impactControls.setVisible (classic && page == Page::impact);
+        fractureControls.setVisible (classic && page == Page::fracture);
+        resonanceControls.setVisible (classic && page == Page::resonance);
         patternTab.setToggleState (page == Page::pattern, juce::dontSendNotification);
         recutTab.setToggleState (page == Page::recut, juce::dontSendNotification);
         impactTab.setToggleState (page == Page::impact, juce::dontSendNotification);
@@ -735,7 +770,9 @@ public:
         g.setFont (ui::uiFont (12.0f));
         g.drawText (JucePlugin_VersionString, juce::Rectangle<int> (margin, 36, 100, 18), juce::Justification::centredLeft);
 
-        if (selectedPage == Page::pattern || selectedPage == Page::recut)
+        const auto classicSurface = surface == livecut::Surface::classic;
+
+        if (classicSurface && (selectedPage == Page::pattern || selectedPage == Page::recut))
         for (const auto& section : { crusherSection, combSection })
         {
             g.setColour (ui::palette::well);
@@ -749,7 +786,7 @@ public:
             g.drawText (text, section.reduced (sectionPadding).removeFromTop (22), juce::Justification::centredLeft);
         };
 
-        if (selectedPage == Page::recut)
+        if (classicSurface && selectedPage == Page::recut)
         {
             for (const auto& section : { modeSection, transformSection })
             {
@@ -759,7 +796,7 @@ public:
             title ("Processing mode", modeSection);
             title ("Attack & reverse", transformSection);
         }
-        else if (selectedPage == Page::pattern)
+        else if (classicSurface && selectedPage == Page::pattern)
         {
             for (const auto& section : { phraseSection, cutsSection, procedureSection })
             {
@@ -786,15 +823,17 @@ public:
 
     void resized() override
     {
-        procedureSwitch.setBounds (510, 20, 350, 30);
-        patternTab.setBounds (122, 20, 67, 30);
-        recutTab.setBounds (193, 20, 55, 30);
-        impactTab.setBounds (252, 20, 62, 30);
-        fractureTab.setBounds (318, 20, 82, 30);
-        resonanceTab.setBounds (404, 20, 100, 30);
+        patternTab.setBounds (122, 20, 63, 30);
+        recutTab.setBounds (189, 20, 51, 30);
+        impactTab.setBounds (244, 20, 56, 30);
+        fractureTab.setBounds (304, 20, 70, 30);
+        resonanceTab.setBounds (378, 20, 82, 30);
+        procedureSwitch.setBounds (466, 20, 350, 30);
+        placeSurfaceButton();
         resonanceControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         fractureControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
         impactControls.setBounds (margin, 166, baseWidth - 2 * margin, 384);
+        padPage.setBounds (margin, 166, baseWidth - 2 * margin, baseHeight - 26 - 166);
         ruler.setBounds (margin, 62, baseWidth - 2 * margin, 88);
 
         const auto middleTop = 166;
@@ -873,6 +912,24 @@ public:
 
     void refreshFracture() { fractureControls.refresh (hostProcessor.getDisplayState()); resonanceControls.refresh(); }
 
+    // The pad page and the ruler's headline follow the display; Classic shows the plain status line.
+    void refreshRuler (const livecut::DisplayState& display)
+    {
+        const auto snapshot = ui::PhraseRuler::Snapshot::of (display);
+
+        if (surface == livecut::Surface::pad)
+        {
+            padPage.refresh (display);
+            ruler.setHeadline (padPage.headline (display, ui::PhraseRuler::describe (snapshot)));
+        }
+        else
+        {
+            ruler.setHeadline ({});
+        }
+
+        ruler.show (snapshot);
+    }
+
     void refreshCapture()
     {
         captureButton.setEnabled (! captures.isBusy() && captures.rolling().hasLatest());
@@ -888,6 +945,13 @@ public:
     ui::PhraseRuler ruler;
 
 private:
+    // A small switch at the top right: "Classic" on the pad, "Pad" on the Classic pages.
+    void placeSurfaceButton()
+    {
+        surfaceButton.setBounds (surface == livecut::Surface::classic ? juce::Rectangle<int> (824, 20, 36, 30)
+                                                                      : juce::Rectangle<int> (796, 20, 64, 30));
+    }
+
     void chooseSaveFile()
     {
         chooser = std::make_unique<juce::FileChooser> ("Save captured phrase", juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Livecut phrase.wav"), "*.wav");
@@ -954,6 +1018,10 @@ private:
     juce::Rectangle<int> modeSection, transformSection;
     int activeProcedure = 0;
     Page selectedPage = Page::pattern;
+    ui::PadPage padPage;
+    juce::TextButton surfaceButton;
+    juce::ParameterAttachment surfaceAttachment;
+    livecut::Surface surface = livecut::Surface::pad;
 };
 
 LivecutAudioProcessorEditor::LivecutAudioProcessorEditor (LivecutAudioProcessor& p)
@@ -996,7 +1064,7 @@ void LivecutAudioProcessorEditor::refreshDisplay()
     panel->refreshRecut();
     panel->refreshFracture();
     panel->showHoldStatus (livecutProcessor.holdStatusText());
-    panel->ruler.show (livecut::ui::PhraseRuler::Snapshot::of (livecutProcessor.getDisplayState()));
+    panel->refreshRuler (livecutProcessor.getDisplayState());
 }
 
 juce::String LivecutAudioProcessorEditor::statusText() const

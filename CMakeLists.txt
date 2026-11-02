@@ -110,10 +110,14 @@ target_sources(LivecutCode
         src/ui/Controls.h
         src/ui/LivecutLookAndFeel.cpp
         src/ui/LivecutLookAndFeel.h
+        src/ui/PadPage.cpp
+        src/ui/PadPage.h
         src/ui/PhraseRuler.cpp
         src/ui/PhraseRuler.h
         src/ui/RangeSlider.cpp
-        src/ui/RangeSlider.h)
+        src/ui/RangeSlider.h
+        src/ui/XYPad.cpp
+        src/ui/XYPad.h)
 target_include_directories(LivecutCode INTERFACE src)
 target_link_libraries(LivecutCode INTERFACE LivecutEngine LivecutSpectral juce::juce_audio_utils)
 
@@ -147,6 +151,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/EditorTests.cpp
         tests/HostSyncTests.cpp
         tests/ParametersTests.cpp
+        tests/PadEditorTests.cpp
         tests/PadProcessorTests.cpp
         tests/PluginProcessorTests.cpp
         tests/FractureStateTests.cpp
