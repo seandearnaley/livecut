@@ -53,6 +53,7 @@ void Cutter::prepare (double newSampleRate, std::int64_t latencyFrames)
     combFilter.prepare (sampleRate);
     fractureReader.prepare (sampleRate);
     tapeTailFrames = std::max (1, static_cast<int> (std::lround (.005 * sampleRate)));
+    rushJoinFrames = std::max (1, static_cast<int> (std::lround (.002 * sampleRate)));
     if (! routeRack.prepare (sampleRate))
         throw std::runtime_error ("Cannot prepare effect rack");
     setFadeMilliseconds (fadeMilliseconds);
@@ -155,6 +156,7 @@ void Cutter::setFadeMilliseconds (double milliseconds)
 void Cutter::reset()
 {
     resetRendering();
+    rushJoin.reset();
     tapeSilentFrame = -1;
     livePlayer.resetSource();
     transforms = {};
@@ -162,6 +164,15 @@ void Cutter::reset()
 
 void Cutter::resetRendering()
 {
+    // A jump in the host's position (a seek, a loop's wrap) lets the roll's sound
+    // run on under what follows, as at its own joins. It counts only if rendering
+    // carries on from the next frame.
+    if (const auto sound = rushSound (renderCursor))
+    {
+        rushJoin = sound;
+        rushJoinAge = 0;
+        rushJoinFrame = renderCursor;
+    }
     cutting = false;
     restartPending = false;
     phraseCompletionNotified = false;
@@ -183,6 +194,39 @@ void Cutter::resetRendering()
     rushTail.reset();
     impactCut.reset();
     renderContextActive = false;
+}
+
+// What Rush plays from `frame` on, as a tail: the cut it was playing, run on past
+// its end if it has just ended, or the input once its block has run out.
+std::optional<LivePlayer::Tail> Cutter::rushSound (std::int64_t frame) const
+{
+    if (! hasActivePlan || ! activePlan.rush)
+        return std::nullopt;
+    const auto& cuts = livePlayer.cuts();
+    const auto index = livePlayer.currentCut();
+    if (cuts.size() >= 2 && rushCut < cuts.size() && index != rushCut)
+        return livePlayer.tail (rushCut, cuts[rushCut].size);
+    if (index < cuts.size())
+        return livePlayer.tail();
+    LivePlayer::Tail input;
+    input.source = livePlayer.sourceAtFrame (frame);
+    return input;
+}
+
+void Cutter::mixTail (std::optional<LivePlayer::Tail>& tail, int& age, int frames, float& left, float& right)
+{
+    if (! tail)
+        return;
+    // A linear crossfade that starts wholly on the tail, which continues the sample before.
+    float tailLeft = 0.0f, tailRight = 0.0f;
+    if (tail->next (livePlayer, tailLeft, tailRight))
+    {
+        const auto weight = static_cast<float> (frames - age) / static_cast<float> (frames);
+        left = weight * tailLeft + (1.0f - weight) * left;
+        right = weight * tailRight + (1.0f - weight) * right;
+    }
+    if (++age >= frames)
+        tail.reset();
 }
 
 void Cutter::drop (int sampleOffset, Observer* observer)
@@ -356,18 +400,10 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                     tapeTail = tapeRunOn ? tapeRunOn : fractureReader.tail();
                     tapeTailAge = 0;
                 }
-                // So does a Rush cut: a roll's repeat fades out rather than splicing.
-                // Where its block has just run out, on a beat or a bar line, what
-                // Rush plays next is the input itself, so that fades out instead.
+                // So does Rush's sound: a roll's repeat fades out rather than splicing.
                 if (hasActivePlan && activePlan.rush)
                 {
-                    rushTail = livePlayer.tail();
-                    if (! rushTail)
-                    {
-                        LivePlayer::Tail input;
-                        input.source = planningSource;
-                        rushTail = input;
-                    }
+                    rushTail = rushSound (frame);
                     rushTailAge = 0;
                 }
                 drop (sampleOffset, observer);
@@ -506,19 +542,14 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             tapeTail.reset();
     }
 
-    if (rushTail)
-    {
-        // The same crossfade as Tape's, from the cut that was playing.
-        float tailLeft = 0.0f, tailRight = 0.0f;
-        if (rushTail->next (livePlayer, tailLeft, tailRight))
-        {
-            const auto weight = static_cast<float> (tapeTailFrames - rushTailAge) / static_cast<float> (tapeTailFrames);
-            left = weight * tailLeft + (1.0f - weight) * left;
-            right = weight * tailRight + (1.0f - weight) * right;
-        }
-        if (++rushTailAge >= tapeTailFrames)
-            rushTail.reset();
-    }
+    // The same crossfade as Tape's, from Rush's sound before the restart.
+    mixTail (rushTail, rushTailAge, tapeTailFrames, left, right);
+
+    // A roll's join: its last cut runs on under what follows for 2 ms.
+    if (rushJoin && frame != rushJoinFrame)
+        rushJoin.reset(); // rendering paused since it began
+    mixTail (rushJoin, rushJoinAge, rushJoinFrames, left, right);
+    rushJoinFrame = frame + 1;
 
     if (processingError != Error::none)
         left = right = 0.0f;
@@ -888,6 +919,14 @@ void Cutter::renderSource (std::int64_t frame,float& left,float& right,bool adva
         // isn't a whole number of samples. Between them, a Rush block plays the
         // input: its track itself, or the next bar's track a frame early, at the
         // splice its roll ends on. Other blocks keep their silent frame.
+        if (activePlan.rush && livePlayer.cuts().size() >= 2 && livePlayer.currentCut() != rushCut)
+        {
+            // A join inside a roll, or its run-on: the cut before runs on from its end.
+            rushJoin = livePlayer.tail (rushCut, livePlayer.cuts()[rushCut].size);
+            rushJoinAge = 0;
+            rushJoinFrame = frame;
+            rushCut = livePlayer.currentCut();
+        }
         if (activePlan.rush && livePlayer.currentCut() >= livePlayer.cuts().size())
         {
             if (const auto input = livePlayer.rawFrame (frame))
@@ -955,6 +994,14 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
             return;
         // A Tape stop or spin-up the new block cuts short, as tempo automation
         // can, fades out under it over 5 ms instead of splicing.
+        // The bar line after a roll: its last cut runs on under the downbeat, unless
+        // its run-on began that already.
+        if (hasActivePlan && activePlan.rush && livePlayer.cuts().size() >= 2 && rushCut < livePlayer.cuts().size())
+        {
+            rushJoin = rushSound (renderCursor - 1);
+            rushJoinAge = 0;
+            rushJoinFrame = renderCursor - 1;
+        }
         if (hasActivePlan && ! tapeRunOn && activePlan.fracture.procedure == FractureProcedure::tapeCut
             && livePlayer.currentCut() < livePlayer.cuts().size() && fractureCut && *fractureCut == livePlayer.currentCut()
             && fractureReader.motionUnfinished())
@@ -968,6 +1015,7 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         // between two frames, a block can activate a frame after it was planned.
         if (activePlan.rush)
             activePlan.source = planningSource;
+        rushCut = 0;
         queueHead = (queueHead + 1) % plans.size();
         --queued;
         hasActivePlan = true;

@@ -333,13 +333,20 @@ void LivePlayer::retimeMusicalCut (int samplesToEnd, int samplesToGate, std::int
 
 std::optional<LivePlayer::Tail> LivePlayer::tail() const
 {
-    if (current >= playing.size() || transform || position >= playing[current].playable)
+    if (transform)
         return std::nullopt;
-    const auto& cut = playing[current];
+    return tail (current, position);
+}
+
+std::optional<LivePlayer::Tail> LivePlayer::tail (std::size_t index, int from) const
+{
+    if (index >= playing.size() || playing[index].playable < std::min (from + 1, playing[index].size))
+        return std::nullopt;
+    const auto& cut = playing[index];
     Tail tail;
     tail.source = source;
     tail.rate = cut.pitched ? cut.rate : 1.0;
-    tail.position = static_cast<double> (position) * tail.rate;
+    tail.position = static_cast<double> (from) * tail.rate;
     tail.ll = cut.leftToLeft;
     tail.lr = cut.leftToRight;
     tail.rl = cut.rightToLeft;

@@ -112,6 +112,10 @@ public:
     };
     // Empty once the block has run out, its cut has gone silent, or under a transform.
     std::optional<Tail> tail() const;
+    // Cut `index` of this block from its frame `position` on, which may be its end:
+    // a cut that played to its end runs on as it would have. Empty if it fell
+    // silent before `position`.
+    std::optional<Tail> tail (std::size_t index, int position) const;
 
     // Index of the cut playing next; cuts().size() once the block has run out.
     std::size_t currentCut() const { return current; }

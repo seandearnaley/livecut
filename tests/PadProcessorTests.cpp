@@ -1001,7 +1001,7 @@ TEST_CASE ("Every built program is bit-identical", "[pad][processor][pinned]")
     // each program touched at (0.3, 0.75) for
     // two and a half bars, then let go for a bar. Tape (5) was measured on pad/tape
     // before Rush (b34dd71) and Rush (7) as it was built; their MSVC values are
-    // Windows CI's at 8c10c43.
+    // Windows CI's at 8c10c43. Rush (7) was re-measured when its joins began to crossfade.
     const auto [program, expected] = GENERATE (table<int, std::uint64_t> ({
         { 0, livecut::engine::testing::pinnedHash (UINT64_C (0x01b9799feb2580b3), UINT64_C (0x01b9799feb2580b3)) },
         { 1, livecut::engine::testing::pinnedHash (UINT64_C (0x5beb3bdc95277b1e), UINT64_C (0xa875dee669894403)) },
@@ -1009,7 +1009,7 @@ TEST_CASE ("Every built program is bit-identical", "[pad][processor][pinned]")
         { 3, livecut::engine::testing::pinnedHash (UINT64_C (0xab0587de0062f957), UINT64_C (0xaba874b9e1d950e3)) },
         { 4, livecut::engine::testing::pinnedHash (UINT64_C (0x4e1b59cfbdff4bdb), UINT64_C (0x4a5a3b006d248f5d)) },
         { 5, livecut::engine::testing::pinnedHash (UINT64_C (0xf72072bf9a21e014), UINT64_C (0x1471bfe233c4a6bb)) },
-        { 7, livecut::engine::testing::pinnedHash (UINT64_C (0xaaa97ad19f9e7687), UINT64_C (0x025f889496069180)) },
+        { 7, livecut::engine::testing::pinnedHash (UINT64_C (0xea1c089e0d518617), UINT64_C (0xea1c089e0d518617)) }, // MSVC: from CI
     }));
     CAPTURE (program);
     PadSession session;
@@ -1354,7 +1354,8 @@ TEST_CASE ("Engaging Rush is seamless: the input until its first roll", "[pad][p
     CHECK (cutter.activeProcedure () == livecut::engine::Procedure::rush);
     CHECK (session.dryBetween (0, repeats));
     CHECK_FALSE (session.dryBetween (repeats, barFrames));                       // it rolls
-    CHECK (session.dryBetween (barFrames, barFrames + repeats));                 // and lands on the bar line
+    CHECK_FALSE (session.dryBetween (barFrames, barFrames + 96));                // lands on the bar line, its last repeat
+    CHECK (session.dryBetween (barFrames + 96, barFrames + repeats));            // fading under the track over 2 ms
     CHECK_FALSE (session.dryBetween (barFrames + repeats, barFrames + repeats + 2400));
     CHECK (cutter.error () == livecut::engine::Cutter::Error::none);
 }
@@ -1517,7 +1518,8 @@ TEST_CASE ("An arrangement loop opens Rush on the track, after a roll that lands
     session.frame = 0; // the host loops back to bar 1
     session.render (barFrames);
     REQUIRE (session.processor.getCutter ().isCutting ());
-    CHECK (session.dryBetween (wrapped, wrapped + repeats)); // the track from the loop's first sample
+    CHECK_FALSE (session.dryBetween (wrapped, wrapped + 96)); // the roll's last repeat fades out over 2 ms
+    CHECK (session.dryBetween (wrapped + 96, wrapped + repeats)); // under the track from the loop's first sample
     CHECK_FALSE (session.dryBetween (wrapped + repeats, wrapped + barFrames));
     CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
 }
@@ -1574,7 +1576,8 @@ TEST_CASE ("Rush's rolls are the same for every host buffer size, at 44.1, 48 an
         CHECK_FALSE (cutter.isCutting ());
         CHECK (session.dryBetween (0, 2 * beat)); // the track until the first roll
         CHECK_FALSE (session.dryBetween (2 * beat, 4 * beat));
-        CHECK (session.dryBetween (4 * beat, 6 * beat)); // landed: the track from the bar line
+        const auto join = static_cast<int> (std::lround (.002 * rate));
+        CHECK (session.dryBetween (4 * beat + join, 6 * beat)); // landed: the track from the bar line, after the 2 ms join
         CHECK (std::all_of (session.output.begin (), session.output.end (), [] (float sample) { return std::isfinite (sample); }));
         return session.output;
     };
@@ -1595,7 +1598,11 @@ TEST_CASE ("At 93, 124 and 140 bpm, engaged Rush is the track until its roll, an
     CAPTURE (rate, bpm);
     const auto beat = rate * 60.0 / bpm;
     // X 0.5, Y 0: an even one-beat roll on beat 4, its first 16th the hit itself.
-    const auto at = [beat] (double beats) { return static_cast<int> (beats * beat); };
+    // A boundary is the first frame within half a sample of its beat; the roll's
+    // block lays its 16ths out from there, and each bar line's join lasts 2 ms.
+    const auto at = [beat] (double beats) { return static_cast<int> (std::ceil (beats * beat - .5)); };
+    const auto sixteenth = static_cast<int> (std::lround (beat / 4.0));
+    const auto join = static_cast<int> (std::lround (.002 * rate));
     PadSession session (false, rate, bpm);
     set (session.processor, livecut::ids::padProgram, rushProgram);
     set (session.processor, livecut::ids::padY, 0);
@@ -1603,11 +1610,16 @@ TEST_CASE ("At 93, 124 and 140 bpm, engaged Rush is the track until its roll, an
     set (session.processor, livecut::ids::padTouch, 1);
     session.render (at (9.0) - session.frame);
     REQUIRE (session.processor.getCutter ().isCutting ());
-    CHECK (session.dryBetween (0, at (3.25) - 2));
-    CHECK_FALSE (session.dryBetween (at (3.25) + 2, at (4.0) - 2));
-    CHECK (session.dryBetween (at (4.0) + 2, at (7.25) - 2));
-    CHECK_FALSE (session.dryBetween (at (7.25) + 2, at (8.0) - 2));
-    CHECK (session.dryBetween (at (8.0) + 2, at (9.0)));
+    for (int bar = 0; bar < 2; ++bar)
+    {
+        CAPTURE (bar);
+        const auto from = bar == 0 ? 0 : at (4.0 * bar) + join, repeats = at (4.0 * bar + 3.0) + sixteenth;
+        CHECK (session.dryBetween (from, repeats));          // the track and the hit, exactly
+        CHECK (session.dryBetween (repeats, repeats + 1));        // the hit runs on into its first repeat's join,
+        CHECK_FALSE (session.dryBetween (repeats + 1, repeats + 2)); // which leaves the track on the next frame
+        CHECK_FALSE (session.dryBetween (at (4.0 * bar + 4.0), at (4.0 * bar + 4.0) + 1)); // the join
+    }
+    CHECK (session.dryBetween (at (8.0) + join, at (9.0)));
     CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
 }
 

@@ -181,6 +181,8 @@ private:
     void selectTransform (std::int64_t renderFrame);
     void applyStructuralChanges();
     void drop (int sampleOffset, Observer* observer);
+    std::optional<LivePlayer::Tail> rushSound (std::int64_t frame) const;
+    void mixTail (std::optional<LivePlayer::Tail>& tail, int& age, int frames, float& left, float& right);
 
     struct BlockPlan
     {
@@ -258,6 +260,12 @@ private:
     int tapeTailAge = 0, tapeTailFrames = 1;
     std::optional<LivePlayer::Tail> rushTail; // the pad's Rush: a cut cut off by a restart, fading out
     int rushTailAge = 0;
+    // The pad's Rush: a roll's last cut, running on under the next for 2 ms at each
+    // join, from frame rushJoinFrame. rushCut is the roll's last rendered cut.
+    std::optional<LivePlayer::Tail> rushJoin;
+    int rushJoinAge = 0, rushJoinFrames = 1;
+    std::int64_t rushJoinFrame = -1;
+    std::size_t rushCut = 0;
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;
     double fractureBpm = 0.0;
