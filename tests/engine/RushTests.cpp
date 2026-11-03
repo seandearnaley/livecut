@@ -43,7 +43,7 @@ struct Laid
 
 // The blocks Rush lays out for one bar, engaged `engage` units into it, as the
 // cutter asks for them, checking the procedure's contract on the way.
-std::vector<Laid> layOut (const CutParameters& params, double beatsPerBar, double engage = 0.0)
+std::vector<Laid> layOut (const CutParameters& params, double beatsPerBar, double engage = 0.0, double bpm = 0.0)
 {
     Rush rush;
     Random random (7), untouched (7);
@@ -52,6 +52,7 @@ std::vector<Laid> layOut (const CutParameters& params, double beatsPerBar, doubl
     context.unitsPerBar = unitsPerBar;
     context.beatsPerBar = beatsPerBar;
     context.unitsDone = engage;
+    context.beatsPerSecond = bpm / 60.0;
     REQUIRE (context.phraseUnits == unitsPerBar); // phrases are one bar
 
     std::vector<Laid> blocks;
@@ -213,6 +214,54 @@ TEST_CASE ("The shortest roll cut is never under 1/24 of a beat", "[rush][layout
     }
     CHECK (shortest >= 1.0 / 24.0);
     CHECK_THAT (shortest, WithinAbs ((3.0 / 8.0) / 9.0, 1.0e-12)); // 3/8 of a beat, 8:1 in two cuts
+}
+
+TEST_CASE ("No roll cut is shorter than 30 ms at any tempo, and rolls at 120 bpm keep their shape", "[rush][layout][floor]")
+{
+    // Under 30 ms (over 33 Hz) a roll's repeats fuse into a buzz. Straight's
+    // whole-bar rush ended in eight 64ths: 20.8 ms at 180 bpm.
+    double shortest = 1.0;
+    for (int bpm = 60; bpm <= 240; bpm += 6)
+        for (const auto meter : { 4.0, 3.0, 2.5 })
+            for (const auto straight : { false, true })
+                for (const auto beats : { 1.0, 2.0, 3.0, 4.0 })
+                    for (const auto curve : { -1.0, -.5, 0.0, .5, 1.0 })
+                    {
+                        CAPTURE (bpm, meter, straight, beats, curve);
+                        const auto params = roll (beats, curve, 500.0 * curve, straight);
+                        const auto blocks = layOut (params, meter, 0.0, bpm);
+                        for (const auto& block : blocks)
+                            if (! isTrack (block))
+                                for (const auto& cut : block.cuts)
+                                {
+                                    const auto seconds = beatsOf (cut, meter) * 60.0 / bpm;
+                                    shortest = std::min (shortest, seconds);
+                                    CHECK (seconds >= .030 - 1.0e-9);
+                                }
+                        // A rush still rushes and a drag drags, as far as the floor allows,
+                        // and Straight stays on the 64th grid.
+                        const auto& cuts = blocks.back().cuts;
+                        if (! isTrack (blocks.back()) && curve != 0.0)
+                            CHECK ((beatsOf (cuts.front(), meter) - beatsOf (cuts.back(), meter)) * curve > 0.0);
+                        if (straight)
+                            for (const auto& block : blocks)
+                                for (const auto& cut : block.cuts)
+                                    CHECK (isWhole (beatsOf (cut, meter) * 64.0));
+                        // At 120 bpm or slower every roll is the one with no floor.
+                        if (bpm <= 120)
+                        {
+                            const auto free = layOut (params, meter);
+                            REQUIRE (free.size() == blocks.size());
+                            for (std::size_t b = 0; b < blocks.size(); ++b)
+                            {
+                                REQUIRE (free[b].cuts.size() == blocks[b].cuts.size());
+                                for (std::size_t k = 0; k < blocks[b].cuts.size(); ++k)
+                                    CHECK (free[b].cuts[k].units == blocks[b].cuts[k].units);
+                            }
+                        }
+                    }
+    CAPTURE (shortest);
+    CHECK (shortest < .031); // the floor is reached
 }
 
 TEST_CASE ("Engaged late, the roll starts on the next whole beat before the bar line", "[rush][layout]")
@@ -1071,4 +1120,23 @@ TEST_CASE ("A roll's joins crossfade, so a held bass or a pad chord never clicks
     // threshold of 4 times.
     CAPTURE (inputStep, worst);
     CHECK (worst <= 3.f);
+}
+
+TEST_CASE ("Through the cutter, Straight's whole-bar rush at 180 bpm never cuts under 30 ms", "[rush][cutter][floor]")
+{
+    const auto rate = GENERATE (44100.0, 48000.0, 96000.0);
+    CAPTURE (rate);
+    RushCutter rush (roll (4.0, 1.0, 500.0, true), rate, 180.0);
+    int rolls = 0;
+    std::vector<float> left (512), right (512);
+    while (rush.beats() < 12.0)
+    {
+        rush.process (left.data(), right.data(), 512);
+        const auto& cuts = rush.cutter.player().cuts();
+        rolls += cuts.size() > 1 ? 1 : 0;
+        if (cuts.size() > 1)
+            for (const auto& cut : cuts)
+                CHECK (cut.size >= static_cast<int> (std::floor (.030 * rate)));
+    }
+    CHECK (rolls > 0);
 }

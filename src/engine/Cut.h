@@ -44,6 +44,7 @@ struct BlockContext
     double phraseUnits = 0.0; // length of this phrase in units
     int unitsPerBar = 8;      // the subdivision
     double beatsPerBar = 4.0; // quarter notes per bar, e.g. 3 for 3/4 and for 6/8
+    double beatsPerSecond = 0.0; // the tempo when the block is planned; 0 if unknown
 };
 
 // Every setting the cut procedures read. The original procedures keep their defaults.

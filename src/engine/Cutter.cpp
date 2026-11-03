@@ -679,6 +679,7 @@ void Cutter::planBlock (const Timing& timing)
     context.phraseUnits = static_cast<double> (phraseBars * unitsPerBar);
     context.unitsPerBar = unitsPerBar;
     context.beatsPerBar = timing.beatsPerBar;
+    context.beatsPerSecond = timing.bpm / 60.0;
 
     if (fractureProcedure == FractureProcedure::classic)
     {
