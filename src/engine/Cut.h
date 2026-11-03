@@ -28,11 +28,15 @@ struct Cut
     float cents = 0.0f; // pitch offset
     TapeMotion tape = TapeMotion::cycle; // read only by TapeCut
     // False plays the cut with no fade envelope, so a cut that continues the audio
-    // before it joins it sample for sample. Only the pad's Rush clears it.
+    // before it joins it sample for sample. Only the pad's Rush and Loops clear it.
     bool fade = true;
+    // The pad's Loops: 0 reads the block's own first frame, as every cut does. 1
+    // replays the phrase's loop whole, 2 its first half, 3 its first quarter and 4
+    // its first eighth. A block's cuts are all replays or none are.
+    std::uint8_t loopLevel = 0;
 };
 
-// The motion and the fade sit in what was padding, so a cut, and every block plan, stays the same size.
+// The motion, the fade and the loop level sit in what was padding, so a cut, and every block plan, stays the same size.
 static_assert (sizeof (Cut) == 4 * sizeof (double));
 
 // The largest block is a CutProc11 stutter: under a bar of units, at up to 8 cuts per unit.
@@ -45,6 +49,7 @@ struct BlockContext
     int unitsPerBar = 8;      // the subdivision
     double beatsPerBar = 4.0; // quarter notes per bar, e.g. 3 for 3/4 and for 6/8
     double beatsPerSecond = 0.0; // the tempo when the block is planned; 0 if unknown
+    bool loopCaptured = false; // the pad's Loops: this phrase's loop is recorded, so its passes replay it
 };
 
 // Every setting the cut procedures read. The original procedures keep their defaults.
@@ -87,6 +92,10 @@ struct CutParameters
     double rollBeats = 0.0; // the roll before each bar line, in beats, at most 4; 0 plays no roll
     double rollCurve = 0.0; // -1 drags hardest, 0 is even, +1 rushes hardest
     double rollCents = 0.0; // the pitch of a roll's last cut, relative to its first
+
+    // Loops
+    double loopBars = 0.0; // the outer loop as a fraction of the bar: 1, 1/2 or 1/4; 0 plays no loop
+    int loopDepth = 0;     // the levels nested inside it, 0 to 3
 };
 
 inline double totalUnits (std::span<const Cut> cuts)

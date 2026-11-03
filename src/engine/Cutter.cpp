@@ -633,6 +633,7 @@ CutProcedure& Cutter::procedureFor (Procedure p)
         case Procedure::sqPusher:  return sqPusher;
         case Procedure::bounce:    return bounce;
         case Procedure::rush:      return rush;
+        case Procedure::loops:     return loops;
     }
 
     assert (false);
