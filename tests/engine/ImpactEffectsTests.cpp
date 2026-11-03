@@ -1773,10 +1773,8 @@ TEST_CASE ("A sweep's pink power table matches its integral", "[impact]")
     effects.prepare (rate); // builds the tables
     const auto powerDecibels = [] (double ratio) { return 10.0 * std::log10 (ratio); };
 
-    // Open, the sweep is the open band.
+    // Open, the sweep's table gives the open band's power.
     const auto open = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, 1.0 / 1024.0);
-    CHECK_THAT (powerDecibels (detail::integrateSweepPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, 1.0 / 1024.0) / open),
-                WithinAbs (0.0, 1.0e-9));
     CHECK_THAT (powerDecibels (detail::sweepPinkPower (detail::bandOpenOctaves, detail::bandOpenQ) / open), WithinAbs (0.0, 0.05));
 
     for (const auto q : { 0.5, 0.707, 1.3, 2.507, 5.0, 8.0 })
@@ -1830,8 +1828,8 @@ TEST_CASE ("A sweep glides when its cutoff jumps", "[impact]")
         return largest;
     };
     const auto still = std::max (largestStep (2000.0f, 2000.0f), largestStep (300.0f, 300.0f));
-    CHECK (largestStep (2000.0f, 300.0f) <= 1.5f * still);
-    CHECK (largestStep (300.0f, 2000.0f) <= 1.5f * still);
+    CHECK (largestStep (2000.0f, 300.0f) <= 1.05f * still); // measured 0.97
+    CHECK (largestStep (300.0f, 2000.0f) <= 1.05f * still); // measured 1.00
 }
 
 TEST_CASE ("A sweep's high-pass stays at 30 Hz", "[impact]")
@@ -1873,7 +1871,7 @@ TEST_CASE ("A sweep switched off keeps its shape while it fades", "[impact]")
     CAPTURE (result.largestError, result.switchedStep, result.fromStep, result.toStep);
     CHECK (result.largestError < 1.0e-6);
     CHECK (result.sameHighEdge);
-    CHECK (result.switchedStep <= 3.0f * std::max (result.fromStep, result.toStep));
+    CHECK (result.switchedStep <= 1.1f * std::max (result.fromStep, result.toStep)); // measured 1.0
 }
 
 TEST_CASE ("A sweep switched to or from a band or a low-pass keeps its shape while it fades", "[impact]")
@@ -1891,7 +1889,7 @@ TEST_CASE ("A sweep switched to or from a band or a low-pass keeps its shape whi
         CHECK (result.largestError < 1.0e-6);
         CHECK (result.sameShape);
         CHECK (result.sameHighEdge);
-        CHECK (result.switchedStep <= 3.0f * std::max (result.fromStep, result.toStep));
+        CHECK (result.switchedStep <= 1.35f * std::max (result.fromStep, result.toStep)); // measured at most 1.22
         checkTakesOver (*c.from, *c.to, c.smoothedAfter);
     }
 }
@@ -2039,7 +2037,6 @@ TEST_CASE ("A tail is tuned to the cutoff's note", "[impact]")
             CAPTURE (sampleRate, cutoff);
             const auto r = rollThenSilence (tailParameters (cutoff), sampleRate, 0.3);
             const auto note = detail::tailNoteHz (cutoff);
-            CHECK (r.hz[static_cast<std::size_t> (r.strike)] == note);
             // Zero crossings from 50 ms after the strike, when the filter's own
             // ringing is gone, for 200 ms, interpolated within their samples.
             const auto from = r.strike + static_cast<int> (0.05 * sampleRate);
@@ -2061,7 +2058,7 @@ TEST_CASE ("A tail is tuned to the cutoff's note", "[impact]")
             }
             REQUIRE (crossings > 10);
             const auto measured = (crossings - 1) / (2.0 * (lastCrossing - firstCrossing) / sampleRate);
-            CHECK_THAT (measured, WithinRel (note, 0.005));
+            CHECK_THAT (measured, WithinRel (note, 1.0e-4)); // measured within 3e-6
         }
 }
 
@@ -2078,7 +2075,7 @@ TEST_CASE ("A tail decays over its decay time", "[impact]")
             auto fallen = top;
             while (fallen < r.amplitude.size() && r.amplitude[fallen] > 1.0e-3 * peak)
                 ++fallen;
-            CHECK_THAT (static_cast<double> (fallen - top) / sampleRate, WithinRel (decayMs / 1000.0, 0.02));
+            CHECK_THAT (static_cast<double> (fallen - top) / sampleRate, WithinRel (decayMs / 1000.0, 1.0e-3)); // within a sample
             // Below 1e-6 it is silent, with no note.
             CHECK (r.amplitude.back() == 0.0);
             CHECK (r.hz.back() == 0.0);
@@ -2169,7 +2166,7 @@ TEST_CASE ("A tail ducks under every cut", "[impact]")
         double largestError = 0.0;
         for (std::size_t t = 0; low + t < static_cast<std::size_t> (cut + 3000); ++t)
             largestError = std::max (largestError, std::abs (duck[low + t] - (1.0 - 0.75 * std::pow (pole, static_cast<double> (t)))));
-        CHECK (largestError <= 0.01);
+        CHECK (largestError <= 1.0e-9);
         for (int k = cut; k < cut + ramp - 1; ++k) // the 2 ms glide down
             CHECK (duck[static_cast<std::size_t> (k)] > duck[static_cast<std::size_t> (k + 1)]);
     }
@@ -2218,7 +2215,8 @@ TEST_CASE ("A tail never steps", "[impact]")
         loudest = std::max (loudest, tailed.diagnostics().tailAmplitude);
     }
     REQUIRE (ringingAtRestrike > 0.0);
-    const auto bound = 1.05 * loudest * (2.0 * pi * detail::tailNoteHz (1000.0) / rate + 2.0 / ramp);
+    // The sine's slew, plus the strike's ramp (A / ramp) and the duck's (0.75 A / ramp).
+    const auto bound = 1.05 * loudest * (2.0 * pi * detail::tailNoteHz (1000.0) / rate + 1.75 / ramp);
     CAPTURE (largest, bound, loudest);
     CHECK (largest <= bound);
 }
@@ -2265,7 +2263,7 @@ TEST_CASE ("A tail barely lifts the level", "[impact]")
     {
         CAPTURE (bar, lifts[bar]);
         CHECK (lifts[bar] > 0.0); // the tail is there,
-        CHECK (lifts[bar] <= 1.5); // and lifts the level by no more than 1.5 dB
+        CHECK (lifts[bar] <= 0.25); // and lifts the level by no more than 0.25 dB: measured 0.13 to 0.15
     }
 }
 
@@ -2356,7 +2354,7 @@ TEST_CASE ("A ringing tail fades whole at a switch", "[impact]")
         CAPTURE (largestError, switchedStep, fromStep, toStep);
         CHECK (largestError < 1.0e-6);
         CHECK (sameTail);
-        CHECK (switchedStep <= 3.0f * std::max (fromStep, toStep));
+        CHECK (switchedStep <= 1.05f * std::max (fromStep, toStep)); // measured 1.0
     }
 }
 

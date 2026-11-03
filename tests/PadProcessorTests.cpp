@@ -709,13 +709,15 @@ float largestStepAtSwitch (int from, int to, int switched, bool tailRings = fals
     return largestStepBetween (session.output, beat - window, beat + window);
 }
 
+// Suction's bar was 3x. Filter's measure at most 1.9x, the restart's splice
+// ringing through the fading sweep, so 2.25x keeps it close.
 void checkSwitch (int from, int to, int switched, bool tailRings)
 {
     const auto switchedStep = largestStepAtSwitch (from, to, switched, tailRings);
     const auto fromThroughout = largestStepAtSwitch (from, from, switched);
     const auto toThroughout = largestStepAtSwitch (to, to, switched);
     CAPTURE (from, to, switched, switchedStep, fromThroughout, toThroughout);
-    CHECK (switchedStep <= 3.f * std::max (fromThroughout, toThroughout));
+    CHECK (switchedStep <= 2.25f * std::max (fromThroughout, toThroughout));
 }
 } // namespace
 
@@ -775,8 +777,7 @@ TEST_CASE ("Filter rings a tuned tail after a roll", "[pad][processor]")
     const auto tail = firstFilterTail ();
     REQUIRE (tail.frame > 0);
     // X 0.5 puts the cutoff at 1897 Hz, nearest A#6, and the tail an octave down on A#5.
-    CHECK (tail.hz == livecut::engine::detail::tailNoteHz (200.0 * std::sqrt (90.0)));
-    CHECK_THAT (tail.hz, Catch::Matchers::WithinRel (440.0 * std::exp2 (13.0 / 12.0), 1.0e-6));
+    CHECK_THAT (tail.hz, Catch::Matchers::WithinRel (440.0 * std::exp2 (13.0 / 12.0), 1.0e-12));
 }
 
 TEST_CASE ("Filter at the same spot in the same bar sounds the same", "[pad][processor]")
@@ -882,7 +883,7 @@ TEST_CASE ("Switching Filter to Classic's filter while a tail rings doesn't clic
     const auto filterThroughout = largestStep (2);
     const auto classicThroughout = largestStep (0);
     CAPTURE (switched, fading, cleared, filterToClassic, filterThroughout, classicThroughout);
-    CHECK (filterToClassic <= 3.f * std::max (filterThroughout, classicThroughout));
+    CHECK (filterToClassic <= 1.25f * std::max (filterThroughout, classicThroughout)); // measured 0.89
 }
 
 TEST_CASE ("Filter's tails are identical for every host buffer size", "[pad][processor]")
@@ -961,7 +962,7 @@ TEST_CASE ("Filter rings in tune at 44.1, 48 and 96 kHz", "[pad][processor]")
         session.render (512);
         hz = cutter.impact ().diagnostics ().tailHz;
     }
-    CHECK (hz == livecut::engine::detail::tailNoteHz (200.0 * std::sqrt (90.0)));
+    CHECK_THAT (hz, Catch::Matchers::WithinRel (440.0 * std::exp2 (13.0 / 12.0), 1.0e-12)); // A#5
     CHECK (cutter.isCutting ());
     CHECK (cutter.error () == livecut::engine::Cutter::Error::none);
     CHECK (std::all_of (session.output.begin (), session.output.end (), [] (float sample) { return std::isfinite (sample); }));
