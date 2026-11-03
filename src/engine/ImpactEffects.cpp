@@ -19,6 +19,10 @@ constexpr double log1000 = 6.907755278982137;
 constexpr double semitone = 1.0594630943592953; // 2^(1/12)
 constexpr double makeupCeiling = 2.0; // +6 dB
 constexpr double makeupHighestHz = 18000.0;
+// A sweep's makeup never lifts, and a tone on its resonant peak gains at most
+// +6 dB: lifting a dark sweep to pink noise's level raised bass-heavy
+// material 5 dB, and a bass note on a resonant cutoff 8 dB.
+constexpr double sweepMakeupCeiling = 1.0, sweepPeakCeiling = 2.0;
 constexpr double tailDuckFloor = 0.25; // -12 dB
 constexpr double tailSilence = 1.0e-6; // -120 dBFS
 
@@ -135,6 +139,12 @@ double logCosh (double x)
 }
 
 double cleanState (double x) { return std::abs (x) < 1.0e-30 ? 0.0 : x; }
+
+// The analogue two-pole low-pass's resonant peak, which it has above q 1/sqrt 2.
+double lowPassPeak (double q)
+{
+    return q > 1.0 / std::numbers::sqrt2 ? q / std::sqrt (1.0 - 1.0 / (4.0 * q * q)) : 1.0;
+}
 
 // The engine-only types: smoothed, level-held and held while they fade.
 bool smoothed (ImpactParameters::Filter::Type type)
@@ -532,10 +542,15 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
     // high edge there, where material has little power, and counting them
     // would dip the level at every cut. The table clamps a band that sits
     // wholly above 18 kHz to its narrowest width. A sweep has its own table,
-    // for its fixed Butterworth high-pass.
+    // for its fixed Butterworth high-pass, and its makeup only ever takes back
+    // what its resonance adds: never above 1, and never letting a tone on the
+    // resonant peak gain more than 6 dB. So a dark sweep is quieter than the
+    // open filter on broadband material, as any low-pass is.
     const auto& table = sweep ? sweepPowerTable() : pinkPowerTable();
     const auto width = std::log2 (std::min (high, makeupHighestHz) / low);
-    const auto hold = std::min (makeupCeiling, std::exp (0.5 * (table.logOpen - table.interpolate (width, bandQ))));
+    const auto pink = std::exp (0.5 * (table.logOpen - table.interpolate (width, bandQ)));
+    const auto hold = sweep ? std::min ({ sweepMakeupCeiling, pink, sweepPeakCeiling / lowPassPeak (bandQ) })
+                            : std::min (makeupCeiling, pink);
     state.levelHoldGain = hold;
     if (sweep)
     {

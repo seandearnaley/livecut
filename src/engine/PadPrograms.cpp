@@ -145,14 +145,17 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             mapping.cut.maxRepeats = 0;
             mapping.cut.minRepeats = 0;
 
-            // A low-pass from dark to open; up, it resonates, easing off in the treble, and rings its rolls out.
+            // A low-pass from dark to open; up, it resonates and rings its rolls out. The resonance
+            // eases off in the treble, so the top never gets shrill, and in the bass, to 15% at
+            // 200 Hz, so a bass note on the cutoff never booms.
             auto& filter = mapping.impact.filter;
             filter.enabled = true;
             filter.type = ImpactParameters::Filter::Type::sweep;
             filter.chance = 1.f;
             filter.mix = 1.f;
             filter.cutoffHz = static_cast<float> (200.0 * std::pow (90.0, static_cast<double> (x)));
-            filter.q = static_cast<float> (.707 + 2.3 * y * (1.0 - .5 * x));
+            const auto bass = std::min (1.0, .15 + .85 * static_cast<double> (x) / .4);
+            filter.q = static_cast<float> (.707 + 2.3 * y * (1.0 - .5 * x) * bass);
             filter.tailLevel = y;
             filter.tailDecayMs = static_cast<float> (200.0 + 1000.0 * y);
             break;

@@ -1670,9 +1670,75 @@ TEST_CASE ("A sweep's edges are where it says", "[impact]")
         }
 }
 
-TEST_CASE ("A sweep holds its level along Filter's path", "[impact]")
+// The analogue two-pole low-pass's resonant peak: q / sqrt (1 - 1 / 4q^2) above
+// q 1/sqrt 2, where it has one, else 1.
+double lowPassPeak (double q)
 {
+    return q > 1.0 / std::numbers::sqrt2 ? q / std::sqrt (1.0 - 1.0 / (4.0 * q * q)) : 1.0;
+}
+
+TEST_CASE ("A sweep never lifts, and folds its resonant peak into its makeup", "[impact]")
+{
+    // The makeup is min (1, sqrt (P_open / P_s (w, q)), 2 / peak (q)): it only
+    // ever takes back what the resonance adds, and a tone on the peak gains at
+    // most 6 dB. Lifting a dark sweep to pink noise's level raised bass-heavy
+    // material 5 dB, and a bass note on a resonant cutoff 8 dB.
+    ImpactEffects effects;
+    effects.prepare (rate);
+    const auto open = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, detail::bandPowerStep);
+    for (const auto cutoff : { 200.0f, 1000.0f, 5000.0f, 18000.0f })
+        for (const auto q : { 0.5f, 0.707f, 1.0f, 1.5f, 2.5f, 3.0f, 5.0f, 8.0f })
+        {
+            CAPTURE (cutoff, q);
+            effects.reset();
+            effects.setParameters (sweepParameters (cutoff, q));
+            effects.startCut ({});
+            settle (effects, 200);
+            const auto hold = effects.diagnostics().levelHoldGain;
+            const auto width = std::log2 (std::min (static_cast<double> (cutoff), 18000.0) / 30.0);
+            const auto expected = std::min ({ 1.0, std::sqrt (open / detail::sweepPinkPower (width, q)), 2.0 / lowPassPeak (q) });
+            CHECK_THAT (hold, WithinRel (expected, 1.0e-12));
+            CHECK (hold * lowPassPeak (q) <= 2.0 * (1.0 + 1.0e-12));
+        }
+
+    // A full-scale tone on the cutoff gains at most 6 dB at any q; one in the
+    // passband of an unresonant sweep isn't lifted at all.
+    const auto peakOut = [] (float cutoff, float q, double frequency)
+    {
+        ImpactEffects e;
+        e.prepare (rate);
+        e.setParameters (sweepParameters (cutoff, q));
+        e.startCut ({});
+        double largest = 0.0;
+        for (int i = 0; i < 48000; ++i)
+        {
+            auto left = static_cast<float> (std::sin (2.0 * pi * frequency * i / rate)), right = left;
+            e.process (left, right);
+            if (i >= 24000)
+                largest = std::max (largest, static_cast<double> (std::abs (left)));
+        }
+        return largest;
+    };
+    for (const auto cutoff : { 200.0f, 2000.0f })
+    {
+        for (const auto q : { 1.5f, 3.0f, 5.0f, 8.0f })
+        {
+            CAPTURE (cutoff, q);
+            CHECK (decibels (peakOut (cutoff, q, cutoff)) <= 6.05);
+        }
+        CAPTURE (cutoff);
+        CHECK (decibels (peakOut (cutoff, 0.707f, 0.25 * cutoff)) <= 0.05);
+    }
+}
+
+TEST_CASE ("A sweep's level on pink noise is its makeup times what it passes", "[impact]")
+{
+    // Pink noise through Filter's own path, against the open band: the level
+    // is the makeup times the pink power the sweep keeps, so a dark sweep is
+    // quieter on broadband material, as any low-pass is, and the resonant top
+    // is held. It is never above the open filter's.
     const auto open = bandParameters (30.0f, 18000.0f);
+    const auto openSweep = sweepParameters (18000.0f);
     const auto reference = pinkLevel (open, open);
     const auto openPower = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, detail::bandPowerStep);
     for (const auto x : { 0.0, 0.5, 1.0 })
@@ -1681,14 +1747,22 @@ TEST_CASE ("A sweep holds its level along Filter's path", "[impact]")
         {
             const auto y = step / 10.0;
             const auto p = filterProgram (x, y);
+            const auto q = static_cast<double> (p.filter.q);
             const auto width = std::log2 (std::min (static_cast<double> (p.filter.cutoffHz), 18000.0) / 30.0);
-            const auto makeup = std::sqrt (openPower / detail::sweepPinkPower (width, p.filter.q));
+            const auto kept = detail::sweepPinkPower (width, q) / openPower;
+            const auto makeup = std::min ({ 1.0, std::sqrt (1.0 / kept), 2.0 / lowPassPeak (q) });
+            const auto predicted = 10.0 * std::log10 (makeup * makeup * kept);
             const auto steady = pinkLevel (p, p) - reference;
-            const auto sweeping = pinkLevel (open, p) - reference;
-            CAPTURE (x, y, makeup, steady, sweeping);
-            CHECK (makeup < 2.0); // Filter never reaches the +6 dB cap.
-            CHECK_THAT (steady, WithinAbs (0.0, 1.5));
-            CHECK_THAT (sweeping, WithinAbs (0.0, 1.5));
+            const auto sweeping = pinkLevel (openSweep, p) - reference; // 500 ms after a jump from open
+            CAPTURE (x, y, q, makeup, predicted, steady, sweeping);
+            // Measured within 0.08 dB below 18 kHz. At 18 kHz, near Nyquist, the
+            // bilinear SVF's resonance adds less than the analogue prototype's,
+            // up to 0.72 dB less at y 1, so the level dips that much instead.
+            const auto below = x < 1.0 ? 0.15 : 0.85;
+            CHECK (steady >= predicted - below);
+            CHECK (steady <= predicted + 0.15);
+            CHECK_THAT (sweeping, WithinAbs (steady, 0.01));
+            CHECK (steady <= 0.05);
         }
     }
 }

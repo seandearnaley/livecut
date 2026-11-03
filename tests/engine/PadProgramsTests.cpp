@@ -12,6 +12,8 @@
 #include <cmath>
 #include <stdexcept>
 #include <string_view>
+#include <functional>
+#include <vector>
 
 using namespace livecut::engine;
 using Catch::Matchers::WithinAbs;
@@ -457,7 +459,8 @@ TEST_CASE ("Filter sweeps and rings as the spec maps it", "[pad]")
     const auto mapping = mapPad (PadProgram::filter, x, y, {});
     const auto& filter = mapping.impact.filter;
     CHECK_THAT (filter.cutoffHz, WithinRel (200.0 * std::pow (90.0, static_cast<double> (x)), 1.0e-5));
-    CHECK_THAT (filter.q, WithinRel (.707 + 2.3 * y * (1.0 - .5 * x), 1.0e-5));
+    // Resonance eases off in the treble, and in the bass to 15% at 200 Hz.
+    CHECK_THAT (filter.q, WithinRel (.707 + 2.3 * y * (1.0 - .5 * x) * std::min (1.0, .15 + .85 * x / .4), 1.0e-5));
     CHECK_THAT (filter.tailLevel, WithinAbs (static_cast<double> (y), 1.0e-6));
     CHECK_THAT (filter.tailDecayMs, WithinRel (200.0 + 1000.0 * y, 1.0e-5));
     CHECK (filter.type == ImpactParameters::Filter::Type::sweep);
@@ -506,4 +509,113 @@ TEST_CASE ("Filter never restarts the cutting while you move", "[pad]")
             previous = next;
         }
     }
+}
+
+namespace
+{
+// A 120 bpm loop at 48 kHz, after the review's: a kick falling 150 to 50 Hz on
+// 1, the and of 2, and 3, a snare (noise and 180 Hz) on 2 and 4, hats on 8ths,
+// and a sustained bass line, two notes a bar, the second a fourth above the first.
+struct Loop
+{
+    enum class Bass { sine, square };
+    std::vector<float> samples;
+
+    Loop (double bassHz, Bass bass)
+    {
+        constexpr double rate = 48000.0, pi = 3.141592653589793;
+        const int bar = static_cast<int> (2.0 * rate);
+        samples.assign (static_cast<std::size_t> (bar), 0.0f);
+        std::uint32_t state = 99;
+        const auto noise = [&state]
+        {
+            state = state * 1664525u + 1013904223u;
+            return static_cast<double> (static_cast<std::int32_t> (state)) / 2147483648.0;
+        };
+        const auto add = [&] (double beat, double seconds, const std::function<double (double)>& voice)
+        {
+            const auto start = static_cast<int> (beat * rate / 2.0);
+            for (int i = 0; i < static_cast<int> (seconds * rate); ++i)
+                samples[static_cast<std::size_t> ((start + i) % bar)] += static_cast<float> (voice (i / rate));
+        };
+        for (const auto beat : { 0.0, 1.5, 2.0 })
+            add (beat, 0.6, [] (double t)
+                 { return 0.9 * std::exp (-t / 0.18) * std::sin (2 * pi * (50.0 * t + 3.0 * (1 - std::exp (-t / 0.03)))); });
+        for (const auto beat : { 1.0, 3.0 })
+            add (beat, 0.4, [&noise] (double t)
+                 { return 0.45 * std::exp (-t / 0.10) * noise() + 0.3 * std::exp (-t / 0.06) * std::sin (2 * pi * 180 * t); });
+        for (int k = 0; k < 8; ++k)
+        {
+            double previous = 0.0;
+            add (k / 2.0, 0.12, [&] (double t)
+                 {
+                     const auto w = noise();
+                     const auto hat = 0.18 * std::exp (-t / 0.025) * (w - previous);
+                     previous = w;
+                     return hat;
+                 });
+        }
+        for (int i = 0; i < bar; ++i)
+        {
+            const auto t = i / rate, within = std::fmod (t, 1.0);
+            const auto hz = i < bar / 2 ? bassHz : bassHz * 4.0 / 3.0;
+            const auto envelope = std::min (1.0, within / 0.01) * std::min (1.0, (1.0 - within) / 0.01);
+            const auto wave = std::sin (2 * pi * hz * t);
+            samples[static_cast<std::size_t> (i)] += static_cast<float> (0.6 * envelope * (bass == Bass::square ? (wave >= 0 ? 0.8 : -0.8) : wave));
+        }
+    }
+};
+
+// A program's RMS through the Cutter over bars 2 to 8 of the loop.
+double programRms (const PadMapping& mapping, const Loop& loop)
+{
+    constexpr double rate = 48000.0;
+    constexpr int block = 512, total = 8 * 96000, from = 96000;
+    Cutter cutter;
+    cutter.prepare (rate);
+    cutter.setProcedure (mapping.procedure);
+    cutter.setUnitsPerBar (mapping.unitsPerBar);
+    cutter.setSeed (mapping.seed);
+    cutter.setParameters (mapping.cut);
+    cutter.setCrusher (mapping.crusher);
+    cutter.setImpact (mapping.impact);
+    std::array<float, block> left {}, right {};
+    double energy = 0.0;
+    for (int n = 0; n < total; n += block)
+    {
+        for (int i = 0; i < block; ++i)
+            left[static_cast<std::size_t> (i)] = right[static_cast<std::size_t> (i)]
+                = loop.samples[static_cast<std::size_t> ((n + i) % static_cast<int> (loop.samples.size()))];
+        const auto beats = n / 24000.0;
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+        cutter.process (left.data(), right.data(), block, { 120.0, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+        if (n >= from)
+            for (const auto sample : left)
+                energy += static_cast<double> (sample) * sample;
+    }
+    REQUIRE (cutter.error() == Cutter::Error::none);
+    return std::sqrt (energy / (total - from));
+}
+} // namespace
+
+TEST_CASE ("Filter is never louder than Cut on bass-heavy material", "[pad][level]")
+{
+    // Sub-bass under drums, a square bass, and a bass note on the left edge's
+    // 200 Hz cutoff. Engaging Filter anywhere must not jump the level: at most
+    // 1.5 dB over Cut playing the same material. The tail is included.
+    const auto [bassHz, bass, name] = GENERATE (table<double, Loop::Bass, const char*> ({
+        { 55.0, Loop::Bass::sine, "sub-bass" },
+        { 55.0, Loop::Bass::square, "square bass" },
+        { 150.0, Loop::Bass::sine, "a note on 200 Hz" },
+    }));
+    CAPTURE (name);
+    const Loop loop (bassHz, bass);
+    const auto cut = programRms (mapPad (PadProgram::cut, .5f, 0.f, {}), loop);
+    for (const auto x : { 0.f, .5f, 1.f })
+        for (const auto y : { 0.f, .5f, 1.f })
+        {
+            const auto lift = 20.0 * std::log10 (programRms (mapPad (PadProgram::filter, x, y, {}), loop) / cut);
+            CAPTURE (x, y, lift);
+            CHECK (lift <= 1.5);
+        }
 }
