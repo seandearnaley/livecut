@@ -114,8 +114,11 @@ void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
                 return;
             padGate.prepare (sampleRate);
             classicRelease = false;
+            classicEntryGain = 1.0f;
+            classicEntryStep = 1.0f / static_cast<float> (std::lround (.005 * sampleRate));
             currentMapping = livecut::engine::mapPad (padGate.activeProgram (), settings.padX, settings.padY, {});
             const auto effective = effectiveSettings (settings);
+            renderSettings = effective; // a first context never counts as a surface switch
             preparedHold.request (effective.hold);
             prepared->cutter.setIdle (settings.surface == livecut::Surface::pad);
             padGain = settings.surface == livecut::Surface::pad ? 0.0f : 1.0f;
@@ -364,6 +367,7 @@ void LivecutAudioProcessor::tryApplyMode ()
         wetHold.interrupt ();
         padGate.reset ();
         classicRelease = false;
+        classicEntryGain = 1.0f;
         stream->cutter.setIdle (requested.surface == livecut::Surface::pad);
         padGain = requested.surface == livecut::Surface::pad ? 0.0f : 1.0f;
         const auto effective = effectiveSettings (requested);
@@ -560,6 +564,11 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
             }
             else
             {
+                // From the Pad surface, Classic's cuts fade in over the input rather than cut to it.
+                if (newEpoch || !context.running)
+                    classicEntryGain = 1.0f;
+                else if (renderSettings.surface == livecut::Surface::pad)
+                    classicEntryGain = resources.cutter.isCutting () ? padGain : 0.0f;
                 resources.cutter.setIdle (false);
                 padGain = 1.0f;
                 classicRelease = false;
@@ -758,6 +767,13 @@ void LivecutAudioProcessor::processOutput (int, float dryLeft, float dryRight, f
     {
         left = dryLeft + padGain * (left - dryLeft);
         right = dryRight + padGain * (right - dryRight);
+    }
+    else if (classicEntryGain < 1.0f)
+    {
+        left = dryLeft + classicEntryGain * (left - dryLeft);
+        right = dryRight + classicEntryGain * (right - dryRight);
+        if (stream->cutter.isCutting ())
+            classicEntryGain = std::min (1.0f, classicEntryGain + classicEntryStep);
     }
     if (collectingPacket)
         return; // collect inner wet; consumers run at its delayed boundary

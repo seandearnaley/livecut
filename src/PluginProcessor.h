@@ -138,6 +138,9 @@ class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut
     // Classic's cuts, releasing on the Pad surface after a switch. They keep
     // Classic's settings until the gate closes or the pad is touched.
     bool classicRelease = false;
+    // Classic's first cut after an idle pad fades in over the input: 0 until
+    // the cutter starts, then up to 1 over 5 ms. 1 when not entering.
+    float classicEntryGain = 1.0f, classicEntryStep = 1.0f;
     double processingSampleRate = 48000.0, processingBeatsPerSample = 0.0, processingBeatsPerBar = 4.0;
     std::atomic<bool> resetHoldRequested{false};
     std::uint64_t transportEpochCounter = 1;

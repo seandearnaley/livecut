@@ -330,6 +330,23 @@ TEST_CASE ("A sounding Classic Impact filter carries on through the switch to Pa
     CHECK (released.largestStep (switched, end) <= 3.0f * reference);
 }
 
+TEST_CASE ("Switching from an idle Pad to Classic fades the first cut in", "[pad][processor]")
+{
+    constexpr int switched = 31200, end = 2 * 96000;
+    PadSession classic, entered;
+    useSmoothClassic (classic);
+    set (entered.processor, livecut::ids::fade, 5);
+    classic.render (end);
+    entered.render (switched);
+    REQUIRE_FALSE (entered.processor.getCutter ().isCutting ());
+    useClassicSurface (entered.processor);
+    entered.render (end - entered.frame);
+    REQUIRE (entered.processor.getCutter ().isCutting ());
+    const auto reference = classic.largestStep (switched, end);
+    REQUIRE (reference > 0.0f);
+    CHECK (entered.largestStep (switched, end) <= 3.0f * reference);
+}
+
 TEST_CASE ("A program switch restarts on the beat sample", "[pad][processor]")
 {
     PadSession session;
