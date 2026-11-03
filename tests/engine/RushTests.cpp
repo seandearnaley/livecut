@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "DrumLoop.h"
 #include "EngineTestHelpers.h"
 #include "engine/CutProcedures.h"
 #include "engine/Cutter.h"
+#include "engine/PadPrograms.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -540,5 +543,125 @@ TEST_CASE ("Through tempo automation, Rush's rolls land on the bar line", "[rush
         {
             CAPTURE (ramp, buffer, beats, curve);
             checkLanded (playRush (roll (beats, curve, 500.0 * curve), 48000.0, 120.0, 4.0, 6.0, ramp, buffer), 6, 2, 4);
+        }
+}
+
+namespace
+{
+using testing::DrumLoop;
+
+// Rush at a pad spot: X drags or rushes and bends the pitch, Y picks the roll's length.
+CutParameters padSpot (double x, double y)
+{
+    constexpr double lengths[] { 1.0, 2.0, 3.0, 4.0 };
+    return roll (lengths[std::min (static_cast<int> (4.0 * y), 3)], 2.0 * x - 1.0, 500.0 * (2.0 * x - 1.0));
+}
+
+struct Level
+{
+    double rms = 0.0;
+    float peak = 0.f;
+};
+
+Level level (const std::vector<float>& left, const std::vector<float>& right)
+{
+    Level found;
+    double energy = 0.0;
+    for (std::size_t i = 0; i < left.size(); ++i)
+    {
+        energy += static_cast<double> (left[i]) * left[i] + static_cast<double> (right[i]) * right[i];
+        found.peak = std::max ({ found.peak, std::abs (left[i]), std::abs (right[i]) });
+    }
+    found.rms = std::sqrt (energy / static_cast<double> (2 * left.size()));
+    return found;
+}
+
+// Eight bars of the loop through a Cutter engaged from the first sample, in
+// 512-frame buffers. `check` sees the cutter after each buffer.
+template <typename Check>
+Level runLoop (const DrumLoop& loop, Procedure procedure, int units, std::uint32_t seed, const CutParameters& params, Check&& check)
+{
+    constexpr int frames = 8 * 96000;
+    Cutter cutter;
+    cutter.prepare (48000.0);
+    cutter.setProcedure (procedure);
+    cutter.setUnitsPerBar (units);
+    cutter.setSeed (seed);
+    cutter.setParameters (params);
+    std::vector<float> left, right;
+    std::array<float, 512> l {}, r {};
+    for (int n = 0; n < frames; n += 512)
+    {
+        for (int i = 0; i < 512; ++i)
+            l[static_cast<std::size_t> (i)] = r[static_cast<std::size_t> (i)]
+                = loop.samples[static_cast<std::size_t> (n + i) % loop.samples.size()];
+        const auto beats = n / 24000.0;
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+        cutter.process (l.data(), r.data(), 512, { 120.0, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+        left.insert (left.end(), l.begin(), l.end());
+        right.insert (right.end(), r.begin(), r.end());
+        REQUIRE (cutter.error() == Cutter::Error::none);
+        check (cutter);
+    }
+    return level (left, right);
+}
+
+double decibels (double a, double b)
+{
+    return 20.0 * std::log10 (a / b);
+}
+} // namespace
+
+TEST_CASE ("On drums and bass, Rush stays near the track's level and never peaks above it", "[rush][drums][level]")
+{
+    // Measured over eight bars, against the input:
+    // - drums alone: -3.3 to +2.4 dB, Cut's busiest spot +1.6 dB;
+    // - with a 55 Hz sub: -3.3 to +0.05 dB; with a 150 Hz bass line: -2.8 to -0.1 dB.
+    // A roll repeats the start of a hit, its loudest part; the swell from -12 dB
+    // holds a whole bar of a rolled kick to the drums' +2.4 dB, from +5.8 dB at unity.
+    const auto [bassHz, name] = GENERATE (table<double, const char*> ({
+        { 0.0, "drums" },
+        { 55.0, "sub-bass" },
+        { 150.0, "a bass line" },
+    }));
+    CAPTURE (name);
+    const DrumLoop loop (bassHz, DrumLoop::Bass::sine);
+    const auto input = level (loop.samples, loop.samples);
+    // Cut at its busiest spot on the same loop.
+    double busiest = 0.0;
+    for (const auto x : { 0.f, .5f, 1.f })
+        for (const auto y : { 0.f, .5f, 1.f })
+        {
+            const auto mapping = mapPad (PadProgram::cut, x, y, {});
+            busiest = std::max (busiest, runLoop (loop, mapping.procedure, mapping.unitsPerBar, mapping.seed, mapping.cut, [] (const Cutter&) {}).rms);
+        }
+    for (const auto x : { 0.0, .25, .5, .75, 1.0 })
+        for (const auto y : { .1, .35, .6, .85 }) // rolls of one, two, three and four beats
+        {
+            CAPTURE (x, y);
+            int pitched = 0;
+            const auto rush = runLoop (loop, Procedure::rush, unitsPerBar, 808, padSpot (x, y), [&pitched] (const Cutter& cutter)
+            {
+                // Every repeat, pitched up or down, plays to its end before it reads unrecorded audio.
+                for (const auto& cut : cutter.player().cuts())
+                {
+                    REQUIRE (cut.playable == cut.soundingFrames);
+                    pitched += cut.pitched ? 1 : 0;
+                }
+            });
+            if (x != .5)
+                CHECK (pitched > 0);
+            const auto overInput = decibels (rush.rms, input.rms);
+            const auto overCut = decibels (rush.rms, busiest);
+            CAPTURE (overInput, overCut, rush.peak, input.peak);
+            CHECK (rush.peak <= input.peak);
+            CHECK (overInput >= -3.5);
+            if (bassHz > 0.0)
+                CHECK (overInput <= .25);
+            else
+            {
+                CHECK (overInput <= 2.5);
+                CHECK (overCut <= 1.0);
+            }
         }
 }
