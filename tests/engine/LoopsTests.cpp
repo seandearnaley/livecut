@@ -1409,3 +1409,135 @@ TEST_CASE ("An arrangement loop that wraps on or off a pass boundary crossfades 
                         CHECK (wrapped.worstRatio <= 1.f);
                     }
 }
+
+namespace
+{
+// One random Loops scenario, rendered in buffers from `size`, split at every event
+// so each event lands on the same frame whatever the partition.
+struct Scenario
+{
+    std::vector<float> output;
+    float inputPeak = 0.f;
+    bool finite = true;
+    std::int64_t replayed = 0;
+};
+
+Scenario playScenario (std::uint64_t seed, int (*size) (std::int64_t))
+{
+    std::uint64_t state = seed * 0x9e3779b97f4a7c15ULL + 1;
+    const auto next = [&state]
+    {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return static_cast<double> (state >> 11) * 0x1p-53;
+    };
+    const double rates[] { 44100.0, 48000.0, 96000.0 };
+    const double meters[] { 4.0, 3.0, 5.0, 7.0, 2.5, 3.5, 6.5, 6.0 };
+    const auto rate = rates[static_cast<std::size_t> (next() * 3)];
+    const auto meter = meters[static_cast<std::size_t> (next() * 8)];
+    auto bpm = 80.0 + 100.0 * next();
+    Cutter cutter;
+    OnsetDetector detector;
+    Epoch bounds;
+    REQUIRE (detector.prepare (rate, 8192, 3.0));
+    bounds.epoch = detector.epoch();
+    cutter.prepare (rate);
+    cutter.setTransformSource (detector, bounds);
+    cutter.setProcedure (Procedure::loops);
+    cutter.setUnitsPerBar (unitsPerBar);
+    const double lengths[] { 1.0, .5, .25 };
+    auto params = loops (lengths[static_cast<std::size_t> (next() * 3)], static_cast<int> (next() * 4), next() < .3);
+    cutter.setParameters (params);
+
+    Scenario scenario;
+    const auto frames = static_cast<std::int64_t> (12 * meter * 60.0 / bpm * rate);
+    auto beats = 0.0;
+    std::int64_t frame = 0, nextEvent = static_cast<std::int64_t> (next() * rate);
+    std::vector<float> left, right;
+    while (frame < frames)
+    {
+        if (frame == nextEvent)
+        {
+            nextEvent = frame + 1 + static_cast<std::int64_t> (next() * .8 * rate);
+            const auto e = next();
+            if (e < .2)
+            {
+                params.loopBars = lengths[static_cast<std::size_t> (next() * 3)]; // an X zone change restarts
+                cutter.setParameters (params);
+                cutter.restartAtNextUnit();
+            }
+            else if (e < .4)
+            {
+                params.loopDepth = static_cast<int> (next() * 4); // Y takes effect from the next pass
+                params.straight = next() < .3;
+                cutter.setParameters (params);
+            }
+            else if (e < .5)
+                cutter.restartAtNextUnit();
+            else if (e < .6)
+                cutter.setIdle (next() < .3);
+            else if (e < .7)
+                bpm = std::clamp (bpm * (.85 + .3 * next()), 60.0, 200.0);
+            else if (e < .8)
+            {
+                // A seek or an arrangement loop's wrap: a new epoch from this frame.
+                beats = std::max (0.0, beats + (next() < .5 ? -8.0 * next() : 8.0 * next()));
+                ++bounds.epoch;
+                bounds.first = frame;
+                REQUIRE (detector.beginTransportEpoch (bounds.epoch));
+            }
+        }
+        const auto n = static_cast<int> (std::min ({ static_cast<std::int64_t> (size (frame)), frames - frame, nextEvent - frame }));
+        left.resize (static_cast<std::size_t> (n));
+        right.resize (static_cast<std::size_t> (n));
+        for (int i = 0; i < n; ++i)
+        {
+            // The tone with a click on every 8th of a second, for the snap to find.
+            auto in = tone (frame + i);
+            if ((frame + i) % static_cast<std::int64_t> (rate / 8.0) == 0)
+                in.left = in.right = .8f;
+            left[static_cast<std::size_t> (i)] = in.left;
+            right[static_cast<std::size_t> (i)] = in.right;
+            scenario.inputPeak = std::max ({ scenario.inputPeak, std::abs (in.left), std::abs (in.right) });
+            detector.process (frame + i, in.left, in.right);
+        }
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / meter));
+        cutter.process (left.data(), right.data(), n, { bpm, meter }, { bar, beats - meter * static_cast<double> (bar) });
+        REQUIRE (cutter.error() == Cutter::Error::none);
+        REQUIRE_FALSE (cutter.player().hasSourceError());
+        if (cutter.isCutting() && ! cutter.currentCuts().empty() && cutter.currentCuts().front().loopLevel > 0)
+            scenario.replayed += n;
+        for (int i = 0; i < n; ++i)
+        {
+            scenario.finite = scenario.finite && std::isfinite (left[static_cast<std::size_t> (i)]) && std::isfinite (right[static_cast<std::size_t> (i)]);
+            scenario.output.push_back (left[static_cast<std::size_t> (i)]);
+            scenario.output.push_back (right[static_cast<std::size_t> (i)]);
+        }
+        frame += n;
+        beats += static_cast<double> (n) * bpm / 60.0 / rate;
+    }
+    return scenario;
+}
+} // namespace
+
+TEST_CASE ("Random Loops scenarios are partition-independent, finite and never louder than the input", "[loops][fuzz]")
+{
+    std::int64_t replayed = 0;
+    for (std::uint64_t seed = 1; seed <= 8; ++seed)
+    {
+        CAPTURE (seed);
+        const auto reference = playScenario (seed, [] (std::int64_t) { return 1; });
+        CHECK (reference.finite);
+        // A crossfade of two samples can round a float's last bit past the larger.
+        CHECK (peakOf (reference.output) <= reference.inputPeak * (1.f + 1.0e-6f));
+        replayed += reference.replayed;
+        for (int (*size) (std::int64_t) : { randomSize, +[] (std::int64_t) { return 1024; } })
+        {
+            const auto other = playScenario (seed, size);
+            CAPTURE (firstDifference (other.output, reference.output));
+            CHECK (other.output == reference.output);
+        }
+    }
+    CHECK (replayed > 0);
+}
