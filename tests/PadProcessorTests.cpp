@@ -832,15 +832,19 @@ TEST_CASE ("Switching Suction to Filter doesn't click", "[pad][processor]")
 }
 
 // A Pad to Classic switch with Classic's Impact filter on, while a tail rings:
-// the sweep, tail included, fades at Classic's next cut, and Classic's
-// low-pass comes in at a later one. The window runs from before the switch
-// until the sweep has faded and cleared.
+// at Classic's first block the sweep, tail included, keeps its shape while its
+// wet ramps out, and Classic's low-pass comes in at a later cut. The window
+// runs from the cut where the sweep starts to fade until it has cleared. It
+// used to start 2400 samples before the switch, where a Filter splice the
+// same in both runs set the bar at 0.98, 62 times Classic's own step. (The
+// outputs part before that cut: the switch hands the cutter all of Classic's
+// settings at once, so there is no exact twin to compare with.)
 TEST_CASE ("Switching Filter to Classic's filter while a tail rings doesn't click", "[pad][processor]")
 {
     const auto tail = firstFilterTail ();
     REQUIRE (tail.frame > 0);
     const auto switched = tail.frame;
-    int cleared = 0;
+    int fading = 0, cleared = 0;
     const auto largestStep = [&] (int run)
     {
         PadSession session;
@@ -861,6 +865,10 @@ TEST_CASE ("Switching Filter to Classic's filter while a tail rings doesn't clic
         {
             REQUIRE (impact.tailAmplitude > 0.0);
             useClassicSurface (processor);
+            while (impact.filterActive && session.frame < switched + 96000)
+                session.render (1);
+            REQUIRE_FALSE (impact.filterActive); // the cut where the sweep starts to fade
+            fading = session.frame - 1;
             while (impact.bandLowHz != 0.0 && session.frame < switched + 96000)
                 session.render (16);
             REQUIRE (impact.bandLowHz == 0.0); // the sweep faded and cleared,
@@ -868,12 +876,12 @@ TEST_CASE ("Switching Filter to Classic's filter while a tail rings doesn't clic
             cleared = session.frame;
         }
         session.render (cleared + window - session.frame);
-        return largestStepBetween (session.output, switched - window, cleared + window);
+        return largestStepBetween (session.output, fading, cleared + window);
     };
     const auto filterToClassic = largestStep (1);
-    const auto classicThroughout = largestStep (0);
     const auto filterThroughout = largestStep (2);
-    CAPTURE (switched, cleared, filterToClassic, filterThroughout, classicThroughout);
+    const auto classicThroughout = largestStep (0);
+    CAPTURE (switched, fading, cleared, filterToClassic, filterThroughout, classicThroughout);
     CHECK (filterToClassic <= 3.f * std::max (filterThroughout, classicThroughout));
 }
 
