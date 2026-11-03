@@ -163,6 +163,15 @@ public:
     const Comb& comb() const { return combFilter; }
     const ImpactEffects& impact() const { return routeRack.impact(); }
     const FractureDiagnostics& fractureDiagnostics() const { return fractureReader.diagnostics(); }
+    // The pad's Loops: the phrase's loop. Frames are -1 until captured and read.
+    struct LoopDiagnostics
+    {
+        std::int64_t captureFrame = -1; // the first frame of the pass it captured
+        std::int64_t readFrame = -1;    // where every replay of the phrase reads from
+        std::array<float, 4> gains { 1.0f, 1.0f, 1.0f, 1.0f }; // the whole loop, its half, quarter and eighth
+        bool snapped = false;           // the read frame came from a hit, not the grid
+    };
+    const LoopDiagnostics& loopDiagnostics() const { return loop; }
     const Resonator& resonator() const { return routeRack.resonator(); }
     const RouteRack::Diagnostics& routeDiagnostics() const { return routeRack.diagnostics(); }
 
@@ -206,7 +215,12 @@ private:
         std::uint32_t transformSeed = 1;
         std::uint32_t impactSeed = 1;
         bool rush = false; // the pad's Rush: counts elapsed time exactly, and plays the input once its cuts run out
+        bool loops = false; // the pad's Loops: the same, and its replays read the phrase's loop
+        double loopIntoPass = -1.0; // a Loops track block: units into its pass; -1 for any other block
     };
+    // Rush's and Loops' plans: the track is the input, and their joins crossfade.
+    static bool seamless (const BlockPlan& plan) { return plan.rush || plan.loops; }
+    void startLoopsBlock (const Timing& timing);
     // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
     // 1/32-bar block starts plus a boundary/recovery plan await activation.
     // Sub-quarter bars are straight; SQPusher fills are >=1/8 beat and Bounce
@@ -272,6 +286,8 @@ private:
     int rushJoinAge = 0, rushJoinFrames = 1;
     std::int64_t rushJoinFrame = -1;
     std::size_t rushCut = 0;
+    LoopDiagnostics loop; // the pad's Loops: this phrase's loop
+    std::optional<LivePlayer::Tail> loopRunOn; // the pad's Loops: a replay block's last cut, run on to the next block
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;
     double fractureBpm = 0.0;
