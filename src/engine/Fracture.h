@@ -83,6 +83,15 @@ private:
     FractureParameters::Tape::Curve curve = FractureParameters::Tape::Curve::smooth;
 };
 
+// The speeds a tape cut runs between. A cycle cut takes the page's, swapped on
+// odd ordinals with Alternate; a motion takes its own.
+struct TapeCurve
+{
+    double from = 1.0, to = 0.0;
+    FractureParameters::Tape::Curve curve = FractureParameters::Tape::Curve::smooth;
+};
+TapeCurve tapeCurveFor (const FractureParameters::Tape&, TapeMotion, std::uint64_t ordinal);
+
 class LivePlayer;
 
 // Prepared finite-support interpolation for Grain only. Classic is untouched.

@@ -684,6 +684,10 @@ void Cutter::startFractureCut (std::int64_t frame)
     context.transportEpoch=activePlan.transportEpoch;
     context.ordinal=activePlan.firstCutOrdinal+index;
     context.source=activePlan.source;
+    // The pad's motions read from the frame they start on, so each continues the track.
+    const auto motion=activePlan.fracture.procedure==FractureProcedure::tapeCut && context.cut.tape!=TapeMotion::cycle;
+    if(motion)
+        context.source.firstFrame=frame;
     const auto bounds=sourceContext!=nullptr?sourceContext->sourceBoundsAt(frame):std::nullopt;
     const auto invalid=[&](FractureState reason)
     {
@@ -706,9 +710,8 @@ void Cutter::startFractureCut (std::int64_t frame)
     else
     {
         TapeTrajectory trajectory;
-        auto start=activePlan.fracture.tape.startSpeed,end=activePlan.fracture.tape.endSpeed;
-        if(activePlan.fracture.tape.alternate && context.ordinal%2!=0) std::swap(start,end);
-        trajectory.start(start,end,context.outputFrames,activePlan.fracture.tape.curve);
+        const auto speeds=tapeCurveFor(activePlan.fracture.tape,context.cut.tape,context.ordinal);
+        trajectory.start(speeds.from,speeds.to,context.outputFrames,speeds.curve);
         required=trajectory.sourceFrames();
         context.source.frameCount=bounds->end ? *bounds->end-context.source.firstFrame
                                   :std::numeric_limits<std::int64_t>::max()-context.source.firstFrame;
@@ -717,6 +720,13 @@ void Cutter::startFractureCut (std::int64_t frame)
         || (grain && required>*bounds->end-context.source.firstFrame))))
     {
         invalid(FractureState::sourceLost);
+        return;
+    }
+    // A transform would move a motion's read off the track, and its joins would splice.
+    if(motion)
+    {
+        transforms.reason=TransformReason::off;
+        fractureReader.startCut(context);
         return;
     }
     const auto& transform=activePlan.transform;
