@@ -27,9 +27,12 @@ struct Cut
     float amp = 1.0f;
     float cents = 0.0f; // pitch offset
     TapeMotion tape = TapeMotion::cycle; // read only by TapeCut
+    // False plays the cut with no fade envelope, so a cut that continues the audio
+    // before it joins it sample for sample. Only the pad's Rush clears it.
+    bool fade = true;
 };
 
-// The motion sits in what was padding, so a cut, and every block plan, stays the same size.
+// The motion and the fade sit in what was padding, so a cut, and every block plan, stays the same size.
 static_assert (sizeof (Cut) == 4 * sizeof (double));
 
 // The largest block is a CutProc11 stutter: under a bar of units, at up to 8 cuts per unit.
@@ -78,6 +81,11 @@ struct CutParameters
     double ratchetChance = 0.7;
     int climb = 7; // semitones
     double halftimeChance = 0.15;
+
+    // Rush
+    double rollBeats = 0.0; // the roll before each bar line, in beats, at most 4; 0 plays no roll
+    double rollCurve = 0.0; // -1 drags hardest, 0 is even, +1 rushes hardest
+    double rollCents = 0.0; // the pitch of a roll's last cut, relative to its first
 };
 
 inline double totalUnits (std::span<const Cut> cuts)

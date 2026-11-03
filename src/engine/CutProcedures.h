@@ -16,6 +16,15 @@ public:
     void chooseBlock (Random&, const CutParameters&, const BlockContext&, std::vector<Cut>&) override;
 };
 
+// The pad's Rush: the track as it is, and a roll into every bar line that runs
+// even, speeds up or slows down. One-bar phrases, and no random draws.
+class Rush final : public CutProcedure
+{
+public:
+    int choosePhraseBars (Random&, const CutParameters&) override { return 1; }
+    void chooseBlock (Random&, const CutParameters&, const BlockContext&, std::vector<Cut>&) override;
+};
+
 // Nick Collins' BBCutProc11: odd-length cuts, repeated, with a stutter roll near the end of each phrase.
 class CutProc11 final : public CutProcedure
 {

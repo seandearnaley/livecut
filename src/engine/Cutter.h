@@ -24,7 +24,8 @@ enum class Procedure
     cutProc11,
     warpCut,
     sqPusher,
-    bounce
+    bounce,
+    rush // the pad's Rush only: the procedure parameter keeps its four choices
 };
 
 struct Timing
@@ -228,6 +229,7 @@ private:
     WarpCut warpCut;
     SQPusher sqPusher;
     Bounce bounce;
+    Rush rush;
     Random random;
     LivePlayer livePlayer;
     BitCrusher bitCrusher;

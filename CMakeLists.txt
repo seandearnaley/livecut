@@ -39,6 +39,7 @@ add_library(LivecutEngine STATIC
     src/engine/PadPrograms.cpp
     src/engine/PhraseSeed.cpp
     src/engine/Random.cpp
+    src/engine/Rush.cpp
     src/engine/SQPusher.cpp
     src/engine/WarpCut.cpp)
 target_include_directories(LivecutEngine PUBLIC src)
@@ -205,6 +206,7 @@ if(LIVECUT_BUILD_TESTS)
         tests/engine/RandomTests.cpp
         tests/engine/SQPusherTests.cpp
         tests/engine/StraightTests.cpp
+        tests/engine/RushTests.cpp
         tests/engine/TapeTests.cpp
         tests/engine/WarpCutTests.cpp)
     target_include_directories(LivecutEngineTests PRIVATE tests)
