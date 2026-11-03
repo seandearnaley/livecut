@@ -221,7 +221,7 @@ TEST_CASE ("Program buttons select programs, and later programs are disabled", "
         buttons.push_back (button);
         CHECK (button->getButtonText() == names[i]);
         CHECK (button->getTitle().isNotEmpty());
-        if (i < 6)
+        if (i != 6) // Loops
         {
             CHECK (button->isEnabled());
             CHECK (button->getTooltip().isNotEmpty());
@@ -262,6 +262,13 @@ TEST_CASE ("Program buttons select programs, and later programs are disabled", "
     CHECK (buttons[5]->getToggleState());
     CHECK_FALSE (buttons[4]->getToggleState());
     CHECK (buttons[5]->getTooltip().contains ("spinning back up"));
+
+    buttons[7]->onClick(); // Rush
+    CHECK (index (processor, livecut::ids::padProgram) == 7);
+    editor.refreshDisplay();
+    CHECK (buttons[7]->getToggleState());
+    CHECK_FALSE (buttons[5]->getToggleState());
+    CHECK (buttons[7]->getTooltip().contains ("into the bar line"));
 
     set (processor, livecut::ids::padProgram, 0); // the host moving the parameter lights the matching button
     editor.refreshDisplay();
@@ -398,6 +405,11 @@ TEST_CASE ("Axis captions follow the program", "[pad][editor]")
     editor.refreshDisplay();
     CHECK (labelTexts (pad).contains ("Length"));
     CHECK (labelTexts (pad).contains ("Stops"));
+
+    display.padActiveProgram.store (7);
+    editor.refreshDisplay();
+    CHECK (labelTexts (pad).contains ("Push"));
+    CHECK (labelTexts (pad).contains ("Roll"));
 
     display.padActiveProgram.store (0);
     editor.refreshDisplay();

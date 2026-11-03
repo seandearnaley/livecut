@@ -20,7 +20,8 @@ double lerp (double a, double b, double t)
 bool isAvailable (PadProgram program)
 {
     return program == PadProgram::cut || program == PadProgram::bounce || program == PadProgram::glitch
-        || program == PadProgram::suction || program == PadProgram::filter || program == PadProgram::tape;
+        || program == PadProgram::suction || program == PadProgram::filter || program == PadProgram::tape
+        || program == PadProgram::rush;
 }
 
 PadCaptions padCaptions (PadProgram program)
@@ -33,8 +34,8 @@ PadCaptions padCaptions (PadProgram program)
         case PadProgram::suction: return { "Band", "Squeeze" };
         case PadProgram::filter: return { "Cutoff", "Ring" };
         case PadProgram::tape: return { "Length", "Stops" };
+        case PadProgram::rush: return { "Push", "Roll" };
         case PadProgram::loops:
-        case PadProgram::rush:
             break;
     }
 
@@ -176,8 +177,22 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             tape.stopDensity = 4.f * y;
             break;
         }
-        case PadProgram::loops:
         case PadProgram::rush:
+        {
+            // The track, and a roll of one to four beats into every bar line: even at
+            // the centre, slowing and falling to the left, speeding up and rising to the right.
+            constexpr double lengths[] { 1.0, 2.0, 3.0, 4.0 };
+            const auto curve = 2.0 * static_cast<double> (x) - 1.0;
+            mapping.procedure = Procedure::rush;
+            mapping.seed = 808;
+            mapping.zones.x = padZone (x, 1, previous.x);
+            mapping.unitsPerBar = 16;
+            mapping.cut.rollBeats = lengths[std::min (static_cast<int> (4.f * y), 3)];
+            mapping.cut.rollCurve = curve;
+            mapping.cut.rollCents = 500.0 * curve;
+            break;
+        }
+        case PadProgram::loops:
         default:
             std::abort(); // A violated precondition must not select a fallback program.
     }
