@@ -260,6 +260,10 @@ private:
     int tapeTailAge = 0, tapeTailFrames = 1;
     std::optional<LivePlayer::Tail> rushTail; // the pad's Rush: a cut cut off by a restart, fading out
     int rushTailAge = 0;
+    // The pad's Rush: a Classic program's cut a switch into Rush cut off, fading out
+    // under Rush's track before the effects, so the outgoing effects shape it.
+    std::optional<LivePlayer::Tail> rushEntry;
+    int rushEntryAge = 0;
     // The pad's Rush: a roll's last cut, running on under the next for 2 ms at each
     // join, from frame rushJoinFrame. rushCut is the roll's last rendered cut.
     std::optional<LivePlayer::Tail> rushJoin;

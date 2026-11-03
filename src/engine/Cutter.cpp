@@ -192,6 +192,7 @@ void Cutter::resetRendering()
     tapeTail.reset();
     tapeRunOn.reset();
     rushTail.reset();
+    rushEntry.reset();
     impactCut.reset();
     renderContextActive = false;
 }
@@ -407,23 +408,25 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                     rushTailAge = 0;
                 }
                 // A switch into Rush lets a Classic program's cut fade out the same
-                // way, under Rush's track. Silence fades in from silence.
+                // way under Rush's track, but before the effects, so a filter the
+                // outgoing program held as it fades shapes it too. Silence fades
+                // in from silence.
                 else if (hasActivePlan && pendingProcedure == Procedure::rush && fractureParams.procedure == FractureProcedure::classic
                          && activePlan.fracture.procedure == FractureProcedure::classic)
                 {
                     // On a cut boundary, the cut that was playing, run on past its end.
                     const auto& playing = livePlayer.cuts();
                     const auto index = livePlayer.currentCut();
-                    rushTail = index > 0 && (index >= playing.size() || livePlayer.currentCutAge() == 0)
+                    rushEntry = index > 0 && (index >= playing.size() || livePlayer.currentCutAge() == 0)
                                  ? livePlayer.tail (index - 1, playing[index - 1].size)
                                  : livePlayer.tail();
-                    if (! rushTail)
+                    if (! rushEntry)
                     {
                         LivePlayer::Tail silence;
                         silence.ll = silence.lr = silence.rl = silence.rr = 0.0f;
-                        rushTail = silence;
+                        rushEntry = silence;
                     }
-                    rushTailAge = 0;
+                    rushEntryAge = 0;
                 }
                 drop (sampleOffset, observer);
             }
@@ -511,6 +514,8 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             processingError = Error::sourceUnavailable;
             transforms.reason = TransformReason::sourceLost;
         }
+
+        mixTail (rushEntry, rushEntryAge, tapeTailFrames, left, right);
 
         // The effects always run, so switching one on picks up a current
         // delay line and hold rather than stale audio.

@@ -968,9 +968,16 @@ struct Bounds final : Cutter::SourceContext
     }
 };
 
-// Plays `from` (or `to` from the start, when `switchAt` is negative) on `kind`,
-// a frame at a time, switching to `to` with a restart asked for at `switchAt`.
-std::vector<float> playSwitch (Held kind, double bpm, float y, PadProgram from, PadProgram to, std::int64_t switchAt, std::int64_t frames)
+// A pad program at a spot.
+struct Spot
+{
+    PadProgram program;
+    float x, y;
+};
+
+// Plays `from` on `kind`, a frame at a time, switching to `to` with a restart
+// asked for at `switchAt`; with no switch when it is negative.
+std::vector<float> playSwitch (Held kind, double bpm, Spot from, Spot to, std::int64_t switchAt, std::int64_t frames)
 {
     static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
     Cutter cutter;
@@ -978,15 +985,13 @@ std::vector<float> playSwitch (Held kind, double bpm, float y, PadProgram from, 
     Bounds bounds;
     cutter.prepare (48000.0);
     cutter.setTransformSource (detector, bounds);
-    // Rush plays at X 0.8 and the given Y; the program it switches to at the pad's centre.
-    const auto first = switchAt < 0 ? to : from;
-    apply (cutter, first, first == PadProgram::rush ? .8f : .5f, first == PadProgram::rush ? y : .5f);
+    apply (cutter, from.program, from.x, from.y);
     std::vector<float> out;
     for (std::int64_t frame = 0; frame < frames; ++frame)
     {
         if (frame == switchAt)
         {
-            apply (cutter, to, .5f, .5f);
+            apply (cutter, to.program, to.x, to.y);
             cutter.restartAtNextUnit();
         }
         const auto in = held (kind, frame, drums);
@@ -1029,12 +1034,14 @@ Switched switchOnBeats (Held kind, double bpm)
         for (const auto y : { .1f, .35f, .6f, .85f })
         {
             const auto end = static_cast<std::int64_t> (std::ceil (8.0 * beat)) + window;
-            const auto rush = playSwitch (kind, bpm, y, PadProgram::rush, PadProgram::rush, -1, end);
-            const auto other = playSwitch (kind, bpm, y, to, to, -1, end);
+            // Rush at X 0.8 and each Y; the program it switches to at the pad's centre.
+            const Spot rushSpot { PadProgram::rush, .8f, y }, otherSpot { to, .5f, .5f };
+            const auto rush = playSwitch (kind, bpm, rushSpot, rushSpot, -1, end);
+            const auto other = playSwitch (kind, bpm, otherSpot, otherSpot, -1, end);
             for (int b = 4; b < 8; ++b)
             {
                 const auto boundary = static_cast<std::int64_t> (std::ceil (b * beat - .5));
-                const auto out = playSwitch (kind, bpm, y, PadProgram::rush, to, boundary - 3, boundary + window);
+                const auto out = playSwitch (kind, bpm, rushSpot, otherSpot, boundary - 3, boundary + window);
                 for (auto i = boundary - 2; i < boundary + fade; ++i)
                 {
                     const auto input = held (kind, i, drums).left;
@@ -1139,4 +1146,49 @@ TEST_CASE ("Through the cutter, Straight's whole-bar rush at 180 bpm never cuts 
                 CHECK (cut.size >= static_cast<int> (std::floor (.030 * rate)));
     }
     CHECK (rolls > 0);
+}
+
+TEST_CASE ("A switch into Rush from Filter or Suction on the beat fades out what they were playing, still filtered", "[rush][cutter][switch]")
+{
+    // The into-Rush fade used to mix the outgoing cut in after the effects, raw: a
+    // switch from a filtered program jumped to the unfiltered cut, up to 0.93 on a
+    // held bass and 1.06 on a pad chord. It now mixes before the effects, so the
+    // outgoing filter, held as it fades, shapes it.
+    const auto [kind, name] = GENERATE (table<Held, const char*> ({ { Held::bass, "held bass" }, { Held::chord, "pad chord" } }));
+    CAPTURE (name);
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
+    constexpr double bpm = 120.0, beat = 24000.0;
+    constexpr int window = 2400;
+    const Spot rush { PadProgram::rush, .8f, .6f };
+    const auto end = static_cast<std::int64_t> (8.0 * beat) + window;
+    const auto rushThroughout = playSwitch (kind, bpm, rush, rush, -1, end);
+    std::vector<float> input;
+    for (std::int64_t i = 0; i < end; ++i)
+        input.push_back (held (kind, i, drums).left);
+    float worstRatio = 0.f, worstStep = 0.f;
+    for (const auto program : { PadProgram::filter, PadProgram::suction })
+        for (const auto x : { 0.f, .5f, 1.f })
+            for (const auto y : { 0.f, .5f, 1.f })
+            {
+                const Spot from { program, x, y };
+                const auto throughout = playSwitch (kind, bpm, from, from, -1, end);
+                for (int b = 4; b < 8; ++b)
+                {
+                    const auto boundary = static_cast<std::int64_t> (b * beat);
+                    const auto out = playSwitch (kind, bpm, from, rush, boundary - 3, boundary + window);
+                    const auto lo = boundary - window, hi = boundary + window;
+                    const auto reference = std::max ({ largestStepIn (throughout, lo, hi), largestStepIn (rushThroughout, lo, hi),
+                                                       largestStepIn (input, lo, hi) });
+                    const auto step = largestStepIn (out, boundary - 1, boundary + 241);
+                    worstStep = std::max (worstStep, step);
+                    worstRatio = std::max (worstRatio, step / reference);
+                }
+            }
+    // Mixed after the effects, the worst step was 0.84 on the bass (125 times the
+    // references in the processor's +-2400-sample window) and 0.56 on the chord (26
+    // times). Now it is 0.012 (1.8 times) and 0.015 (1.0 times): on the bass, the
+    // held filter's 2 ms ramp out and the 5 ms crossfade, both smooth, are a little
+    // steeper than the note itself.
+    CAPTURE (worstStep, worstRatio);
+    CHECK (worstRatio <= 2.f);
 }
