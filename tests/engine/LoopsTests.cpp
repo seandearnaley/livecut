@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "DrumLoop.h"
 #include "EngineTestHelpers.h"
 #include "engine/CutProcedures.h"
 #include "engine/Cutter.h"
+#include "engine/PadPrograms.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -910,4 +912,145 @@ TEST_CASE ("The snap is the same for every buffer partition", "[loops][snap]")
         CHECK (host.outLeft == reference);
     }
     clickJitter = 0;
+}
+
+namespace
+{
+const DrumLoop& drumLoop (double bassHz)
+{
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine), sub (55.0, DrumLoop::Bass::sine), bass (150.0, DrumLoop::Bass::sine);
+    return bassHz == 0.0 ? drums : bassHz == 55.0 ? sub : bass;
+}
+
+template <int BassHz>
+StereoFrame drums (std::int64_t frame)
+{
+    const auto& loop = drumLoop (BassHz);
+    const auto v = loop.samples[static_cast<std::size_t> (frame) % loop.samples.size()];
+    return { v, v };
+}
+
+// The review's pad chord, with a slow swell.
+StereoFrame chord (std::int64_t frame)
+{
+    const auto t = static_cast<double> (frame) / 48000.0;
+    auto v = 0.0;
+    for (const auto hz : { 130.8, 261.6, 329.6, 392.0 })
+        v += .2 * std::sin (2.0 * 3.141592653589793 * hz * t);
+    v *= .75 + .25 * std::sin (2.0 * 3.141592653589793 * .3 * t);
+    return { static_cast<float> (v), static_cast<float> (v) };
+}
+
+double rmsOf (const std::vector<float>& left, const std::vector<float>& right)
+{
+    double energy = 0.0;
+    for (std::size_t i = 0; i < left.size(); ++i)
+        energy += static_cast<double> (left[i]) * left[i] + static_cast<double> (right[i]) * right[i];
+    return std::sqrt (energy / static_cast<double> (2 * left.size()));
+}
+
+float peakOf (const std::vector<float>& samples)
+{
+    float peak = 0.f;
+    for (const auto v : samples)
+        peak = std::max (peak, std::abs (v));
+    return peak;
+}
+
+// Cut at its busiest of nine spots on the same material, over 16 bars.
+double busiestCut (StereoFrame (*source) (std::int64_t))
+{
+    double busiest = 0.0;
+    for (const auto x : { 0.f, .5f, 1.f })
+        for (const auto y : { 0.f, .5f, 1.f })
+        {
+            const auto m = mapPad (PadProgram::cut, x, y, {});
+            LoopsHost host (m.cut, 48000.0, 120.0);
+            host.cutter.setProcedure (m.procedure);
+            host.cutter.setUnitsPerBar (m.unitsPerBar);
+            host.cutter.setSeed (m.seed);
+            host.source = source;
+            host.run (16 * 96000);
+            busiest = std::max (busiest, rmsOf (host.outLeft, host.outRight));
+        }
+    return busiest;
+}
+} // namespace
+
+TEST_CASE ("On drums and bass, Loops stays near the track's level and never peaks above it", "[loops][level][drums]")
+{
+    // Measured over 16 bars at 12 spots, against the input (prototype: +1.20, +0.45 and +0.33 dB at most).
+    // Without the hold, a one-beat loop at the top of Y lifts drums alone by 3.6 dB.
+    const auto [source, most, name] = GENERATE (table<StereoFrame (*) (std::int64_t), double, const char*> ({
+        { drums<0>, 1.5, "drums" },
+        { drums<55>, .6, "a 55 Hz sub" },
+        { drums<150>, .5, "a 150 Hz bass" },
+    }));
+    CAPTURE (name);
+    const auto busiest = busiestCut (source);
+    for (const auto bars : { 1.0, .5, .25 })
+        for (int depth = 0; depth <= 3; ++depth)
+        {
+            CAPTURE (bars, depth);
+            LoopsHost host (loops (bars, depth), 48000.0, 120.0, 4.0, true);
+            host.source = source;
+            host.run (16 * 96000);
+            const auto input = rmsOf (host.inLeft, host.inRight);
+            const auto output = rmsOf (host.outLeft, host.outRight);
+            const auto overInput = 20.0 * std::log10 (output / input);
+            CAPTURE (overInput, 20.0 * std::log10 (output / busiest));
+            CHECK (peakOf (host.outLeft) <= peakOf (host.inLeft));
+            CHECK (overInput <= most);
+            CHECK (overInput >= -.5);
+            CHECK (output <= busiest);
+        }
+}
+
+TEST_CASE ("The hold never lifts a level, never cuts one below its bound, and leaves sustained material alone", "[loops][level]")
+{
+    const auto gainsOf = [] (StereoFrame (*source) (std::int64_t), double bars)
+    {
+        std::vector<std::array<float, 4>> found;
+        LoopsHost host (loops (bars, 3), 48000.0, 120.0, 4.0, true);
+        host.source = source;
+        host.cutter.setIdle (true);
+        host.run (96000);
+        host.cutter.setIdle (false);
+        host.run (8 * 96000);
+        for (const auto& block : host.blocks)
+            if (block.replay())
+                found.push_back (block.loop.gains);
+        REQUIRE_FALSE (found.empty());
+        return found;
+    };
+    for (const auto bars : { 1.0, .5, .25 })
+    {
+        CAPTURE (bars);
+        for (auto* source : { drums<0>, drums<55>, drums<150>, tone })
+            for (const auto& gains : gainsOf (source, bars))
+            {
+                CHECK (gains[0] == 1.f);
+                for (std::size_t level = 0; level < 4; ++level)
+                {
+                    CHECK (gains[level] <= 1.f);
+                    CHECK (gains[level] >= std::exp2 (-.5 * static_cast<double> (level)) - 1.0e-3);
+                }
+            }
+        // Sustained material is held only as far as its short spans' beating lifts them:
+        // a swelling chord's eighth of a beat is up to 1.1 dB over its beat (measured -1.12 dB).
+        for (const auto& gains : gainsOf (chord, bars))
+            for (const auto gain : gains)
+                CHECK (20.0 * std::log10 (gain) >= -1.25);
+        // A click at the loop's start in a silent bar: the bound, reached.
+        clickOffset = 0;
+        clickPass = static_cast<std::int64_t> (96000 * bars);
+        clickJitter = 0;
+        for (const auto& gains : gainsOf (clicks, bars))
+            for (std::size_t level = 0; level < 4; ++level)
+                CHECK_THAT (gains[level], WithinAbs (std::exp2 (-.5 * static_cast<double> (level)), 1.0e-6));
+        clickPass = 24000;
+        for (const auto& gains : gainsOf ([] (std::int64_t) { return StereoFrame { 0.f, 0.f }; }, bars))
+            for (const auto gain : gains)
+                CHECK (gain == 1.f);
+    }
 }

@@ -260,6 +260,33 @@ void Cutter::startLoopsBlock (const Timing& timing)
             }
         }
         loop.readFrame = std::max (first, start - preroll);
+
+        // Hold each level to the loop's level: a level that repeats a loud attack is
+        // turned down to the whole loop's RMS, never up. One pass over the recorded
+        // loop, up to the frame being rendered, summing at each level's length.
+        std::array<std::int64_t, 4> lengths {};
+        for (std::size_t level = 0; level < lengths.size(); ++level)
+            lengths[level] = std::max<std::int64_t> (1, std::lround (loopFrames / std::exp2 (static_cast<double> (level))));
+        const auto recorded = std::min (lengths[0], frame + 1 - loop.readFrame);
+        std::array<double, 4> energy {};
+        auto sum = 0.0;
+        for (std::int64_t i = 0; i < recorded; ++i)
+        {
+            if (const auto raw = livePlayer.rawFrame (loop.readFrame + i))
+                sum += static_cast<double> (raw->left) * raw->left + static_cast<double> (raw->right) * raw->right;
+            for (std::size_t level = 1; level < lengths.size(); ++level)
+                if (i + 1 == lengths[level])
+                    energy[level] = sum;
+        }
+        energy[0] = sum;
+        const auto whole = energy[0] / static_cast<double> (std::max<std::int64_t> (recorded, 1));
+        for (std::size_t level = 1; level < lengths.size(); ++level)
+        {
+            const auto part = energy[level] / static_cast<double> (lengths[level]);
+            loop.gains[level] = part > whole && part > 0.0 ? static_cast<float> (std::sqrt (whole / part)) : 1.0f;
+            // The loop holds at least its first part's energy, so no gain falls under 2^(-level/2).
+            assert (loop.gains[level] >= std::exp2 (-.5 * static_cast<double> (level)) - 1.0e-3);
+        }
     }
     activePlan.source = livePlayer.sourceAtFrame (loop.readFrame);
     // Room for a snap and a join's run-on past the end of the longest loop.
