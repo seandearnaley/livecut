@@ -9,6 +9,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <cmath>
 #include <cstring>
 #include <numbers>
@@ -966,4 +968,47 @@ TEST_CASE ("Filter rings in tune at 44.1, 48 and 96 kHz", "[pad][processor]")
     CHECK (cutter.isCutting ());
     CHECK (cutter.error () == livecut::engine::Cutter::Error::none);
     CHECK (std::all_of (session.output.begin (), session.output.end (), [] (float sample) { return std::isfinite (sample); }));
+}
+
+namespace
+{
+// FNV-1a over the raw bytes of each float.
+std::uint64_t outputHash (const std::vector<float>& output)
+{
+    auto value = UINT64_C (0xcbf29ce484222325);
+    for (const auto sample : output)
+    {
+        const auto bits = std::bit_cast<std::uint32_t> (sample);
+        for (int shift = 0; shift < 32; shift += 8)
+        {
+            value ^= (bits >> shift) & 0xffu;
+            value *= UINT64_C (0x100000001b3);
+        }
+    }
+    return value;
+}
+} // namespace
+
+TEST_CASE ("Every built program is bit-identical", "[pad][processor][pinned]")
+{
+    // Measured before Tape existed: each program touched at (0.3, 0.75) for
+    // two and a half bars, then let go for a bar.
+    const auto [program, expected] = GENERATE (table<int, std::uint64_t> ({
+        { 0, UINT64_C (0xc3552b8eade6fafe) },
+        { 1, UINT64_C (0x24143edda0fe92b3) },
+        { 2, UINT64_C (0x01895a9e6e6d8aad) },
+        { 3, UINT64_C (0x76768e46ff115f21) },
+        { 4, UINT64_C (0x86d884687164bc1b) },
+    }));
+    CAPTURE (program);
+    PadSession session;
+    set (session.processor, livecut::ids::padProgram, static_cast<float> (program));
+    set (session.processor, livecut::ids::padX, .3f);
+    set (session.processor, livecut::ids::padY, .75f);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (240000);
+    set (session.processor, livecut::ids::padTouch, 0);
+    session.render (96000);
+    CHECK_FALSE (session.dryFrom ());
+    CHECK (outputHash (session.output) == expected);
 }

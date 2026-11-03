@@ -5,7 +5,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <algorithm>
 #include <vector>
 #include <stdexcept>
@@ -389,4 +392,84 @@ TEST_CASE("Fracture onset clock is independent of host contexts through tempo an
             REQUIRE(actual.repeat==expected.repeat);
         }
     }
+}
+
+namespace
+{
+// FNV-1a over the raw bytes of each float.
+struct Fnv1a
+{
+    std::uint64_t value=UINT64_C(0xcbf29ce484222325);
+    void add(float sample)
+    {
+        const auto bits=std::bit_cast<std::uint32_t>(sample);
+        for(int shift=0;shift<32;shift+=8)
+        {
+            value^=(bits>>shift)&0xffu;
+            value*=UINT64_C(0x100000001b3);
+        }
+    }
+};
+
+// Six bars at 8 kHz and 120 bpm of a fixed stereo input, in 333-frame host
+// buffers, through a Classic Fracture family with the page's pan spread and a
+// 3 ms fade.
+std::uint64_t classicFractureHash(const FractureParameters& fracture)
+{
+    Cutter cutter;
+    cutter.prepare(rate);
+    CutParameters p;
+    p.minPhraseBars=1;
+    p.maxPhraseBars=3;
+    p.minCents=-300;
+    p.maxCents=200;
+    cutter.setParameters(p);
+    cutter.setSeed(17);
+    cutter.setFadeMilliseconds(3);
+    cutter.setFracture(fracture);
+    OnsetDetector detector;
+    Bounds bounds;
+    cutter.setTransformSource(detector,bounds);
+    Fnv1a hash;
+    std::array<float,333> left{},right{};
+    for(int frame=0;frame<96000;frame+=333)
+    {
+        const auto count=std::min(333,96000-frame);
+        for(int i=0;i<count;++i)
+        {
+            left[static_cast<std::size_t>(i)]=static_cast<float>(.5*std::sin((frame+i)*.031)+.2*std::sin((frame+i)*.0047));
+            right[static_cast<std::size_t>(i)]=static_cast<float>(.4*std::cos((frame+i)*.023));
+        }
+        const auto beat=frame/4000.0;
+        const auto bar=static_cast<std::int64_t>(beat/4.0);
+        cutter.process(left.data(),right.data(),count,{120,4},{bar,beat-static_cast<double>(bar)*4.0});
+        for(int i=0;i<count;++i)
+        {
+            hash.add(left[static_cast<std::size_t>(i)]);
+            hash.add(right[static_cast<std::size_t>(i)]);
+        }
+    }
+    REQUIRE(cutter.error()==Cutter::Error::none);
+    return hash.value;
+}
+}
+
+TEST_CASE("Classic Fracture is bit-identical","[fracture][integration][pinned]")
+{
+    // Measured before the pad's Tape motions existed.
+    FractureParameters tape;
+    tape.procedure=FractureProcedure::tapeCut;
+    CHECK(classicFractureHash(tape)==UINT64_C(0x196832f071bdfe50));
+    tape.tape.curve=FractureParameters::Tape::Curve::linear;
+    tape.tape.alternate=true;
+    tape.tape.cycle=FractureParameters::Tape::Cycle::halfBeat;
+    CHECK(classicFractureHash(tape)==UINT64_C(0xaabd5f83201bfb55));
+    tape.tape.startSpeed=.8f;
+    tape.tape.endSpeed=.2f;
+    tape.tape.curve=FractureParameters::Tape::Curve::smooth;
+    tape.tape.cycle=FractureParameters::Tape::Cycle::fourBeats;
+    CHECK(classicFractureHash(tape)==UINT64_C(0xb7df1520fa304da0));
+    FractureParameters grain;
+    grain.procedure=FractureProcedure::grainCut;
+    CHECK(classicFractureHash(grain)==UINT64_C(0xc2d6efd1f39e08f6));
 }
