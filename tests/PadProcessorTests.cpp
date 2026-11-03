@@ -1583,6 +1583,29 @@ TEST_CASE ("Rush at the same spot in the same bar sounds the same", "[pad][proce
     CHECK (PadSession::sameBetween (fresh.output, played.output, engage, end));
 }
 
+TEST_CASE ("At 128 bpm and 44.1 kHz, where a bar ends half a sample between frames, Rush is the same for every host buffer size", "[pad][processor][rush][tie]")
+{
+    // A bar is 82687.5 samples. Engaged on the first sample, so the restart is a
+    // whole sample; every bar line after it ties.
+    const auto render = [] (int size)
+    {
+        PadSession session (false, 44100.0, 128.0);
+        set (session.processor, livecut::ids::padProgram, rushProgram);
+        set (session.processor, livecut::ids::padX, .8f);
+        set (session.processor, livecut::ids::padY, .3f);
+        set (session.processor, livecut::ids::padTouch, 1);
+        session.render (5 * 82688, size);
+        CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
+        return session.output;
+    };
+    const auto expected = render (1);
+    for (const int size : { 37, 512, 4096 })
+    {
+        CAPTURE (size);
+        CHECK (render (size) == expected);
+    }
+}
+
 TEST_CASE ("Rush's rolls are the same for every host buffer size, at 44.1, 48 and 96 kHz", "[pad][processor][rush]")
 {
     const auto rate = GENERATE (44100.0, 48000.0, 96000.0);

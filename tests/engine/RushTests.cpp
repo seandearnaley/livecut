@@ -561,9 +561,9 @@ bool halfSampleTie (double rate, int bpm, double meter, int bars)
 
 
 // At a steady tempo a roll's last cut ends within a frame of the bar line, either
-// side. Through a tempo ramp each re-time rounds its cut's start, so up to two
-// frames of input can come before the bar line, or four frames of the last cut
-// (under 0.1 ms) fall after it (measured 2 and 4).
+// side. Through a tempo ramp each re-time rounds its cut's start, so a few frames
+// of input can come before the bar line, or of the last cut after it: at most 4
+// (under 0.1 ms) with the tempo changing every 1 to 2048 frames.
 void checkLanded (const Played& played, int bars, int runOn = 1, int truncated = 1)
 {
     CAPTURE (played.compared, played.repeats, played.rolls, played.worstRunOn, played.worstTruncated);
@@ -600,7 +600,7 @@ void checkEveryTempo (double rate)
         const auto beats = 1.0 + bpm % 4;
         const auto curve = (bpm % 5 - 2) / 2.0;
         CAPTURE (rate, bpm, beats, curve);
-        checkLanded (playRush (roll (beats, curve, 500.0 * curve, bpm % 3 == 0), rate, bpm, 4.0, 3.0), 3);
+        checkLanded (playRush (roll (beats, curve, 500.0 * curve, bpm % 3 == 0), rate, bpm, 4.0, 4.0), 4);
     }
 }
 } // namespace
@@ -662,12 +662,12 @@ TEST_CASE ("In 13/8, Rush's rolls land on the bar line", "[rush][cutter][meter]"
 TEST_CASE ("Through tempo automation, Rush's rolls land on the bar line", "[rush][cutter][tempo]")
 {
     const auto ramp = GENERATE (-3.0, -.5, .5, 3.0);
-    const auto buffer = GENERATE (64, 512);
+    const auto buffer = GENERATE (1, 64, 512, 2048);
     for (const auto beats : { 1.0, 4.0 })
         for (const auto curve : { -1.0, 1.0 })
         {
             CAPTURE (ramp, buffer, beats, curve);
-            checkLanded (playRush (roll (beats, curve, 500.0 * curve), 48000.0, 120.0, 4.0, 6.0, ramp, buffer), 6, 2, 4);
+            checkLanded (playRush (roll (beats, curve, 500.0 * curve), 48000.0, 120.0, 4.0, 6.0, ramp, buffer), 6, 4, 4);
         }
 }
 
