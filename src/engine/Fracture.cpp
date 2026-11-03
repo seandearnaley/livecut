@@ -97,6 +97,126 @@ std::int64_t TapeTrajectory::sourceFrames() const
     return static_cast<std::int64_t> (std::ceil (position (frames-1)))+1;
 }
 
+namespace
+{
+constexpr double beatTolerance = 1.0e-9;
+constexpr std::uint64_t tapeStopTag = 0x5441504553544f50ULL; // "TAPESTOP"
+
+std::int64_t floorMod (std::int64_t value, std::int64_t divisor)
+{
+    return ((value % divisor) + divisor) % divisor;
+}
+
+bool isBarLine (double beat, double beatsPerBar)
+{
+    return beat >= beatsPerBar - beatTolerance;
+}
+
+// The candidate end before (bar, beat): the whole beat before it, or the bar line before that.
+void previousEnd (std::int64_t& bar, double& beat, double beatsPerBar)
+{
+    const auto whole = std::ceil (beat - beatTolerance) - 1.0;
+    if (whole >= 1.0 - beatTolerance)
+        beat = whole;
+    else
+    {
+        --bar;
+        beat = beatsPerBar;
+    }
+}
+} // namespace
+
+int tapeStopLevel (std::int64_t bar, double beat, double beatsPerBar)
+{
+    if (isBarLine (beat, beatsPerBar))
+        return floorMod (bar + 1, 4) == 0 ? 0 : floorMod (bar + 1, 2) == 0 ? 1 : 2;
+    return std::llround (beat) % 2 == 0 ? 3 : 4;
+}
+
+bool tapeStopEnds (std::uint32_t seed, double density, std::int64_t bar, double beat, double beatsPerBar)
+{
+    const auto level = tapeStopLevel (bar, beat, beatsPerBar);
+    const auto chance = std::clamp (density + 1.0 - level, 0.0, 1.0);
+    const auto at = isBarLine (beat, beatsPerBar) ? beatsPerBar : static_cast<double> (std::llround (beat));
+    return fractureDraw ({ seed, bar, 0.0, at, 0, 1 }, tapeStopTag) < chance;
+}
+
+double tapeStopBeats (const FractureParameters::Tape& tape, std::uint32_t seed, std::int64_t bar, double beat, double beatsPerBar)
+{
+    auto gap = 2.0 * beatsPerBar;
+    auto earlierBar = bar;
+    auto earlierBeat = beat;
+    auto distance = 0.0;
+    while (true)
+    {
+        const auto fromBar = earlierBar;
+        const auto fromBeat = earlierBeat;
+        previousEnd (earlierBar, earlierBeat, beatsPerBar);
+        distance += fromBar == earlierBar ? fromBeat - earlierBeat : fromBeat;
+        if (distance >= 2.0 * beatsPerBar - beatTolerance)
+            break;
+        if (tapeStopEnds (seed, tape.stopDensity, earlierBar, earlierBeat, beatsPerBar))
+        {
+            gap = distance;
+            break;
+        }
+    }
+    return std::min ({ static_cast<double> (tape.stopBeats), beatsPerBar, gap / 2.0 });
+}
+
+bool layOutTapeStops (const FractureParameters::Tape& tape, std::uint32_t seed, std::int64_t bar, double fromBeat,
+                      double beatsPerBar, double unitsPerBeat, double blockUnits, bool spinUpFirst,
+                      std::vector<Cut>& cuts)
+{
+    cuts.clear();
+    const auto end = fromBeat + blockUnits / unitsPerBeat;
+    auto at = fromBeat;
+    auto done = 0.0;
+    const auto add = [&] (TapeMotion motion, double until)
+    {
+        Cut cut;
+        cut.units = (until - at) * unitsPerBeat;
+        cut.tape = motion;
+        cuts.push_back (cut);
+        done += cut.units;
+        at = until;
+    };
+
+    if (spinUpFirst)
+        add (TapeMotion::spinUp, std::min (fromBeat + tapeSpinUpBeats, end));
+    auto endsInStop = false;
+    for (auto beat = std::floor (fromBeat + beatTolerance) + 1.0; ; beat += 1.0)
+    {
+        const auto stopEnd = std::min (beat, beatsPerBar);
+        if (stopEnd > end + beatTolerance)
+            break;
+        // Room for a play, the stop and its spin-up, and the block's last play.
+        if (cuts.size() + 4 > maxCutsPerBlock)
+            break;
+        if (tapeStopEnds (seed, tape.stopDensity, bar, stopEnd, beatsPerBar))
+        {
+            const auto stopStart = stopEnd - tapeStopBeats (tape, seed, bar, stopEnd, beatsPerBar);
+            if (stopStart >= at - beatTolerance)
+            {
+                if (stopStart > at + beatTolerance)
+                    add (TapeMotion::play, stopStart);
+                add (TapeMotion::stop, stopEnd);
+                if (stopEnd < end - beatTolerance)
+                    add (TapeMotion::spinUp, std::min (stopEnd + tapeSpinUpBeats, end));
+                else
+                    endsInStop = true;
+            }
+        }
+        if (stopEnd >= beatsPerBar - beatTolerance)
+            break;
+    }
+    if (at < end - beatTolerance)
+        add (TapeMotion::play, end);
+    // The last cut takes the exact remainder, so the cuts sum to the block.
+    cuts.back().units += blockUnits - done;
+    return endsInStop;
+}
+
 TapeCurve tapeCurveFor (const FractureParameters::Tape& tape, TapeMotion motion, std::uint64_t ordinal)
 {
     using Curve = FractureParameters::Tape::Curve;

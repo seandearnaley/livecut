@@ -169,6 +169,7 @@ void Cutter::resetRendering()
     frequencySelected = false;
     fractureBpm = 0;
     fractureOrdinal = 0;
+    tapeSpinUpNext = false;
     impactCut.reset();
     renderContextActive = false;
 }
@@ -178,6 +179,7 @@ void Cutter::drop (int sampleOffset, Observer* observer)
     cutting = false;
     queueHead = queued = 0;
     hasActivePlan = false;
+    tapeSpinUpNext = false; // what follows a drop starts on the track
     livePlayer.resetRendering();
     if (processingError == Error::planOverflow || processingError == Error::sourceUnavailable)
         processingError = Error::none;
@@ -558,7 +560,10 @@ void Cutter::planBlock (const Timing& timing)
     context.beatsPerBar = timing.beatsPerBar;
 
     if (fractureProcedure == FractureProcedure::classic)
+    {
+        tapeSpinUpNext = false;
         procedureFor (procedure).chooseBlock (random, params, context, cuts);
+    }
     else
         chooseFractureBlock (context);
     blockEnd = blockStart + totalUnits (cuts);
@@ -629,6 +634,14 @@ void Cutter::chooseFractureBlock (const BlockContext& context)
     const auto intoBar = blockStart-std::floor(blockStart/unitsPerBar)*unitsPerBar;
     const auto remaining = std::min(unitsPerBar-intoBar,context.phraseUnits-blockStart);
     const auto unitsPerBeat = unitsPerBar/context.beatsPerBar;
+    if(fractureProcedure==FractureProcedure::tapeCut && fractureParams.tape.layout==FractureParameters::Tape::Layout::stops)
+    {
+        const auto bar=phraseBar+static_cast<std::int64_t>(std::floor(blockStart/unitsPerBar));
+        tapeSpinUpNext=layOutTapeStops(fractureParams.tape,phraseImpactSeed,bar,intoBar/unitsPerBeat,context.beatsPerBar,
+                                       unitsPerBeat,remaining,tapeSpinUpNext,cuts);
+        return;
+    }
+    tapeSpinUpNext=false;
     const CutIdentity blockId {phraseImpactSeed,phraseBar,blockStart,0,0,1};
     double length=remaining,cutLength=remaining;
     if(fractureProcedure==FractureProcedure::grainCut)

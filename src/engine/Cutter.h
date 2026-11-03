@@ -243,6 +243,7 @@ private:
     ResonatorParameters resonatorParams;
     EffectRoute pendingEffectRoute = EffectRoute::impactResonatorFrequency;
     FractureProcedure fractureProcedure = FractureProcedure::classic;
+    bool tapeSpinUpNext = false; // the pad's Tape: the block before ended in a stop
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;
     double fractureBpm = 0.0;
