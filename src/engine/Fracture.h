@@ -35,7 +35,9 @@ struct FractureParameters
 
     struct Tape
     {
-        enum class Curve { linear, smooth };
+        // Appended for the pad's motions: quadratic is the stop's 1 - u^2 brake, and
+        // catchUp the spin-up that winds from still back onto the track (from 0 to 1 only).
+        enum class Curve { linear, smooth, quadratic, catchUp };
         enum class Cycle { halfBeat, oneBeat, twoBeats, fourBeats };
         float startSpeed = 1.0f;              // [0,1]
         float endSpeed = 0.0f;                // [0,1]
@@ -64,7 +66,10 @@ struct FractureDiagnostics
     double tapeSpeed = 0.0;
 };
 
-// Exact discrete integral of the chosen speed curve, including zero speed.
+// Exact discrete integral of the chosen speed curve, including zero speed. A
+// catch-up is the closed form instead: over T frames its position is
+// T (3u^2 - 3u^3 + u^4) at u = n / T, never ahead of frame n, and exactly T at
+// the end, where its speed is 1 with no acceleration left. It peaks at 1.25.
 class TapeTrajectory
 {
 public:

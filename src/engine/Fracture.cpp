@@ -55,15 +55,29 @@ void TapeTrajectory::start (double a, double b, int length, FractureParameters::
 
 double TapeTrajectory::speed (int frame) const
 {
+    if (curve == FractureParameters::Tape::Curve::catchUp)
+    {
+        const auto w = 1.0 - std::clamp (static_cast<double> (frame) / frames, 0.0, 1.0);
+        return from + (to - from) * (1.0 + w * w * (3.0 - 4.0 * w));
+    }
     if (frames == 1)
         return frame <= 0 ? from : to;
     const auto u = std::clamp (static_cast<double> (frame) / (frames-1),0.0,1.0);
-    const auto shape = curve == FractureParameters::Tape::Curve::linear ? u : u*u*(3-2*u);
+    const auto shape = curve == FractureParameters::Tape::Curve::linear ? u
+                     : curve == FractureParameters::Tape::Curve::quadratic ? u*u : u*u*(3-2*u);
     return std::clamp (from + (to-from)*shape,0.0,1.0);
 }
 
 double TapeTrajectory::position (int frame) const
 {
+    if (curve == FractureParameters::Tape::Curve::catchUp)
+    {
+        // n - n w^3 is the integral 3u^2 - 3u^3 + u^4 scaled to frames, written so
+        // that rounding can never put it ahead of frame n.
+        const auto n = static_cast<double> (std::clamp (frame, 0, frames));
+        const auto w = 1.0 - n / frames;
+        return from * n + (to - from) * (n - n * w * w * w) + std::max (frame - frames, 0) * to;
+    }
     const auto n = static_cast<double> (std::clamp (frame,0,frames));
     if (frames == 1)
         return n*from + std::max (frame-frames,0)*to;
@@ -71,8 +85,9 @@ double TapeTrajectory::position (int frame) const
     const auto sum1 = n*(n-1)/2;
     const auto sum2 = n*(n-1)*(2*n-1)/6;
     const auto sum3 = sum1*sum1;
-    const auto shapeSum = curve == FractureParameters::Tape::Curve::linear
-                        ? sum1/d : 3*sum2/(d*d)-2*sum3/(d*d*d);
+    const auto shapeSum = curve == FractureParameters::Tape::Curve::linear ? sum1/d
+                        : curve == FractureParameters::Tape::Curve::quadratic ? sum2/(d*d)
+                        : 3*sum2/(d*d)-2*sum3/(d*d*d);
     return std::max (0.0,n*from+(to-from)*shapeSum) + std::max (frame-frames,0)*to;
 }
 
