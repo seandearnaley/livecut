@@ -233,7 +233,7 @@ std::optional<LivePlayer::Tail> Cutter::rushSound (std::int64_t frame) const
 // starts on, and the first one in a phrase captures the pass it starts in, from
 // that pass's first frame, if it is in this epoch. A replay reads the phrase's loop
 // from 2 ms before its start, at each level's gain.
-void Cutter::startLoopsBlock (const Timing& timing)
+void Cutter::startLoopsBlock (const Timing& timing, std::int64_t bar, double beats)
 {
     const auto frame = planningSource.firstFrame;
     const auto bounds = sourceContext != nullptr ? sourceContext->sourceBoundsAt (frame) : std::nullopt;
@@ -244,9 +244,20 @@ void Cutter::startLoopsBlock (const Timing& timing)
         activePlan.source = planningSource;
         if (loop.captureFrame < 0 && activePlan.loopIntoPass >= 0.0)
         {
-            const auto capture = frame - static_cast<std::int64_t> (std::lround (activePlan.loopIntoPass * samplesPerUnit (timing)));
+            // The frame the pass's start would have activated on: the first frame
+            // within half a sample of it, the earlier one taking a tie, as Rush's tie
+            // rule has every Rush and Loops boundary do. Counted back from this
+            // frame's position, so a late press finds the same frame a pass boundary does.
+            const auto unitsPerBarHere = static_cast<double> (activePlan.unitsPerBar);
+            const auto passStart = activePlan.start - activePlan.loopIntoPass;
+            const auto passBars = std::floor ((passStart + 1.0e-9) / unitsPerBarHere);
+            const auto passBeat = (passStart - passBars * unitsPerBarHere) * timing.beatsPerBar / unitsPerBarHere;
+            const auto beatsBack = static_cast<double> (bar - activePlan.phraseBar - static_cast<std::int64_t> (passBars)) * timing.beatsPerBar
+                                 + beats - passBeat;
+            const auto framesBack = std::floor ((beatsBack + rushTieBeats) / renderBeatsPerSample + .5);
+            const auto capture = frame - static_cast<std::int64_t> (framesBack);
             if (capture >= first)
-                loop.captureFrame = capture;
+                loop.captureFrame = std::min (capture, frame);
         }
         return;
     }
@@ -1178,7 +1189,7 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         if (activePlan.rush)
             activePlan.source = planningSource;
         if (activePlan.loops)
-            startLoopsBlock (timing);
+            startLoopsBlock (timing, bar, beats);
         loopRunOn.reset();
         rushCut = 0;
         queueHead = (queueHead + 1) % plans.size();

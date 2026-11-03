@@ -1592,3 +1592,40 @@ TEST_CASE ("A seek within 2 ms after a Rush join keeps the join's fade", "[loops
         CHECK (wrapped.worstRatio <= 1.f);
     }
 }
+
+TEST_CASE ("A press on a half-sample 16th captures its pass from its start, for every buffer size", "[loops][cutter][late][tie]")
+{
+    // At 44.1 kHz and 120 bpm a 16th is 5512.5 samples, so every odd 16th ties half
+    // a sample between two frames. The earlier frame takes it, as Rush's tie rule
+    // says; the capture used to round the other way, start a frame before the
+    // epoch, and be refused: the first repeat came a bar late, by buffer size.
+    for (const auto bars : { 1.0, .5, .25 })
+        for (const auto pressedBar : { 0, 3 })
+        {
+            const auto barFrames = 88200;
+            const auto pressAt = pressedBar * barFrames + 11264; // in the 16th before the third
+            const auto pass = static_cast<std::int64_t> (barFrames * bars);
+            const auto expected = pressedBar * barFrames + (11264 + 5513) / pass * pass; // the pass holding 16th 3
+            std::vector<float> reference;
+            for (int (*size) (std::int64_t) : { +[] (std::int64_t) { return 1; }, +[] (std::int64_t) { return 2; },
+                                               +[] (std::int64_t) { return 7; }, +[] (std::int64_t) { return 64; },
+                                               +[] (std::int64_t) { return 100; }, +[] (std::int64_t) { return 128; },
+                                               +[] (std::int64_t) { return 256; }, +[] (std::int64_t) { return 512; },
+                                               +[] (std::int64_t) { return 1000; }, +[] (std::int64_t) { return 1024; }, randomSize })
+            {
+                CAPTURE (bars, pressedBar, size (0));
+                LoopsHost host (loops (bars, 0), 44100.0, 120.0);
+                host.cutter.setIdle (true);
+                host.run (pressAt, size);
+                host.cutter.setIdle (false);
+                host.run (3 * barFrames, size);
+                REQUIRE (host.blocks.size() >= 2);
+                CHECK (host.blocks[1].loop.captureFrame == expected);
+                CHECK (host.blocks[1].replay()); // the first repeat, a pass after the press
+                CHECK (host.blocks[1].frame - expected <= pass + 1);
+                if (reference.empty())
+                    reference = host.outLeft;
+                CHECK (host.outLeft == reference);
+            }
+        }
+}

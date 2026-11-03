@@ -221,7 +221,7 @@ private:
     // Rush's and Loops' plans: the track is the input, and their joins crossfade.
     static bool seamless (const BlockPlan& plan) { return plan.rush || plan.loops; }
     static bool loopsReplay (const BlockPlan& plan) { return plan.loops && plan.count > 0 && plan.cuts[0].loopLevel > 0; }
-    void startLoopsBlock (const Timing& timing);
+    void startLoopsBlock (const Timing& timing, std::int64_t bar, double beats);
     // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
     // 1/32-bar block starts plus a boundary/recovery plan await activation.
     // Sub-quarter bars are straight; SQPusher fills are >=1/8 beat and Bounce
