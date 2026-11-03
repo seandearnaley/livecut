@@ -1000,16 +1000,16 @@ TEST_CASE ("Every built program is bit-identical", "[pad][processor][pinned]")
     // with the MSVC values from Windows CI at b34dd71 (Cut's is the same on both):
     // each program touched at (0.3, 0.75) for
     // two and a half bars, then let go for a bar. Tape (5) was measured on pad/tape
-    // before Rush (b34dd71) and Rush (7) as it was built, with Apple Clang only until
-    // Windows CI reports MSVC's.
+    // before Rush (b34dd71) and Rush (7) as it was built; their MSVC values are
+    // Windows CI's at 8c10c43.
     const auto [program, expected] = GENERATE (table<int, std::uint64_t> ({
         { 0, livecut::engine::testing::pinnedHash (UINT64_C (0x01b9799feb2580b3), UINT64_C (0x01b9799feb2580b3)) },
         { 1, livecut::engine::testing::pinnedHash (UINT64_C (0x5beb3bdc95277b1e), UINT64_C (0xa875dee669894403)) },
         { 2, livecut::engine::testing::pinnedHash (UINT64_C (0x5b6d7fbe6f37ceaf), UINT64_C (0x46db6be90d87adc4)) },
         { 3, livecut::engine::testing::pinnedHash (UINT64_C (0xab0587de0062f957), UINT64_C (0xaba874b9e1d950e3)) },
         { 4, livecut::engine::testing::pinnedHash (UINT64_C (0x4e1b59cfbdff4bdb), UINT64_C (0x4a5a3b006d248f5d)) },
-        { 5, UINT64_C (0xf72072bf9a21e014) },
-        { 7, UINT64_C (0xaaa97ad19f9e7687) },
+        { 5, livecut::engine::testing::pinnedHash (UINT64_C (0xf72072bf9a21e014), UINT64_C (0x1471bfe233c4a6bb)) },
+        { 7, livecut::engine::testing::pinnedHash (UINT64_C (0xaaa97ad19f9e7687), UINT64_C (0x025f889496069180)) },
     }));
     CAPTURE (program);
     PadSession session;
