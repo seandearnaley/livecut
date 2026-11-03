@@ -892,89 +892,128 @@ TEST_CASE ("A restart in the middle of a stop fades the stop out under what foll
     }
 }
 
-TEST_CASE ("At any tempo, Tape plays every frame of the track between its stops", "[tape][cutter][tempo]")
+namespace
 {
-    // X 0.5 and Y 0: the first stop is beats 2 to 4 of bar 3, so bars 0 to 2 and the
-    // first half of bar 3 are the track, through three bar lines. At most whole-number
-    // tempos a bar isn't a whole number of samples, and the block's cuts ran out a
-    // frame before the next bar's block began: that frame was silence.
-    for (const auto rate : { 44100.0, 48000.0, 96000.0 })
-        for (const auto meter : { 4.0, 3.0 })
+// X 0.5 and Y 0: the first stop is beats 2 to 4 of bar 3, so bars 0 to 2 and the
+// first half of bar 3 are the track, through three bar lines. At most whole-number
+// tempos a bar isn't a whole number of samples, and the block's cuts ran out a
+// frame before the next bar's block began: that frame was silence.
+void checkTrackAtEveryTempo (double rate)
+{
+    for (const auto meter : { 4.0, 3.0 })
+    {
+        int wrong = 0, tempos = 0;
+        float worst = 0.f;
+        for (int bpm = 80; bpm <= 180; bpm += meter == 4.0 ? 1 : 7)
         {
-            int wrong = 0, tempos = 0;
-            float worst = 0.f;
-            for (int bpm = 80; bpm <= 180; bpm += meter == 4.0 ? 1 : 7)
+            TapeCutter tape (stops (2.0, 0.0), rate, bpm, meter);
+            const auto end = static_cast<std::int64_t> ((3.0 * meter + meter - 2.0) * 60.0 / bpm * rate) - 2;
+            std::array<float, 512> left {}, right {}, in {};
+            int here = 0;
+            while (tape.frame < end)
             {
-                TapeCutter tape (stops (2.0, 0.0), rate, bpm, meter);
-                const auto end = static_cast<std::int64_t> ((3.0 * meter + meter - 2.0) * 60.0 / bpm * rate) - 2;
-                std::array<float, 512> left {}, right {}, in {};
-                int here = 0;
-                while (tape.frame < end)
+                const auto count = static_cast<int> (std::min<std::int64_t> (512, end - tape.frame));
+                for (int i = 0; i < count; ++i)
                 {
-                    const auto count = static_cast<int> (std::min<std::int64_t> (512, end - tape.frame));
-                    for (int i = 0; i < count; ++i)
-                    {
-                        const auto t = static_cast<double> (tape.frame + i) / rate;
-                        in[static_cast<std::size_t> (i)] = left[static_cast<std::size_t> (i)] = right[static_cast<std::size_t> (i)]
-                            = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 97.0 * t) + .2);
-                    }
-                    tape.process (left.data(), right.data(), count);
-                    for (std::size_t i = 0; i < static_cast<std::size_t> (count); ++i)
-                        if (left[i] != in[i] || right[i] != in[i])
-                        {
-                            ++here;
-                            worst = std::max (worst, std::abs (left[i] - in[i]));
-                        }
+                    const auto t = static_cast<double> (tape.frame + i) / rate;
+                    in[static_cast<std::size_t> (i)] = left[static_cast<std::size_t> (i)] = right[static_cast<std::size_t> (i)]
+                        = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 97.0 * t) + .2);
                 }
-                REQUIRE (tape.cutter.error() == Cutter::Error::none);
-                wrong += here;
-                tempos += here > 0 ? 1 : 0;
+                tape.process (left.data(), right.data(), count);
+                for (std::size_t i = 0; i < static_cast<std::size_t> (count); ++i)
+                    if (left[i] != in[i] || right[i] != in[i])
+                    {
+                        ++here;
+                        worst = std::max (worst, std::abs (left[i] - in[i]));
+                    }
             }
-            CAPTURE (rate, meter, wrong, tempos, worst);
-            CHECK (wrong == 0);
+            REQUIRE (tape.cutter.error() == Cutter::Error::none);
+            wrong += here;
+            tempos += here > 0 ? 1 : 0;
         }
+        CAPTURE (rate, meter, wrong, tempos, worst);
+        CHECK (wrong == 0);
+    }
+}
+} // namespace
+
+TEST_CASE ("At any tempo, Tape plays every frame of the track between its stops, at 44.1 kHz", "[tape][cutter][tempo]")
+{
+    checkTrackAtEveryTempo (44100.0);
 }
 
-TEST_CASE ("In 5/4, 7/4, 5/8 and 13/8, every stop on a bar line spins back up", "[tape][cutter][meter]")
+TEST_CASE ("At any tempo, Tape plays every frame of the track between its stops, at 48 kHz", "[tape][cutter][tempo]")
+{
+    checkTrackAtEveryTempo (48000.0);
+}
+
+TEST_CASE ("At any tempo, Tape plays every frame of the track between its stops, at 96 kHz", "[tape][cutter][tempo]")
+{
+    checkTrackAtEveryTempo (96000.0);
+}
+
+namespace
+{
+void checkSpinUpsInMeter (double meter)
 {
     // 16 units over 5, 7, 2.5 or 6.5 beats isn't exact in binary. The block's cuts
     // summed an ulp short of the bar line, so a zero-length block took the spin-up,
     // and the bar started hard from the stop's silence.
-    for (const auto meter : { 5.0, 7.0, 2.5, 6.5 })
-        for (const auto bpm : { 93.0, 120.0, 140.0 })
+    for (const auto bpm : { 93.0, 120.0, 140.0 })
         for (const auto x : { 0.0, 1.0 })
-        for (const auto y : { .5, .75, 1.0 })
-        {
-            CAPTURE (meter, bpm, x, y);
-            TapeCutter tape (padSpot (x, y), 48000.0, bpm, meter);
-            const auto end = static_cast<std::int64_t> (6.0 * meter * 60.0 / bpm * 48000.0);
-            int hard = 0, empty = 0, spun = 0;
-            float previous = 0.f, worst = 0.f;
-            auto before = TapeMotion::play;
-            while (tape.frame < end)
+            for (const auto y : { .5, .75, 1.0 })
             {
-                const auto t = static_cast<double> (tape.frame) / 48000.0;
-                auto left = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 97.0 * t) + .2), right = left;
-                tape.process (&left, &right, 1);
-                const auto cuts = tape.cutter.currentCuts();
-                empty += cuts.size() == 1 && cuts[0].units < 1e-6 ? 1 : 0;
-                const auto motion = renderedMotion (tape.cutter);
-                if (before == TapeMotion::stop && motion != TapeMotion::stop)
-                    spun += motion == TapeMotion::spinUp ? 1 : 0;
-                if (tape.frame > 1 && std::abs (previous) < 1e-3f && std::abs (left) > .05f)
+                CAPTURE (meter, bpm, x, y);
+                TapeCutter tape (padSpot (x, y), 48000.0, bpm, meter);
+                const auto end = static_cast<std::int64_t> (6.0 * meter * 60.0 / bpm * 48000.0);
+                int hard = 0, empty = 0, spun = 0;
+                float previous = 0.f, worst = 0.f;
+                auto before = TapeMotion::play;
+                while (tape.frame < end)
                 {
-                    ++hard;
-                    worst = std::max (worst, std::abs (left - previous));
+                    const auto t = static_cast<double> (tape.frame) / 48000.0;
+                    auto left = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 97.0 * t) + .2), right = left;
+                    tape.process (&left, &right, 1);
+                    const auto cuts = tape.cutter.currentCuts();
+                    empty += cuts.size() == 1 && cuts[0].units < 1e-6 ? 1 : 0;
+                    const auto motion = renderedMotion (tape.cutter);
+                    if (before == TapeMotion::stop && motion != TapeMotion::stop)
+                        spun += motion == TapeMotion::spinUp ? 1 : 0;
+                    if (tape.frame > 1 && std::abs (previous) < 1e-3f && std::abs (left) > .05f)
+                    {
+                        ++hard;
+                        worst = std::max (worst, std::abs (left - previous));
+                    }
+                    previous = left;
+                    before = motion;
                 }
-                previous = left;
-                before = motion;
+                CAPTURE (hard, worst, empty, spun);
+                CHECK (tape.cutter.error() == Cutter::Error::none);
+                CHECK (empty == 0);
+                CHECK (hard == 0);
+                CHECK (spun > 0);
             }
-            CAPTURE (hard, worst, empty, spun);
-            CHECK (tape.cutter.error() == Cutter::Error::none);
-            CHECK (empty == 0);
-            CHECK (hard == 0);
-            CHECK (spun > 0);
-        }
+}
+} // namespace
+
+TEST_CASE ("In 5/4, every stop on a bar line spins back up", "[tape][cutter][meter]")
+{
+    checkSpinUpsInMeter (5.0);
+}
+
+TEST_CASE ("In 7/4, every stop on a bar line spins back up", "[tape][cutter][meter]")
+{
+    checkSpinUpsInMeter (7.0);
+}
+
+TEST_CASE ("In 5/8, every stop on a bar line spins back up", "[tape][cutter][meter]")
+{
+    checkSpinUpsInMeter (2.5);
+}
+
+TEST_CASE ("In 13/8, every stop on a bar line spins back up", "[tape][cutter][meter]")
+{
+    checkSpinUpsInMeter (6.5);
 }
 
 namespace
