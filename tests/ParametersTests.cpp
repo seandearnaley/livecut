@@ -812,6 +812,33 @@ TEST_CASE ("padSettings carries the program's Impact", "[parameters][pad]")
     }
 }
 
+TEST_CASE ("padSettings carries Tape's stops, and the other programs keep Classic Fracture", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    setValue (state, ids::fractureProcedure, 2); // the Classic page's Tape, with its own speeds
+    setValue (state, ids::fractureTapeStartSpeed, .4f);
+    const auto user = reader.read();
+    REQUIRE (user.fracture.procedure == engine::FractureProcedure::tapeCut);
+
+    const auto mapping = engine::mapPad (engine::PadProgram::tape, .6f, .3f, {});
+    const auto fracture = padSettings (user, mapping).fracture;
+    CHECK (fracture.procedure == engine::FractureProcedure::tapeCut);
+    CHECK (fracture.tape.layout == engine::FractureParameters::Tape::Layout::stops);
+    CHECK_THAT (fracture.tape.stopBeats, WithinAbs (2.0, 0.0));
+    CHECK_THAT (fracture.tape.stopDensity, WithinAbs (mapping.fracture.tape.stopDensity, 0.0));
+    CHECK_THAT (fracture.tape.startSpeed, WithinAbs (engine::FractureParameters{}.tape.startSpeed, 0.0));
+    CHECK_THAT (padSettings (user, mapping).fadeMilliseconds, WithinAbs (0.0, 0.0));
+
+    for (const auto program : { engine::PadProgram::cut, engine::PadProgram::bounce, engine::PadProgram::glitch,
+                                engine::PadProgram::suction, engine::PadProgram::filter })
+    {
+        INFO (static_cast<int> (program));
+        CHECK (padSettings (user, engine::mapPad (program, .5f, .5f, {})).fracture.procedure == engine::FractureProcedure::classic);
+    }
+}
+
 TEST_CASE ("padSettings carries Filter's sweep and tail", "[parameters][pad]")
 {
     LivecutAudioProcessor processor;

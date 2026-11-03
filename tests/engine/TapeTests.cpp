@@ -804,3 +804,44 @@ TEST_CASE ("On drums and bass, Tape is never louder than Cut or the input", "[ta
             CHECK (loudest <= std::abs (peak));
         }
 }
+
+TEST_CASE ("A restart in the middle of a stop fades the stop out under what follows", "[tape][cutter]")
+{
+    // X 1 and Y 0: bar 3 is one four-beat stop. A restart lands on its third beat.
+    constexpr std::int64_t restart = 3 * 96000 + 48000;
+    constexpr int fade = 240; // 5 ms, the pad's release
+    for (const bool toClassic : { false, true })
+    {
+        CAPTURE (toClassic);
+        TapeCutter tape (padSpot (1.0, 0.0));
+        std::vector<float> in, out;
+        while (tape.frame < restart + 4 * fade)
+        {
+            if (tape.frame == restart - 1000)
+            {
+                if (toClassic)
+                    tape.cutter.setFracture ({}); // a switch to a Classic-family program
+                tape.cutter.restartAtNextUnit();
+            }
+            const auto input = tone (tape.frame);
+            auto left = input.left, right = input.right;
+            tape.process (&left, &right, 1);
+            in.push_back (input.left);
+            out.push_back (left);
+            if (tape.frame == restart)
+                REQUIRE (tape.cutter.fractureDiagnostics().tapeSpeed < 1.0); // mid-stop, braking
+        }
+        REQUIRE (tape.cutter.error() == Cutter::Error::none);
+        const auto at = static_cast<std::size_t> (restart);
+        // Before: the stop. From the restart, its tail fades out over 5 ms under the new cut.
+        const auto stopStep = largestStep (out, at - 2000, at);
+        const auto inputStep = largestStep (in, at - 2000, at + 4 * fade);
+        const auto across = largestStep (out, at - 1, at + fade + 1);
+        CAPTURE (stopStep, inputStep, across);
+        // Measured 0.84x; spliced straight to the new cut it stepped 0.63, 32x.
+        CHECK (across <= std::max (stopStep, inputStep));
+        if (! toClassic)
+            CHECK (std::equal (out.begin() + static_cast<std::ptrdiff_t> (at + fade), out.end(),
+                               in.begin() + static_cast<std::ptrdiff_t> (at + fade))); // then the track, exactly
+    }
+}

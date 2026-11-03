@@ -14,6 +14,7 @@ Settings padSettings (const Settings& user, const engine::PadMapping& mapping)
     settings.cut.straight = user.padStraight;
     settings.crusher = mapping.crusher;
     settings.impact = mapping.impact;
+    settings.fracture = mapping.fracture;
     settings.wet = user.wet;
     settings.outputTrimDb = user.outputTrimDb;
     settings.requestedMode = user.requestedMode;

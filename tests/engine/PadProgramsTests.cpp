@@ -73,7 +73,7 @@ CutProcedure& procedureFor (const PadMapping& mapping, CutProc11& cut, Bounce& b
 }
 } // namespace
 
-TEST_CASE ("Only Cut, Bounce, Glitch, Suction and Filter are available", "[pad]")
+TEST_CASE ("Only Cut, Bounce, Glitch, Suction, Filter and Tape are available", "[pad]")
 {
     CHECK (padProgramCount == 8);
     CHECK (isAvailable (PadProgram::cut));
@@ -81,7 +81,7 @@ TEST_CASE ("Only Cut, Bounce, Glitch, Suction and Filter are available", "[pad]"
     CHECK (isAvailable (PadProgram::glitch));
     CHECK (isAvailable (PadProgram::suction));
     CHECK (isAvailable (PadProgram::filter));
-    CHECK_FALSE (isAvailable (PadProgram::tape));
+    CHECK (isAvailable (PadProgram::tape));
     CHECK_FALSE (isAvailable (PadProgram::loops));
     CHECK_FALSE (isAvailable (PadProgram::rush));
     CHECK (PadZones{}.x == -1);
@@ -98,7 +98,7 @@ TEST_CASE ("Captions can be looked up for any program, empty for those not yet b
     CHECK (caption (padCaptions (PadProgram::glitch).x) == "Rate");
     CHECK (caption (padCaptions (PadProgram::glitch).y) == "Pitch");
 
-    for (const auto program : { PadProgram::tape, PadProgram::loops, PadProgram::rush })
+    for (const auto program : { PadProgram::loops, PadProgram::rush })
     {
         CAPTURE (program);
         CHECK (caption (padCaptions (program).x).empty());
@@ -106,7 +106,8 @@ TEST_CASE ("Captions can be looked up for any program, empty for those not yet b
     }
 
     // The same words the mapping carries, from one table.
-    for (const auto program : { PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter })
+    for (const auto program : { PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
+                                PadProgram::tape })
     {
         CAPTURE (program);
         const auto mapping = mapPad (program, .5f, .5f, {});
@@ -153,7 +154,8 @@ TEST_CASE ("Cut maps density to 8, 16 and 32 units", "[pad]")
 
 TEST_CASE ("Mappings are deterministic", "[pad]")
 {
-    const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter);
+    const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
+                                   PadProgram::tape);
     const auto x = GENERATE (0.f, .34f, .5f, .85f, 1.f);
     const auto y = GENERATE (0.f, .25f, .5f, .75f, 1.f);
     const auto usePrevious = GENERATE (false, true);
@@ -172,6 +174,10 @@ TEST_CASE ("Mappings are deterministic", "[pad]")
     CHECK_THAT (a.impact.filter.cutoffHz, WithinAbs (b.impact.filter.cutoffHz, 0.0));
     CHECK_THAT (a.impact.filter.tailLevel, WithinAbs (b.impact.filter.tailLevel, 0.0));
     CHECK_THAT (a.impact.filter.tailDecayMs, WithinAbs (b.impact.filter.tailDecayMs, 0.0));
+    CHECK (a.fracture.procedure == b.fracture.procedure);
+    CHECK (a.fracture.tape.layout == b.fracture.tape.layout);
+    CHECK_THAT (a.fracture.tape.stopBeats, WithinAbs (b.fracture.tape.stopBeats, 0.0));
+    CHECK_THAT (a.fracture.tape.stopDensity, WithinAbs (b.fracture.tape.stopDensity, 0.0));
     CHECK (a.zones.x == b.zones.x);
     CHECK (a.zones.y == b.zones.y);
     CHECK (std::string_view (a.xCaption) == std::string_view (b.xCaption));
@@ -180,9 +186,11 @@ TEST_CASE ("Mappings are deterministic", "[pad]")
 
 TEST_CASE ("Every mapping stays inside the parameter ranges", "[pad]")
 {
-    const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter);
+    const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
+                                   PadProgram::tape);
     const auto seed = program == PadProgram::cut ? 101u : program == PadProgram::bounce ? 202u
-                    : program == PadProgram::glitch ? 303u : program == PadProgram::suction ? 404u : 505u;
+                    : program == PadProgram::glitch ? 303u : program == PadProgram::suction ? 404u
+                    : program == PadProgram::filter ? 505u : 606u;
     constexpr std::array allowedUnits { 6, 8, 12, 16, 18, 24, 32 };
 
     for (int xi = 0; xi <= 20; ++xi)
@@ -225,6 +233,11 @@ TEST_CASE ("Every mapping stays inside the parameter ranges", "[pad]")
             CHECK (filter.tailLevel <= 1.f);
             CHECK (filter.tailDecayMs >= 50.f);
             CHECK (filter.tailDecayMs <= 2000.f);
+            const auto& tape = mapping.fracture.tape;
+            CHECK (tape.stopBeats > 0.f);
+            CHECK (tape.stopBeats <= 16.f);
+            CHECK (tape.stopDensity >= 0.f);
+            CHECK (tape.stopDensity <= 4.f);
         }
     }
 }
@@ -406,6 +419,86 @@ TEST_CASE ("Cut, Bounce and Glitch keep Impact off", "[pad]")
     CHECK_THAT (mapping.impact.filter.envelopeOctaves, WithinAbs (off.filter.envelopeOctaves, 0.0));
     CHECK_THAT (mapping.impact.attackMs, WithinAbs (off.attackMs, 0.0));
     CHECK_THAT (mapping.impact.decayMs, WithinAbs (off.decayMs, 0.0));
+}
+
+TEST_CASE ("Only Tape leaves Fracture's Classic family", "[pad]")
+{
+    const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter);
+    const auto x = GENERATE (0.f, .5f, 1.f);
+    const auto y = GENERATE (0.f, .5f, 1.f);
+    const auto mapping = mapPad (program, x, y, {});
+    const FractureParameters classic;
+    CHECK (mapping.fracture.procedure == FractureProcedure::classic);
+    CHECK (mapping.fracture.tape.layout == classic.tape.layout);
+    CHECK_THAT (mapping.fracture.tape.stopDensity, WithinAbs (classic.tape.stopDensity, 0.0));
+}
+
+TEST_CASE ("Tape is available, with Length and Stops", "[pad]")
+{
+    CHECK (isAvailable (PadProgram::tape));
+    CHECK (std::string_view (padCaptions (PadProgram::tape).x) == "Length");
+    CHECK (std::string_view (padCaptions (PadProgram::tape).y) == "Stops");
+    const auto mapping = mapPad (PadProgram::tape, .5f, .5f, {});
+    CHECK (std::string_view (mapping.xCaption) == "Length");
+    CHECK (std::string_view (mapping.yCaption) == "Stops");
+}
+
+TEST_CASE ("Tape maps X to a stop length in four steps and Y to how often", "[pad]")
+{
+    for (int xi = 0; xi <= 40; ++xi)
+        for (int yi = 0; yi <= 40; ++yi)
+        {
+            const auto x = static_cast<float> (xi) / 40.f, y = static_cast<float> (yi) / 40.f;
+            CAPTURE (x, y);
+            const auto mapping = mapPad (PadProgram::tape, x, y, {});
+            constexpr float lengths[] { .5f, 1.f, 2.f, 4.f };
+            const auto step = std::min (static_cast<int> (4.f * x), 3);
+            CHECK (mapping.fracture.procedure == FractureProcedure::tapeCut);
+            CHECK (mapping.fracture.tape.layout == FractureParameters::Tape::Layout::stops);
+            CHECK (mapping.fracture.tape.stopBeats == lengths[step]);
+            CHECK_THAT (mapping.fracture.tape.stopDensity, WithinAbs (4.0 * y, 1e-6));
+        }
+    CHECK (mapPad (PadProgram::tape, .24f, 0.f, {}).fracture.tape.stopBeats == .5f);
+    CHECK (mapPad (PadProgram::tape, .25f, 0.f, {}).fracture.tape.stopBeats == 1.f);
+    CHECK (mapPad (PadProgram::tape, .74f, 0.f, {}).fracture.tape.stopBeats == 2.f);
+    CHECK (mapPad (PadProgram::tape, 1.f, 0.f, {}).fracture.tape.stopBeats == 4.f);
+}
+
+TEST_CASE ("Tape cuts on 16ths with its own seed, and nothing else", "[pad]")
+{
+    const auto x = GENERATE (0.f, .5f, 1.f);
+    const auto y = GENERATE (0.f, .5f, 1.f);
+    const auto mapping = mapPad (PadProgram::tape, x, y, {});
+    CutParameters expected;
+    expected.minPhraseBars = 1;
+    expected.maxPhraseBars = 2;
+    checkCutEqual (mapping.cut, expected);
+    checkCrusherEqual (mapping.crusher, CrusherParameters{});
+    CHECK_FALSE (mapping.impact.filter.enabled);
+    CHECK_FALSE (mapping.impact.drive.enabled);
+    CHECK_FALSE (mapping.impact.transient.enabled);
+    CHECK (mapping.unitsPerBar == 16);
+    CHECK (mapping.seed == 606);
+    CHECK (mapping.procedure == Procedure::cutProc11);
+}
+
+TEST_CASE ("Tape never restarts the cutting while you move", "[pad]")
+{
+    const auto first = mapPad (PadProgram::tape, 0.f, 0.f, {});
+    auto previous = first;
+    for (int xi = 0; xi <= 20; ++xi)
+    {
+        for (int yi = 0; yi <= 20; ++yi)
+        {
+            CAPTURE (xi, yi);
+            const auto x = static_cast<float> (xi) / 20.f;
+            const auto y = static_cast<float> (xi % 2 == 0 ? yi : 20 - yi) / 20.f; // a boustrophedon sweep
+            const auto next = mapPad (PadProgram::tape, x, y, previous.zones);
+            CHECK (sameDiscreteState (previous, next));
+            CHECK (sameDiscreteState (first, mapPad (PadProgram::tape, x, y, {})));
+            previous = next;
+        }
+    }
 }
 
 TEST_CASE ("Discrete state compares only procedure, subdivision and zones", "[pad]")

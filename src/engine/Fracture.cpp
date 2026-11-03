@@ -377,10 +377,11 @@ void FractureReader::startCut (const FractureCutContext& cut)
     firstReady=-1;
     nextGrain=0;
     tapeSegmentAge=0;
+    nextAge=0;
     tapeBase=0;
     grainFrames=std::max(2,static_cast<int>(std::lround(parameters.grain.sizeMs*sampleRate/1000)));
-    const auto speeds=tapeCurveFor(parameters.tape,cut.cut.tape,context.ordinal);
-    tape.start(speeds.from,speeds.to,cut.outputFrames,speeds.curve);
+    const auto speeds = tapeCurveFor (parameters.tape, cut.cut.tape, context.ordinal);
+    tape.start (speeds.from, speeds.to, cut.outputFrames, speeds.curve);
 }
 
 void FractureReader::fail (FractureState reason)
@@ -392,16 +393,49 @@ void FractureReader::fail (FractureState reason)
 
 void FractureReader::retimeTape (int age, int remainingFrames)
 {
-    const auto speeds=tapeCurveFor(parameters.tape,context.cut.tape,context.ordinal);
+    const auto speeds = tapeCurveFor (parameters.tape, context.cut.tape, context.ordinal);
     // A spin-up runs its own frames and then plays on at speed 1, on the track.
-    if(parameters.procedure!=FractureProcedure::tapeCut || context.completeTapeSource
-       || speeds.curve==FractureParameters::Tape::Curve::catchUp)
+    if (parameters.procedure != FractureProcedure::tapeCut || context.completeTapeSource
+        || speeds.curve == FractureParameters::Tape::Curve::catchUp)
         return;
     const auto position=tapeBase+tape.position(age-tapeSegmentAge);
     const auto speed=tape.speed(age-tapeSegmentAge);
     tapeBase=position;
     tapeSegmentAge=age;
-    tape.start(speed,speeds.to,remainingFrames,speeds.curve);
+    tape.start (speed, speeds.to, remainingFrames, speeds.curve);
+}
+
+std::optional<TapeTail> FractureReader::tail() const
+{
+    if (parameters.procedure != FractureProcedure::tapeCut || context.cut.tape == TapeMotion::cycle
+        || state.state != FractureState::playing)
+        return std::nullopt;
+    TapeTail tail;
+    tail.source = context.source;
+    tail.trajectory = tape;
+    tail.base = tapeBase;
+    tail.age = nextAge;
+    tail.segmentAge = tapeSegmentAge;
+    panMatrix (context.cut.pan, context.cut.amp, tail.ll, tail.lr, tail.rl, tail.rr);
+    return tail;
+}
+
+bool TapeTail::next (const LivePlayer& player, float& left, float& right)
+{
+    const auto local = age - segmentAge;
+    const auto speed = trajectory.speed (local);
+    const auto position = base + trajectory.position (local);
+    ++age;
+    left = right = 0.0f;
+    if (speed <= 0)
+        return true;
+    const auto frame = player.readSourceFrame (source, position);
+    if (! frame)
+        return false;
+    const auto gain = static_cast<float> (std::sqrt (std::min (speed, 1.0)));
+    left = gain * (ll * frame->left + rl * frame->right);
+    right = gain * (lr * frame->left + rr * frame->right);
+    return true;
 }
 
 bool FractureReader::launch()
@@ -500,6 +534,7 @@ bool FractureReader::process (const LivePlayer& player, int age, int soundingFra
     }
     else
     {
+        nextAge = age + 1;
         const auto local=age-tapeSegmentAge;
         const auto position=tapeBase+tape.position(local);
         state.tapeSpeed=tape.speed(local);
@@ -517,9 +552,9 @@ bool FractureReader::process (const LivePlayer& player, int age, int soundingFra
         panMatrix(context.cut.pan,context.cut.amp,ll,lr,rl,rr);
         // A motion joins its neighbours without a seam, so it has no fade, and a
         // spin-up's overshoot bends the pitch, never the level.
-        const auto gain=context.cut.tape==TapeMotion::cycle
+        const auto gain = context.cut.tape == TapeMotion::cycle
                         ? static_cast<float>(std::sqrt(state.tapeSpeed))*fadeEnvelope(age,context.fadeFrames,soundingFrames)
-                        : static_cast<float>(std::sqrt(std::min(state.tapeSpeed,1.0)));
+                        : static_cast<float> (std::sqrt (std::min (state.tapeSpeed, 1.0)));
         left=gain*(ll*frame->left+rl*frame->right);
         right=gain*(lr*frame->left+rr*frame->right);
     }

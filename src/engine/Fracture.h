@@ -138,6 +138,20 @@ struct FractureCutContext
     bool completeTapeSource = false;
 };
 
+// A tape motion cut off by a restart plays on as a tail while the cutter fades
+// it out under what follows, so a switch away from Tape never splices a slowed
+// tape onto the input. Plain data, so taking one never allocates.
+struct TapeTail
+{
+    SourceRegion source {};
+    TapeTrajectory trajectory;
+    double base = 0.0;
+    int age = 0, segmentAge = 0;
+    float ll = 1, lr = 0, rl = 0, rr = 1;
+    // Renders the next frame of the motion; false once its source is gone.
+    bool next (const LivePlayer&, float& left, float& right);
+};
+
 // Owns eight Grain voices and one Tape trajectory; no processing allocations.
 class FractureReader
 {
@@ -149,6 +163,8 @@ public:
     void startCut (const FractureCutContext&);
     void fail (FractureState);
     void retimeTape (int age, int remainingFrames);
+    // The sounding motion from its next frame on, if a pad motion is playing.
+    std::optional<TapeTail> tail() const;
     // Returns true exactly once when the source is first admitted for this cut.
     bool process (const LivePlayer&, int age, int soundingFrames, float& left, float& right);
     const FractureDiagnostics& diagnostics() const { return state; }
@@ -169,7 +185,7 @@ private:
     GrainResampler resampler;
     std::array<Voice,8> voices {};
     TapeTrajectory tape;
-    int grainFrames = 2, firstReady = -1, tapeSegmentAge = 0;
+    int grainFrames = 2, firstReady = -1, tapeSegmentAge = 0, nextAge = 0;
     std::uint64_t nextGrain = 0;
     double tapeBase = 0.0;
     bool admitted = false;
