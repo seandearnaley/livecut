@@ -12,6 +12,7 @@
 #include "engine/AttackCandidates.h"
 
 #include <cstdint>
+#include <limits>
 #include <array>
 #include <span>
 #include <vector>
@@ -224,9 +225,12 @@ private:
     // Rush's and Loops' plans: the track is the input, and their joins crossfade.
     static bool seamless (const BlockPlan& plan) { return plan.rush || plan.loops; }
     static bool loopsReplay (const BlockPlan& plan) { return plan.loops && plan.count > 0 && plan.cuts[0].loopLevel > 0; }
-    void startLoopsBlock (const Timing& timing, std::int64_t bar, double beats);
+    void startLoopsBlock (const Timing& timing);
     void snapLoop (const Timing& timing, std::int64_t frame);
     void sumLoopHold (std::int64_t frame, std::int64_t most);
+    double loopHoldSumTo (std::int64_t length, std::int64_t frame);
+    void trackQuarters (std::int64_t frame, std::int64_t bar, double beats, double halfSample, double beatsPerSample, double beatsPerBar);
+    static bool reached (double boundary, double beats, double halfSample, bool tie);
     // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
     // 1/32-bar block starts plus a boundary/recovery plan await activation.
     // Sub-quarter bars are straight; SQPusher fills are >=1/8 beat and Bounce
@@ -298,20 +302,36 @@ private:
     std::int64_t rushJoinFrame = -1;
     std::size_t rushCut = 0;
     LoopDiagnostics loop; // the pad's Loops: this phrase's loop
+    // The pad's Loops: the frames the last quarter-bar points were crossed on, by
+    // the tie rule a block activates by, as the Cutter renders, cutting or idle. A
+    // capture starts on the frame its pass began on, under any tempo automation.
+    struct Crossing
+    {
+        std::int64_t quarter = -1; // the bar times four plus the quarter
+        std::int64_t frame = -1;
+    };
+    std::array<Crossing, 8> crossings {};
+    std::size_t crossingNext = 0;
+    std::int64_t quartersBar = std::numeric_limits<std::int64_t>::min();
+    unsigned quartersReached = 0; // of quartersBar's four, those reached
+    bool crossingsFresh = true;   // the first frame since a reset: what is behind it wasn't crossed
     std::int64_t holdMostReads = 0;
     // The pad's Loops: the level hold's sum over the snapped loop, a few frames each
-    // sample as the track pass records, so the phrase's first repeat only finishes it.
+    // sample as the track pass records, with the running sum noted every
+    // holdCheckpoint frames, so the first repeat sums each level from its last
+    // checkpoint, in the same order, at the lengths it plays at.
     struct LoopHold
     {
-        double passUnits = 0.0;               // the loop's length in units, from its capture
-        std::array<std::int64_t, 4> lengths {}; // the whole loop, its half, quarter and eighth, in frames
-        std::array<double, 4> energy {};       // the sum at each length; the whole loop's once finished
-        double sum = 0.0;
-        std::int64_t next = 0;                 // frames summed, from the read frame
-        bool started = false;                  // the read frame is chosen
-        bool done = false;                     // the gains are set
+        double passUnits = 0.0;   // the loop's length in units, from its capture
+        double sum = 0.0;         // of the frames summed so far
+        std::int64_t next = 0;    // frames summed, from the read frame
+        bool started = false;     // the read frame is chosen
+        bool done = false;        // the gains are set
     };
     LoopHold hold;
+    std::vector<double> holdCheckpoints; // the sum after each holdCheckpoint frames; sized in prepare
+    std::int64_t holdReadFrame = -1, holdReads = 0; // the hold's history reads on the frame being rendered
+    static constexpr std::int64_t holdCheckpoint = 32;
     static constexpr std::int64_t holdReadsPerFrame = 32;
     std::optional<LivePlayer::Tail> loopRunOn; // the pad's Loops: a replay block's last cut, run on to the next block
     std::optional<std::size_t> fractureCut;

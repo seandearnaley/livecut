@@ -14,6 +14,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 using namespace livecut::engine;
@@ -1636,8 +1637,8 @@ TEST_CASE ("A press on a half-sample 16th captures its pass from its start, for 
 TEST_CASE ("The level hold reads a bounded number of frames for each frame it renders", "[loops][level][cpu]")
 {
     // It used to read the whole loop on the sample of the phrase's first repeat: a
-    // bar of 768,000 frames at 96 kHz and 30 bpm, 0.5 to 2 ms on one sample. Now it
-    // reads at most 32 frames of history a sample while the track pass plays.
+    // bar of 768,000 frames at 96 kHz and 30 bpm, 0.5 to 2 ms on one sample. Now its
+    // work on any one sample is bounded, whatever the loop's length.
     struct Config
     {
         double rate, bpm, meter;
@@ -1655,8 +1656,12 @@ TEST_CASE ("The level hold reads a bounded number of frames for each frame it re
         for (const auto& block : host.blocks)
             replays += block.replay() ? 1 : 0;
         CHECK (replays >= 1);
+        // At most 32 frames a sample while the track pass plays, and on the first
+        // repeat at most 31 more for each of the four levels and the whole loop,
+        // from their checkpoints: 187 at worst, whatever the loop's length.
+        CAPTURE (host.cutter.loopHoldMostReads());
         CHECK (host.cutter.loopHoldMostReads() > 0);
-        CHECK (host.cutter.loopHoldMostReads() <= 32);
+        CHECK (host.cutter.loopHoldMostReads() <= 32 + 5 * 31);
     }
 }
 
@@ -1735,4 +1740,115 @@ TEST_CASE ("A new loop length during the track pass leaves the track untouched",
         for (auto f = host.blocks.front().frame; f < end; ++f)
             REQUIRE (host.outLeft[static_cast<std::size_t> (f)] == host.inLeft[static_cast<std::size_t> (f)]);
     }
+}
+
+namespace
+{
+// The gains the hold should set for a phrase's first repeat: the RMS of the loop,
+// and of its half, quarter and eighth, from the read frame, at the lengths the
+// repeats play at, the first repeat's tempo, up to its first frame.
+std::array<float, 4> heldGains (const LoopsHost& host, const Activated& firstRepeat, double loopFrames)
+{
+    const auto read = firstRepeat.loop.readFrame;
+    std::array<std::int64_t, 4> lengths {};
+    for (std::size_t level = 0; level < 4; ++level)
+        lengths[level] = std::max<std::int64_t> (1, std::lround (loopFrames / std::exp2 (static_cast<double> (level))));
+    const auto recorded = std::min (lengths[0], firstRepeat.frame + 1 - read);
+    std::array<double, 4> energy {};
+    auto sum = 0.0;
+    for (std::int64_t i = 0; i < recorded; ++i)
+    {
+        const auto l = host.inLeft[static_cast<std::size_t> (read + i)], r = host.inRight[static_cast<std::size_t> (read + i)];
+        sum += static_cast<double> (l) * l + static_cast<double> (r) * r;
+        for (std::size_t level = 1; level < 4; ++level)
+            if (i + 1 == lengths[level])
+                energy[level] = sum;
+    }
+    const auto whole = sum / static_cast<double> (std::max<std::int64_t> (recorded, 1));
+    std::array<float, 4> gains { 1.f, 1.f, 1.f, 1.f };
+    for (std::size_t level = 1; level < 4; ++level)
+    {
+        const auto part = energy[level] / static_cast<double> (lengths[level]);
+        gains[level] = part > whole && part > 0.0 ? static_cast<float> (std::sqrt (whole / part)) : 1.0f;
+    }
+    return gains;
+}
+} // namespace
+
+TEST_CASE ("Through a tempo step in the track pass, the hold measures the loop at the tempo it repeats at", "[loops][level][tempo]")
+{
+    // The hold's lengths came from the tempo at the snap, a few ms after the capture.
+    // A step later in the track pass then mis-held each level: 2.2 dB at 120 to 80
+    // bpm, 0.83 dB at 120 to 114, and at 120 to 150 a level 0.8 dB louder than its loop.
+    for (const auto newBpm : { 80.0, 114.0, 150.0, 170.0 })
+        for (const auto bars : { 1.0, .25 })
+            for (const auto at : { .1, .5, .9 })
+            {
+                CAPTURE (newBpm, bars, at);
+                LoopsHost host (loops (bars, 3), 48000.0, 120.0, 4.0, true);
+                host.source = drums<0>;
+                host.run (static_cast<std::int64_t> (at * bars * 96000.0));
+                host.tempoBeats = host.beatsAt (host.frame);
+                host.tempoFrame = host.frame;
+                host.bpm = newBpm;
+                host.run (static_cast<std::int64_t> (3 * 4 * 60.0 / newBpm * 48000.0));
+                const auto first = std::find_if (host.blocks.begin(), host.blocks.end(), [] (const Activated& b) { return b.replay(); });
+                REQUIRE (first != host.blocks.end());
+                const auto loopFrames = unitsPerBar * bars * samplesPerUnitOf (host);
+                const auto expected = heldGains (host, *first, loopFrames);
+                for (std::size_t level = 0; level < 4; ++level)
+                    CHECK (first->loop.gains[level] == expected[level]);
+            }
+}
+
+TEST_CASE ("Through tempo automation, a late press captures the frame its pass began on", "[loops][cutter][late][tempo]")
+{
+    // A bar loop pressed at beat 3.1 of bar 1. The capture was counted back from the
+    // press at the press's tempo, so automation earlier in the bar moved it off the
+    // bar line: +49.6 ms on a +3 bpm/beat ramp, -92.4 ms on -3, -100 ms on a step
+    // from 120 to 100 bpm at beat 1. Now it is the frame the bar line was crossed on.
+    struct Automation
+    {
+        double ramp, stepBpm, stepBeat;
+    };
+    for (const auto [ramp, stepBpm, stepBeat] : { Automation { 3.0, 0.0, 0.0 }, Automation { -3.0, 0.0, 0.0 }, Automation { 0.0, 100.0, 1.0 },
+                                                  Automation { .5, 0.0, 0.0 }, Automation { 0.0, 140.0, 2.0 } })
+        for (const auto rate : { 44100.0, 48000.0 })
+        {
+            CAPTURE (ramp, stepBpm, stepBeat, rate);
+            const auto play = [&] (bool late)
+            {
+                auto host = std::make_unique<LoopsHost> (loops (1.0, 0), rate, 120.0);
+                host->source = heldBass<57>;
+                if (late)
+                    host->cutter.setIdle (true);
+                bool pressed = ! late, stepped = stepBpm == 0.0;
+                while (host->frame < static_cast<std::int64_t> (6 * rate))
+                {
+                    const auto beat = host->beatsAt (host->frame);
+                    if (! stepped && beat >= 4.0 + stepBeat)
+                    {
+                        host->tempoBeats = beat;
+                        host->tempoFrame = host->frame;
+                        host->bpm = stepBpm;
+                        stepped = true;
+                    }
+                    if (! pressed && beat >= 4.0 + 3.1)
+                    {
+                        host->cutter.setIdle (false);
+                        pressed = true;
+                    }
+                    host->run (32, [] (std::int64_t) { return 32; }, ramp);
+                }
+                return host;
+            };
+            const auto engaged = play (false), late = play (true);
+            // Where bar 1's line activated, engaged from the start under the same automation.
+            const auto barLine = std::find_if (engaged->blocks.begin(), engaged->blocks.end(), [] (const Activated& b) { return b.phraseBar * 4 + b.start / 16.0 * 4 == 4 || (b.phraseBar == 1 && b.start == 0.0) || (b.phraseBar == 0 && b.start == 16.0); });
+            REQUIRE (barLine != engaged->blocks.end());
+            const auto repeat = std::find_if (late->blocks.begin(), late->blocks.end(), [] (const Activated& b) { return b.replay(); });
+            REQUIRE (repeat != late->blocks.end());
+            CAPTURE (barLine->frame, repeat->loop.captureFrame);
+            CHECK (std::llabs (repeat->loop.captureFrame - barLine->frame) <= 2); // the ramp tolerance the landing tests use
+        }
 }

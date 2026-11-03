@@ -54,6 +54,7 @@ void Cutter::prepare (double newSampleRate, std::int64_t latencyFrames)
     fractureReader.prepare (sampleRate);
     tapeTailFrames = std::max (1, static_cast<int> (std::lround (.005 * sampleRate)));
     rushJoinFrames = std::max (1, static_cast<int> (std::lround (.002 * sampleRate)));
+    holdCheckpoints.assign (static_cast<std::size_t> (std::ceil (maxBarSeconds * sampleRate / holdCheckpoint)) + 2, 0.0);
     if (! routeRack.prepare (sampleRate))
         throw std::runtime_error ("Cannot prepare effect rack");
     setFadeMilliseconds (fadeMilliseconds);
@@ -200,6 +201,9 @@ void Cutter::resetRendering()
     loop = {};
     hold = {};
     loopRunOn.reset();
+    crossings = {};
+    crossingsFresh = true;
+    quartersBar = std::numeric_limits<std::int64_t>::min();
     impactCut.reset();
     renderContextActive = false;
 }
@@ -234,7 +238,7 @@ std::optional<LivePlayer::Tail> Cutter::rushSound (std::int64_t frame) const
 // starts on, and the first one in a phrase captures the pass it starts in, from
 // that pass's first frame, if it is in this epoch. A replay reads the phrase's loop
 // from 2 ms before its start, at each level's gain.
-void Cutter::startLoopsBlock (const Timing& timing, std::int64_t bar, double beats)
+void Cutter::startLoopsBlock (const Timing& timing)
 {
     const auto frame = planningSource.firstFrame;
     const auto bounds = sourceContext != nullptr ? sourceContext->sourceBoundsAt (frame) : std::nullopt;
@@ -245,18 +249,17 @@ void Cutter::startLoopsBlock (const Timing& timing, std::int64_t bar, double bea
         activePlan.source = planningSource;
         if (loop.captureFrame < 0 && activePlan.loopIntoPass >= 0.0)
         {
-            // The frame the pass's start would have activated on: the first frame
-            // within half a sample of it, the earlier one taking a tie, as Rush's tie
-            // rule has every Rush and Loops boundary do. Counted back from this
-            // frame's position, so a late press finds the same frame a pass boundary does.
+            // The frame the pass began on, as the Cutter crossed it: the quarter-bar
+            // point at its start, reached by the test its block would activate by.
             const auto unitsPerBarHere = static_cast<double> (activePlan.unitsPerBar);
             const auto passStart = activePlan.start - activePlan.loopIntoPass;
             const auto passBars = std::floor ((passStart + 1.0e-9) / unitsPerBarHere);
-            const auto passBeat = (passStart - passBars * unitsPerBarHere) * timing.beatsPerBar / unitsPerBarHere;
-            const auto beatsBack = static_cast<double> (bar - activePlan.phraseBar - static_cast<std::int64_t> (passBars)) * timing.beatsPerBar
-                                 + beats - passBeat;
-            const auto framesBack = std::floor ((beatsBack + rushTieBeats) / renderBeatsPerSample + .5);
-            const auto capture = frame - static_cast<std::int64_t> (framesBack);
+            const auto quarter = (activePlan.phraseBar + static_cast<std::int64_t> (passBars)) * 4
+                               + std::llround ((passStart - passBars * unitsPerBarHere) * 4.0 / unitsPerBarHere);
+            std::int64_t capture = -1;
+            for (const auto& crossing : crossings)
+                if (crossing.quarter == quarter)
+                    capture = crossing.frame;
             if (capture >= first)
             {
                 loop.captureFrame = std::min (capture, frame);
@@ -268,16 +271,21 @@ void Cutter::startLoopsBlock (const Timing& timing, std::int64_t bar, double bea
     assert (loop.captureFrame >= 0);
     if (! hold.done)
     {
-        // Finish the level hold: what the track pass hasn't summed yet, up to this frame.
+        // Finish the level hold at the lengths the repeats play at, this block's
+        // tempo, up to this frame: each from its last checkpoint, in the same order.
         if (! hold.started)
             snapLoop (timing, frame);
         sumLoopHold (frame, std::numeric_limits<std::int64_t>::max());
-        const auto recorded = std::min (hold.lengths[0], frame + 1 - loop.readFrame);
-        hold.energy[0] = hold.sum;
-        const auto whole = hold.energy[0] / static_cast<double> (std::max<std::int64_t> (recorded, 1));
-        for (std::size_t level = 1; level < hold.lengths.size(); ++level)
+        const auto& cut = activePlan.cuts[0];
+        const auto loopFrames = cut.units * std::exp2 (cut.loopLevel - 1) * samplesPerUnit (timing);
+        std::array<std::int64_t, 4> lengths {};
+        for (std::size_t level = 0; level < lengths.size(); ++level)
+            lengths[level] = std::max<std::int64_t> (1, std::lround (loopFrames / std::exp2 (static_cast<double> (level))));
+        const auto recorded = std::min ({ lengths[0], frame + 1 - loop.readFrame, hold.next });
+        const auto whole = loopHoldSumTo (recorded, frame) / static_cast<double> (std::max<std::int64_t> (recorded, 1));
+        for (std::size_t level = 1; level < lengths.size(); ++level)
         {
-            const auto part = hold.energy[level] / static_cast<double> (hold.lengths[level]);
+            const auto part = lengths[level] <= recorded ? loopHoldSumTo (lengths[level], frame) / static_cast<double> (lengths[level]) : 0.0;
             loop.gains[level] = part > whole && part > 0.0 ? static_cast<float> (std::sqrt (whole / part)) : 1.0f;
             // The loop holds at least its first part's energy, so no gain falls under 2^(-level/2).
             assert (loop.gains[level] >= std::exp2 (-.5 * static_cast<double> (level)) - 1.0e-3);
@@ -313,8 +321,9 @@ void Cutter::snapLoop (const Timing& timing, std::int64_t frame)
         }
     }
     loop.readFrame = std::max (first, start - preroll);
-    for (std::size_t level = 0; level < hold.lengths.size(); ++level)
-        hold.lengths[level] = std::max<std::int64_t> (1, std::lround (loopFrames / std::exp2 (static_cast<double> (level))));
+    hold.next = 0;
+    hold.sum = 0.0;
+    holdCheckpoints[0] = 0.0;
     hold.started = true;
 }
 
@@ -323,17 +332,43 @@ void Cutter::snapLoop (const Timing& timing, std::int64_t frame)
 // the loop's end. It notes the sum at each level's length on the way.
 void Cutter::sumLoopHold (std::int64_t frame, std::int64_t most)
 {
-    const auto end = std::min (hold.lengths[0], frame + 1 - loop.readFrame);
+    const auto capacity = static_cast<std::int64_t> (holdCheckpoints.size() - 1) * holdCheckpoint;
+    const auto end = std::min (frame + 1 - loop.readFrame, capacity);
     std::int64_t reads = 0;
-    for (; hold.next < end && reads < most; ++hold.next, ++reads)
+    for (; hold.next < end && reads < most; ++reads)
     {
         if (const auto raw = livePlayer.rawFrame (loop.readFrame + hold.next))
             hold.sum += static_cast<double> (raw->left) * raw->left + static_cast<double> (raw->right) * raw->right;
-        for (std::size_t level = 1; level < hold.lengths.size(); ++level)
-            if (hold.next + 1 == hold.lengths[level])
-                hold.energy[level] = hold.sum;
+        if (++hold.next % holdCheckpoint == 0)
+            holdCheckpoints[static_cast<std::size_t> (hold.next / holdCheckpoint)] = hold.sum;
     }
-    holdMostReads = std::max (holdMostReads, reads);
+    if (holdReadFrame != frame)
+    {
+        holdReadFrame = frame;
+        holdReads = 0;
+    }
+    holdReads += reads;
+    holdMostReads = std::max (holdMostReads, holdReads);
+}
+
+// The pad's Loops: the hold's sum over the loop's first `length` frames, from the
+// checkpoint at or before it, adding the rest in the same order as the running sum.
+double Cutter::loopHoldSumTo (std::int64_t length, std::int64_t frame)
+{
+    const auto checkpoint = length / holdCheckpoint;
+    auto sum = holdCheckpoints[static_cast<std::size_t> (checkpoint)];
+    std::int64_t reads = 0;
+    for (auto i = checkpoint * holdCheckpoint; i < length; ++i, ++reads)
+        if (const auto raw = livePlayer.rawFrame (loop.readFrame + i))
+            sum += static_cast<double> (raw->left) * raw->left + static_cast<double> (raw->right) * raw->right;
+    if (holdReadFrame != frame)
+    {
+        holdReadFrame = frame;
+        holdReads = 0;
+    }
+    holdReads += reads;
+    holdMostReads = std::max (holdMostReads, holdReads);
+    return sum;
 }
 
 void Cutter::mixTail (std::optional<LivePlayer::Tail>& tail, int& age, int frames, float& left, float& right)
@@ -490,6 +525,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
         beats -= timing.beatsPerBar;
         ++bar;
     }
+    trackQuarters (frame, bar, beats, halfSampleBeats, beatsPerSample, timing.beatsPerBar);
 
     if (idle != pendingIdle)
     {
@@ -777,6 +813,42 @@ void Cutter::endRenderContext (int sampleOffset, Observer* observer)
 double Cutter::samplesPerUnit (const Timing& timing) const
 {
     return sampleRate * 60.0 / timing.bpm * timing.beatsPerBar / unitsPerBar;
+}
+
+// Rush's tie rule, the one test every Rush and Loops boundary is reached by: on the
+// frame at `beats`, a boundary at `boundary` beats into the bar is reached once it
+// lies no more than half a sample after the frame, or with `tie` 10^-9 beats more,
+// so the earlier of two frames takes a boundary exactly half a sample between them.
+// Other blocks activate by the same test without the tie.
+bool Cutter::reached (double boundary, double beats, double halfSample, bool tie)
+{
+    return ! (boundary > beats + halfSample + (tie ? rushTieBeats : 0.0));
+}
+
+// The pad's Loops: note the frame each quarter-bar point is crossed on, by the test
+// a block on it would activate by. A bar line is crossed on the frame the bar starts.
+void Cutter::trackQuarters (std::int64_t frame, std::int64_t bar, double beats, double halfSample, double beatsPerSample, double beatsPerBar)
+{
+    if (bar != quartersBar)
+    {
+        quartersBar = bar;
+        quartersReached = 0;
+    }
+    for (int q = 0; q < 4; ++q)
+    {
+        const auto bit = 1u << q;
+        // As planBlock places a block on it: its units into the bar, in beats.
+        const auto boundary = static_cast<double> (q) * unitsPerBar / 4.0 * beatsPerBar / unitsPerBar;
+        if ((quartersReached & bit) != 0 || ! reached (boundary, beats, halfSample, true))
+            continue;
+        quartersReached |= bit;
+        // Behind where rendering began, it was crossed before, or in another epoch.
+        if (crossingsFresh && reached (boundary, beats - beatsPerSample, halfSample, true))
+            continue;
+        crossings[crossingNext] = { bar * 4 + q, frame };
+        crossingNext = (crossingNext + 1) % crossings.size();
+    }
+    crossingsFresh = false;
 }
 
 CutProcedure& Cutter::procedureFor (Procedure p)
@@ -1198,7 +1270,7 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
     while (queued > 0)
     {
         const auto& next = plans[queueHead];
-        if (next.activationBar > bar || (next.activationBar == bar && next.activationBeat > beats + halfSample + (seamless (next) ? rushTieBeats : 0.0)))
+        if (next.activationBar > bar || (next.activationBar == bar && ! reached (next.activationBeat, beats, halfSample, seamless (next))))
             return;
         // A Tape stop or spin-up the new block cuts short, as tempo automation
         // can, fades out under it over 5 ms instead of splicing.
@@ -1227,7 +1299,7 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         if (activePlan.rush)
             activePlan.source = planningSource;
         if (activePlan.loops)
-            startLoopsBlock (timing, bar, beats);
+            startLoopsBlock (timing);
         loopRunOn.reset();
         rushCut = 0;
         queueHead = (queueHead + 1) % plans.size();
