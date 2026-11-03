@@ -834,9 +834,6 @@ TEST_CASE ("padSettings carries Rush's roll and the pad's Straight, and no Class
     CHECK (settings.fracture.procedure == engine::FractureProcedure::classic);
     CHECK_FALSE (settings.impact.filter.enabled);
     CHECK_THAT (settings.fadeMilliseconds, WithinAbs (0.0, 0.0));
-
-    // Classic's settings never roll, so a switch to Classic mid-bar plays the track to the bar line.
-    CHECK_THAT (user.cut.rollBeats, WithinAbs (0.0, 0.0));
 }
 
 TEST_CASE ("padSettings carries Tape's stops, and the other programs keep Classic Fracture", "[parameters][pad]")

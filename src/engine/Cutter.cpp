@@ -707,11 +707,13 @@ void Cutter::planBlock (const Timing& timing)
     plan.source = planningSource;
     plan.phraseBar = phraseBar;
     plan.unitsPerBar = unitsPerBar;
-    plan.transform = transformParameters;
+    plan.rush = procedure == Procedure::rush && fractureProcedure == FractureProcedure::classic;
+    // Rush's cuts are the track and its rolls, unaccented and untransformed, even
+    // while Classic's settings, which carry both, wait for their bar line.
+    plan.transform = plan.rush ? TransformParameters {} : transformParameters;
     plan.transformSeed = seed;
     plan.fracture = fractureParams;
     plan.fracture.procedure = fractureProcedure;
-    plan.rush = procedure == Procedure::rush && fractureProcedure == FractureProcedure::classic;
     plan.frequency = frequencyParams;
     plan.resonator = resonatorParams;
     plan.transportEpoch = 0;
@@ -733,7 +735,7 @@ void Cutter::planBlock (const Timing& timing)
     for (std::size_t i = 0; i < cuts.size(); ++i)
     {
         plan.cuts[i] = cuts[i];
-        if (accent > 0.0f)
+        if (accent > 0.0f && ! plan.rush)
             plan.cuts[i].amp *= accentGain (accent, seed, phraseBar, cutOrdinal);
         ++cutOrdinal;
     }

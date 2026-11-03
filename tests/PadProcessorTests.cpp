@@ -1527,6 +1527,31 @@ TEST_CASE ("An arrangement loop opens Rush on the track, after a roll that lands
     CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
 }
 
+// A switch to the Classic surface lands Classic's procedure on the bar line, and
+// until then Rush plays on with Classic's settings: they never roll, so Rush plays
+// the track. Classic's accent, Attack Align and reverse used to reach that track's
+// blocks too: an accent of 1 took up to 2.5 dB off the last beat's track.
+TEST_CASE ("Switching Rush to Classic mid-bar plays the track to the bar line, untouched by Classic's accent and transforms", "[pad][processor][rush]")
+{
+    constexpr int rollStart = 3 * barFrames + 3 * beatFrames, barLine = 4 * barFrames;
+    PadSession session;
+    auto& processor = session.processor;
+    set (processor, livecut::ids::accent, 1);
+    set (processor, livecut::ids::attackAlign, 1);
+    set (processor, livecut::ids::reverseChance, 1);
+    set (processor, livecut::ids::padProgram, static_cast<float> (rushProgram));
+    set (processor, livecut::ids::padX, 1);
+    set (processor, livecut::ids::padY, 0); // a one-beat rush on beat 4
+    set (processor, livecut::ids::padTouch, 1);
+    session.render (3 * barFrames + beatFrames + 1000);
+    REQUIRE (processor.getCutter ().activeProcedure () == livecut::engine::Procedure::rush);
+    useClassicSurface (processor);
+    session.render (barLine - session.frame);
+    CHECK (processor.getCutter ().activeProcedure () == livecut::engine::Procedure::rush);
+    CHECK (session.dryBetween (rollStart, barLine)); // no roll, and the track exactly
+    CHECK (processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
+}
+
 TEST_CASE ("Rush at the same spot in the same bar sounds the same", "[pad][processor][rush]")
 {
     // One session plays only from bar 3; the other played elsewhere on the pad
