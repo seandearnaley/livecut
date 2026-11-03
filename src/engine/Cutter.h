@@ -256,6 +256,8 @@ private:
     // stopped transport, unsupported timing) the input was heard in between.
     std::int64_t tapeSilentFrame = -1;
     int tapeTailAge = 0, tapeTailFrames = 1;
+    std::optional<LivePlayer::Tail> rushTail; // the pad's Rush: a cut cut off by a restart, fading out
+    int rushTailAge = 0;
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;
     double fractureBpm = 0.0;

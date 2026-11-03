@@ -99,6 +99,20 @@ public:
 
     std::span<const PlayingCut> cuts() const { return playing; }
 
+    // The playing cut from its next frame on, as plain data, so a restart can let it
+    // play on under what follows. It carries the cut's read and stereo matrix, not its
+    // fade; the pad's Rush, which takes it, plays its cuts unfaded.
+    struct Tail
+    {
+        SourceRegion source {};
+        double position = 0.0, rate = 1.0;
+        float ll = 1, lr = 0, rl = 0, rr = 1;
+        // Renders the next frame; false once its source is gone.
+        bool next (const LivePlayer&, float& left, float& right);
+    };
+    // Empty once the block has run out, its cut has gone silent, or under a transform.
+    std::optional<Tail> tail() const;
+
     // Index of the cut playing next; cuts().size() once the block has run out.
     std::size_t currentCut() const { return current; }
 

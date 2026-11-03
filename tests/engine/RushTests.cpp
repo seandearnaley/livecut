@@ -665,3 +665,49 @@ TEST_CASE ("On drums and bass, Rush stays near the track's level and never peaks
             }
         }
 }
+
+TEST_CASE ("A restart in the middle of a roll fades the repeat out under what follows", "[rush][cutter]")
+{
+    // A whole-bar rush: its second cut, a repeat, runs from frame 14000 of the bar
+    // to about 26170. A restart asked for at 16000 lands on the 16th at 18000. What
+    // follows is a late engage, so the track; the repeat fades out under it over 5 ms.
+    constexpr std::int64_t bar = 96000, asked = 2 * bar + 16000, restart = 2 * bar + 18000;
+    constexpr int fade = 240;
+    const auto params = roll (4.0, 1.0, 500.0);
+    RushCutter restarted (params), twin (params);
+    std::vector<float> out, rush, in;
+    while (restarted.frame < restart + 2 * fade)
+    {
+        if (restarted.frame == asked)
+            restarted.cutter.restartAtNextUnit();
+        const auto frame = tone (restarted.frame);
+        auto left = frame.left, right = frame.right, twinLeft = frame.left, twinRight = frame.right;
+        restarted.process (&left, &right, 1);
+        twin.process (&twinLeft, &twinRight, 1);
+        out.push_back (left);
+        rush.push_back (twinLeft);
+        in.push_back (frame.left);
+    }
+    REQUIRE (restarted.cutter.error() == Cutter::Error::none);
+    const auto at = [] (std::int64_t frame) { return static_cast<std::size_t> (frame); };
+    REQUIRE (rush[at (restart)] != in[at (restart)]); // the roll was repeating there
+    for (int i = 0; i < fade; ++i)
+    {
+        CAPTURE (i);
+        const auto weight = static_cast<float> (fade - i) / static_cast<float> (fade);
+        const auto expected = weight * rush[at (restart + i)] + (1.f - weight) * in[at (restart + i)];
+        REQUIRE_THAT (out[at (restart + i)], WithinAbs (expected, 1.0e-6));
+    }
+    for (auto i = restart + fade; i < restart + 2 * fade; ++i)
+        REQUIRE (out[at (i)] == in[at (i)]); // then the track, exactly
+    // So the restart steps no more than the repeat or the input do around it.
+    const auto largest = [&] (const std::vector<float>& signal)
+    {
+        float step = 0.f;
+        for (auto i = restart - fade; i < restart + 2 * fade; ++i)
+            step = std::max (step, std::abs (signal[at (i)] - signal[at (i - 1)]));
+        return step;
+    };
+    CAPTURE (largest (out), largest (rush), largest (in));
+    CHECK (largest (out) <= std::max (largest (rush), largest (in)));
+}

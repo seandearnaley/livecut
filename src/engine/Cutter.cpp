@@ -174,6 +174,7 @@ void Cutter::resetRendering()
     tapeSpinUpNext = false;
     tapeTail.reset();
     tapeRunOn.reset();
+    rushTail.reset();
     impactCut.reset();
     renderContextActive = false;
 }
@@ -347,6 +348,12 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                     tapeTail = tapeRunOn ? tapeRunOn : fractureReader.tail();
                     tapeTailAge = 0;
                 }
+                // So does a Rush cut: a roll's repeat fades out rather than splicing.
+                if (hasActivePlan && activePlan.rush)
+                {
+                    rushTail = livePlayer.tail();
+                    rushTailAge = 0;
+                }
                 drop (sampleOffset, observer);
             }
         }
@@ -480,6 +487,20 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
         }
         if (++tapeTailAge >= tapeTailFrames)
             tapeTail.reset();
+    }
+
+    if (rushTail)
+    {
+        // The same crossfade as Tape's, from the cut that was playing.
+        float tailLeft = 0.0f, tailRight = 0.0f;
+        if (rushTail->next (livePlayer, tailLeft, tailRight))
+        {
+            const auto weight = static_cast<float> (tapeTailFrames - rushTailAge) / static_cast<float> (tapeTailFrames);
+            left = weight * tailLeft + (1.0f - weight) * left;
+            right = weight * tailRight + (1.0f - weight) * right;
+        }
+        if (++rushTailAge >= tapeTailFrames)
+            rushTail.reset();
     }
 
     if (processingError != Error::none)
