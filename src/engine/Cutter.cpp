@@ -357,9 +357,17 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                     tapeTailAge = 0;
                 }
                 // So does a Rush cut: a roll's repeat fades out rather than splicing.
+                // Where its block has just run out, on a beat or a bar line, what
+                // Rush plays next is the input itself, so that fades out instead.
                 if (hasActivePlan && activePlan.rush)
                 {
                     rushTail = livePlayer.tail();
+                    if (! rushTail)
+                    {
+                        LivePlayer::Tail input;
+                        input.source = planningSource;
+                        rushTail = input;
+                    }
                     rushTailAge = 0;
                 }
                 drop (sampleOffset, observer);

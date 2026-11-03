@@ -861,3 +861,159 @@ TEST_CASE ("At every half-sample tie tempo in 13/8, Rush's track is the input, f
 {
     checkTies (6.5);
 }
+
+namespace
+{
+// Sustained material where a missing fade shows: a held 55 Hz bass, and a pad
+// chord with a slow swell. Drums are the review's loop, alone.
+enum class Held { bass, chord, drums };
+
+StereoFrame held (Held kind, std::int64_t frame, const DrumLoop& drums)
+{
+    const auto t = static_cast<double> (frame) / 48000.0;
+    constexpr auto pi = 3.141592653589793;
+    if (kind == Held::bass)
+    {
+        const auto v = static_cast<float> (.6 * std::sin (2.0 * pi * 55.0 * t + .7) + .15 * std::sin (2.0 * pi * 110.0 * t + .2));
+        return { v, v };
+    }
+    if (kind == Held::chord)
+    {
+        auto v = 0.0;
+        for (const auto hz : { 130.8, 261.6, 329.6, 392.0 })
+            v += .2 * std::sin (2.0 * pi * hz * t);
+        v *= .75 + .25 * std::sin (2.0 * pi * .3 * t);
+        return { static_cast<float> (v), static_cast<float> (v) };
+    }
+    const auto v = drums.samples[static_cast<std::size_t> (frame) % drums.samples.size()];
+    return { v, v };
+}
+
+// A pad program's whole mapping on a Cutter, as the processor applies it.
+void apply (Cutter& cutter, PadProgram program, float x, float y)
+{
+    const auto m = mapPad (program, x, y, {});
+    cutter.setProcedure (m.procedure);
+    cutter.setUnitsPerBar (m.unitsPerBar);
+    cutter.setSeed (m.seed);
+    cutter.setParameters (m.cut);
+    cutter.setCrusher (m.crusher);
+    cutter.setImpact (m.impact);
+    cutter.setFracture (m.fracture);
+}
+
+struct Bounds final : Cutter::SourceContext
+{
+    std::optional<Cutter::TransportBounds> sourceBoundsAt (std::int64_t frame) const override
+    {
+        if (frame < 0)
+            return std::nullopt;
+        return Cutter::TransportBounds { 1, 0, std::nullopt };
+    }
+};
+
+// Plays `from` (or `to` from the start, when `switchAt` is negative) on `kind`,
+// a frame at a time, switching to `to` with a restart asked for at `switchAt`.
+std::vector<float> playSwitch (Held kind, double bpm, float y, PadProgram from, PadProgram to, std::int64_t switchAt, std::int64_t frames)
+{
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
+    Cutter cutter;
+    OnsetDetector detector;
+    Bounds bounds;
+    cutter.prepare (48000.0);
+    cutter.setTransformSource (detector, bounds);
+    // Rush plays at X 0.8 and the given Y; the program it switches to at the pad's centre.
+    const auto first = switchAt < 0 ? to : from;
+    apply (cutter, first, first == PadProgram::rush ? .8f : .5f, first == PadProgram::rush ? y : .5f);
+    std::vector<float> out;
+    for (std::int64_t frame = 0; frame < frames; ++frame)
+    {
+        if (frame == switchAt)
+        {
+            apply (cutter, to, .5f, .5f);
+            cutter.restartAtNextUnit();
+        }
+        const auto in = held (kind, frame, drums);
+        auto left = in.left, right = in.right;
+        const auto beats = static_cast<double> (frame) * bpm / 60.0 / 48000.0;
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+        cutter.process (&left, &right, 1, { bpm, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+        REQUIRE (cutter.error() == Cutter::Error::none);
+        out.push_back (left);
+    }
+    return out;
+}
+
+float largestStepIn (const std::vector<float>& signal, std::int64_t from, std::int64_t to)
+{
+    float largest = 0.f;
+    for (auto i = from; i < to; ++i)
+        largest = std::max (largest, std::abs (signal[static_cast<std::size_t> (i)] - signal[static_cast<std::size_t> (i - 1)]));
+    return largest;
+}
+
+// Switches out of Rush on every beat of bar 2, the bar line included, where the
+// pad quantises them and Rush's blocks end. Returns the worst ratio of the step
+// within ±2400 samples of the switch, the processor's switch-click window, to the
+// larger of the two programs played throughout there and the input, and counts
+// samples of exact silence where the input sounds.
+struct Switched
+{
+    int zeros = 0;
+    float worstRatio = 0.f;
+};
+
+Switched switchOnBeats (Held kind, double bpm)
+{
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
+    const auto beat = 48000.0 * 60.0 / bpm;
+    constexpr int fade = 240, window = 2400; // the 5 ms fade; the processor's switch-click window
+    Switched result;
+    for (const auto to : { PadProgram::cut, PadProgram::tape, PadProgram::filter })
+        for (const auto y : { .1f, .35f, .6f, .85f })
+        {
+            const auto end = static_cast<std::int64_t> (std::ceil (8.0 * beat)) + window;
+            const auto rush = playSwitch (kind, bpm, y, PadProgram::rush, PadProgram::rush, -1, end);
+            const auto other = playSwitch (kind, bpm, y, to, to, -1, end);
+            for (int b = 4; b < 8; ++b)
+            {
+                const auto boundary = static_cast<std::int64_t> (std::ceil (b * beat - .5));
+                const auto out = playSwitch (kind, bpm, y, PadProgram::rush, to, boundary - 3, boundary + window);
+                for (auto i = boundary - 2; i < boundary + fade; ++i)
+                {
+                    const auto input = held (kind, i, drums).left;
+                    result.zeros += out[static_cast<std::size_t> (i)] == 0.f && std::abs (input) > 1.0e-3f ? 1 : 0;
+                }
+                // Against the larger of the two programs played throughout, and the input,
+                // which is what both play from here: a snare on the beat is its own step.
+                const auto from = boundary - window, until = boundary + window;
+                std::vector<float> input;
+                for (std::int64_t i = 0; i < until; ++i)
+                    input.push_back (held (kind, i, drums).left);
+                const auto reference = std::max ({ largestStepIn (rush, from, until), largestStepIn (other, from, until),
+                                                   largestStepIn (input, from, until) });
+                result.worstRatio = std::max (result.worstRatio, largestStepIn (out, from, until) / reference);
+            }
+        }
+    return result;
+}
+} // namespace
+
+TEST_CASE ("A switch out of Rush on the beat, where its blocks end, fades and never drops to silence", "[rush][cutter][switch]")
+{
+    // The pad quantises a switch to the beat, where Rush's track and rolls begin
+    // and end. There the cut that was playing has run out, so the restart found no
+    // cut to fade out, and the next program's first sample was exact silence.
+    const auto [kind, bpm, name] = GENERATE (table<Held, double, const char*> ({
+        { Held::bass, 120.0, "held bass at 120 bpm" },
+        { Held::bass, 133.0, "held bass at 133 bpm" },
+        { Held::chord, 120.0, "pad chord at 120 bpm" },
+        { Held::chord, 133.0, "pad chord at 133 bpm" },
+        { Held::drums, 120.0, "drums" },
+    }));
+    CAPTURE (name);
+    const auto switched = switchOnBeats (kind, bpm);
+    CAPTURE (switched.zeros, switched.worstRatio);
+    CHECK (switched.zeros == 0);
+    CHECK (switched.worstRatio <= 1.25f);
+}

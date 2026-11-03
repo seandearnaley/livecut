@@ -1430,6 +1430,37 @@ TEST_CASE ("Switching Rush to Cut or Tape mid-roll, and Cut to Rush, doesn't cli
     }
 }
 
+// A switch the pad quantises onto Rush's own boundaries: the beat a one-beat rush
+// starts on, and the bar line it lands on. There the cut that was playing has run
+// out, and the restart used to find nothing to fade: the next program's first
+// sample was exact silence. Now the input Rush would play next fades out instead.
+TEST_CASE ("Switching out of Rush where a roll starts or lands fades, with no silent sample", "[pad][processor][rush]")
+{
+    constexpr int rollStart = 3 * barFrames + 3 * beatFrames, barLine = 4 * barFrames;
+    for (const auto [switched, lands] : { std::pair { 3 * barFrames + 60000, rollStart }, std::pair { 3 * barFrames + 80000, barLine } })
+        for (const auto to : { cutProgram, tapeProgram })
+        {
+            CAPTURE (switched, to);
+            const auto steps = switchSteps (rushProgram, to, switched, 1.f, 0.f);
+            CAPTURE (steps.switched, steps.from, steps.to);
+            CHECK (steps.switched <= 1.25f * std::max (steps.from, steps.to));
+            PadSession session;
+            set (session.processor, livecut::ids::padProgram, static_cast<float> (rushProgram));
+            set (session.processor, livecut::ids::padX, 1);
+            set (session.processor, livecut::ids::padY, 0);
+            set (session.processor, livecut::ids::padTouch, 1);
+            session.render (switched);
+            set (session.processor, livecut::ids::padProgram, static_cast<float> (to));
+            session.render (lands + 240 - session.frame);
+            REQUIRE (session.processor.getDisplayState ().padActiveProgram.load () == to);
+            for (int i = lands - 2; i < lands + 240; ++i)
+            {
+                CAPTURE (i - lands);
+                CHECK (session.output[static_cast<std::size_t> (2 * i)] != 0.f);
+            }
+        }
+}
+
 // Pad to Classic: Classic's procedure lands on the bar line. Before Rush's roll has
 // started, Rush plays the track there (Classic's settings never roll); once it
 // has, the roll runs out to the bar line. Classic's first cut follows.
