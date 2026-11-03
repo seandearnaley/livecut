@@ -240,8 +240,26 @@ void Cutter::startLoopsBlock (const Timing& timing)
     assert (loop.captureFrame >= 0);
     if (loop.readFrame < 0)
     {
+        // The loop's length in frames, from this block's first cut and its level.
+        const auto& cut = activePlan.cuts[0];
+        const auto loopFrames = cut.units * std::exp2 (cut.loopLevel - 1) * samplesPerUnit (timing);
         const auto preroll = static_cast<std::int64_t> (std::ceil (.002 * sampleRate));
-        loop.readFrame = std::max (first, loop.captureFrame - preroll);
+        auto start = loop.captureFrame;
+        // Snap to the nearest hit within 20 ms, or a quarter of the loop, of the
+        // capture's first frame. Every frame of that window has been analysed: it
+        // ended at least three quarters of a loop ago.
+        if (onsetDetector != nullptr && bounds)
+        {
+            const auto radius = std::min (static_cast<std::int64_t> (std::ceil (.020 * sampleRate)),
+                                          static_cast<std::int64_t> (loopFrames / 4.0));
+            const OnsetDetector::SourceBounds epoch { bounds->epoch, bounds->first, bounds->end ? *bounds->end : onsetDetector->nextFrame() };
+            if (const auto hit = onsetDetector->nearest (epoch, start, std::max (bounds->first, start - radius), start + radius + 1, 3.0))
+            {
+                start = hit->frame;
+                loop.snapped = true;
+            }
+        }
+        loop.readFrame = std::max (first, start - preroll);
     }
     activePlan.source = livePlayer.sourceAtFrame (loop.readFrame);
     // Room for a snap and a join's run-on past the end of the longest loop.

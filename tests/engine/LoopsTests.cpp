@@ -362,6 +362,7 @@ struct LoopsHost final : Cutter::Observer
             REQUIRE (detector.prepare (rate, 8192, 3.0));
             bounds.epoch = detector.epoch();
         }
+        // A later epoch is begun on its first frame, in the detector as in the bounds.
         cutter.setTransformSource (detector, bounds);
         cutter.setProcedure (Procedure::loops);
         cutter.setUnitsPerBar (unitsPerBar);
@@ -412,6 +413,8 @@ struct LoopsHost final : Cutter::Observer
                 inLeft.push_back (in.left);
                 inRight.push_back (in.right);
                 beatAt.push_back (beatsAt (frame + i));
+                if (analysed && frame + i == bounds.first && bounds.first > 0)
+                    REQUIRE (detector.beginTransportEpoch (bounds.epoch));
                 if (analysed)
                     detector.process (frame + i, in.left, in.right);
             }
@@ -750,4 +753,161 @@ TEST_CASE ("Loops plans take no accent and no transform", "[loops][cutter]")
         return host.outLeft;
     };
     CHECK (play (true) == play (false));
+}
+
+namespace
+{
+// Clicks: one sample of 0.8 on silence, `offset` frames from each pass's start.
+std::int64_t clickOffset = 0, clickPass = 24000;
+std::uint64_t clickJitter = 0; // if not 0, a seeded offset in +/- this many frames per pass
+
+std::int64_t clickAt (std::int64_t pass)
+{
+    if (clickJitter == 0)
+        return pass * clickPass + clickOffset;
+    auto h = static_cast<std::uint64_t> (pass + 1) * 0x9e3779b97f4a7c15ULL;
+    h ^= h >> 31;
+    return pass * clickPass + static_cast<std::int64_t> (h % (2 * clickJitter + 1)) - static_cast<std::int64_t> (clickJitter);
+}
+
+StereoFrame clicks (std::int64_t frame)
+{
+    const auto pass = (frame + clickPass / 2) / clickPass;
+    const auto v = frame == clickAt (pass) ? .8f : 0.f;
+    return { v, v };
+}
+
+StereoFrame sine (std::int64_t frame)
+{
+    const auto v = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 220.0 * static_cast<double> (frame) / 48000.0));
+    return { v, v };
+}
+
+} // namespace
+
+TEST_CASE ("Repeats read from 2 ms before the nearest click within 20 ms of the loop's start", "[loops][snap]")
+{
+    for (const auto ms : { -15, -5, 5, 15 })
+    {
+        CAPTURE (ms);
+        clickOffset = ms * 48;
+        clickPass = 24000;
+        clickJitter = 0;
+        LoopsHost host (loops (.25, 0), 48000.0, 120.0, 4.0, true); // a fed detector
+        host.source = clicks;
+        host.cutter.setIdle (true);
+        host.run (96000);
+        host.cutter.setIdle (false);
+        host.run (4 * 96000);
+        int replays = 0;
+        for (const auto& block : host.blocks)
+        {
+            if (! block.replay())
+                continue;
+            ++replays;
+            CHECK (block.loop.snapped);
+            CHECK (block.loop.readFrame == block.loop.captureFrame + clickOffset - 96);
+            // The click sounds 2 ms after the pass starts.
+            CHECK (host.outLeft[static_cast<std::size_t> (block.frame + 96)] == .8f);
+        }
+        CHECK (replays == 12);
+    }
+}
+
+TEST_CASE ("Without a hit within the tolerance, repeats read from 2 ms before the grid", "[loops][snap]")
+{
+    for (const auto ms : { -25, 25 })
+    {
+        CAPTURE (ms);
+        clickOffset = ms * 48;
+        clickPass = 24000;
+        clickJitter = 0;
+        LoopsHost host (loops (.25, 0), 48000.0, 120.0, 4.0, true); // a fed detector
+        host.source = clicks;
+        host.cutter.setIdle (true);
+        host.run (96000);
+        host.cutter.setIdle (false);
+        host.run (2 * 96000);
+        for (const auto& block : host.blocks)
+            if (block.replay())
+            {
+                CHECK_FALSE (block.loop.snapped);
+                CHECK (block.loop.readFrame == block.loop.captureFrame - 96);
+            }
+    }
+    LoopsHost host (loops (.25, 0), 48000.0, 120.0, 4.0, true); // a fed detector
+        host.source = sine;
+    host.cutter.setIdle (true);
+    host.run (96000);
+    host.cutter.setIdle (false);
+    host.run (2 * 96000);
+    for (const auto& block : host.blocks)
+        if (block.replay())
+        {
+            CHECK_FALSE (block.loop.snapped);
+            CHECK (block.loop.readFrame == block.loop.captureFrame - 96);
+        }
+}
+
+TEST_CASE ("The tolerance is a quarter of the loop when that is under 20 ms", "[loops][snap]")
+{
+    // A quarter of a 1/8 bar at 180 bpm is 2,000 frames (41.7 ms), so the tolerance is 500 frames.
+    for (const auto [offset, snapped] : { std::pair { 576, false }, { 432, true }, { -576, false }, { -432, true } })
+    {
+        CAPTURE (offset);
+        clickOffset = offset;
+        clickPass = 2000;
+        clickJitter = 0;
+        LoopsHost host (loops (.25, 0), 48000.0, 180.0, .5, true); // a fed detector
+        host.source = clicks;
+        host.run (4 * 8000);
+        int replays = 0;
+        for (const auto& block : host.blocks)
+            if (block.replay() && block.loop.captureFrame > 0)
+            {
+                ++replays;
+                CHECK (block.loop.snapped == snapped);
+            }
+        CHECK (replays > 0);
+    }
+}
+
+TEST_CASE ("A capture at an epoch's first frame reads from that frame", "[loops][snap]")
+{
+    clickOffset = 0;
+    clickPass = 24000;
+    clickJitter = 0;
+    LoopsHost host (loops (.25, 0), 48000.0, 120.0, 4.0, true); // a fed detector
+        host.source = clicks;
+    host.bounds.epoch = host.detector.epoch() + 1;
+    host.bounds.first = 96000;
+    host.cutter.setIdle (true);
+    host.run (96000);
+    host.cutter.setIdle (false);
+    host.run (96000);
+    REQUIRE (host.blocks.size() >= 2);
+    CHECK (host.blocks[1].loop.captureFrame == 96000);
+    CHECK (host.blocks[1].loop.readFrame == 96000);
+}
+
+TEST_CASE ("The snap is the same for every buffer partition", "[loops][snap]")
+{
+    clickOffset = 0;
+    clickPass = 24000;
+    clickJitter = 18 * 48;
+    std::vector<float> reference;
+    for (int (*size) (std::int64_t) : { +[] (std::int64_t) { return 1; }, +[] (std::int64_t) { return 37; }, +[] (std::int64_t) { return 512; }, randomSize })
+    {
+        LoopsHost host (loops (.5, 0), 48000.0, 120.0, 4.0, true); // a fed detector
+        host.source = clicks;
+        host.run (6 * 96000, size);
+        int snapped = 0;
+        for (const auto& block : host.blocks)
+            snapped += block.replay() && block.loop.snapped ? 1 : 0;
+        CHECK (snapped > 0);
+        if (reference.empty())
+            reference = host.outLeft;
+        CHECK (host.outLeft == reference);
+    }
+    clickJitter = 0;
 }
