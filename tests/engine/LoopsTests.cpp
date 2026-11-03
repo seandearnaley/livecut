@@ -1852,3 +1852,33 @@ TEST_CASE ("Through tempo automation, a late press captures the frame its pass b
             CHECK (std::llabs (repeat->loop.captureFrame - barLine->frame) <= 2); // the ramp tolerance the landing tests use
         }
 }
+
+TEST_CASE ("A late press captures the frame a half-sample bar line activates on, though the Cutter was idle", "[loops][cutter][late][tie]")
+{
+    // At 44.1 kHz and 128 bpm bars 1 and 3 end half a sample between frames, at
+    // 82687.5 and 248062.5. A Rush or Loops bar line starts on the earlier frame by
+    // the tie rule; an idle Cutter's bar wrap takes no tie and could start it a frame
+    // later. The capture is noted by the tie rule, so it is the frame an engaged
+    // Loops starts the pass on.
+    for (const auto barLine : { 1, 3 })
+        for (const auto bars : { 1.0, .5 })
+            for (int (*size) (std::int64_t) : { +[] (std::int64_t) { return 1; }, +[] (std::int64_t) { return 64; }, +[] (std::int64_t) { return 512; }, randomSize })
+            {
+                CAPTURE (barLine, bars, size (0));
+                const auto lineFrame = static_cast<std::int64_t> (barLine * 82687.5); // the earlier frame
+                LoopsHost engaged (loops (bars, 0), 44100.0, 128.0);
+                engaged.run (lineFrame + 20000, size);
+                const auto started = std::find_if (engaged.blocks.begin(), engaged.blocks.end(),
+                                                   [&] (const Activated& b) { return b.phraseBar * 16 + static_cast<std::int64_t> (b.start) == barLine * 16; });
+                REQUIRE (started != engaged.blocks.end());
+                CHECK (started->frame == lineFrame);
+                LoopsHost late (loops (bars, 0), 44100.0, 128.0);
+                late.cutter.setIdle (true);
+                late.run (lineFrame + 2000, size); // a 16th into the bar
+                late.cutter.setIdle (false);
+                late.run (90000, size);
+                const auto repeat = std::find_if (late.blocks.begin(), late.blocks.end(), [] (const Activated& b) { return b.replay(); });
+                REQUIRE (repeat != late.blocks.end());
+                CHECK (repeat->loop.captureFrame == started->frame);
+            }
+}

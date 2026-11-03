@@ -312,9 +312,8 @@ private:
     };
     std::array<Crossing, 8> crossings {};
     std::size_t crossingNext = 0;
-    std::int64_t quartersBar = std::numeric_limits<std::int64_t>::min();
-    unsigned quartersReached = 0; // of quartersBar's four, those reached
-    bool crossingsFresh = true;   // the first frame since a reset: what is behind it wasn't crossed
+    std::int64_t lastCrossing = 0; // the latest quarter noted, as the bar times four plus the quarter
+    bool crossingsFresh = true;    // the first frame since a reset: what is behind it wasn't crossed
     std::int64_t holdMostReads = 0;
     // The pad's Loops: the level hold's sum over the snapped loop, a few frames each
     // sample as the track pass records, with the running sum noted every

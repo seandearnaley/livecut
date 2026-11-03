@@ -203,7 +203,6 @@ void Cutter::resetRendering()
     loopRunOn.reset();
     crossings = {};
     crossingsFresh = true;
-    quartersBar = std::numeric_limits<std::int64_t>::min();
     impactCut.reset();
     renderContextActive = false;
 }
@@ -519,13 +518,14 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
 
     const auto tie = cutting && hasActivePlan && seamless (activePlan) ? rushTieBeats : 0.0;
 
+    trackQuarters (frame, bar, beats, halfSampleBeats, beatsPerSample, timing.beatsPerBar);
+
     // A sample within half a sample of the bar line starts the next bar.
     if (beats >= timing.beatsPerBar - halfSampleBeats - tie)
     {
         beats -= timing.beatsPerBar;
         ++bar;
     }
-    trackQuarters (frame, bar, beats, halfSampleBeats, beatsPerSample, timing.beatsPerBar);
 
     if (idle != pendingIdle)
     {
@@ -826,29 +826,34 @@ bool Cutter::reached (double boundary, double beats, double halfSample, bool tie
 }
 
 // The pad's Loops: note the frame each quarter-bar point is crossed on, by the test
-// a block on it would activate by. A bar line is crossed on the frame the bar starts.
+// a block on it would activate by, before this frame's bar line wraps the position.
+// The next bar's line counts as its fourth quarter, so an idle Cutter, whose wrap
+// doesn't take a tie, notes it on the same frame a Rush or Loops bar line would start.
 void Cutter::trackQuarters (std::int64_t frame, std::int64_t bar, double beats, double halfSample, double beatsPerSample, double beatsPerBar)
 {
-    if (bar != quartersBar)
+    const auto boundary = [&] (int q)
     {
-        quartersBar = bar;
-        quartersReached = 0;
-    }
-    for (int q = 0; q < 4; ++q)
-    {
-        const auto bit = 1u << q;
         // As planBlock places a block on it: its units into the bar, in beats.
-        const auto boundary = static_cast<double> (q) * unitsPerBar / 4.0 * beatsPerBar / unitsPerBar;
-        if ((quartersReached & bit) != 0 || ! reached (boundary, beats, halfSample, true))
+        return static_cast<double> (q) * unitsPerBar / 4.0 * beatsPerBar / unitsPerBar;
+    };
+    if (crossingsFresh)
+    {
+        // What was reached before this frame wasn't crossed in this epoch.
+        lastCrossing = bar * 4 - 1;
+        for (int q = 0; q <= 4; ++q)
+            if (reached (boundary (q), beats - beatsPerSample, halfSample, true))
+                lastCrossing = bar * 4 + q;
+        crossingsFresh = false;
+    }
+    for (int q = 0; q <= 4; ++q)
+    {
+        const auto quarter = bar * 4 + q;
+        if (quarter <= lastCrossing || ! reached (boundary (q), beats, halfSample, true))
             continue;
-        quartersReached |= bit;
-        // Behind where rendering began, it was crossed before, or in another epoch.
-        if (crossingsFresh && reached (boundary, beats - beatsPerSample, halfSample, true))
-            continue;
-        crossings[crossingNext] = { bar * 4 + q, frame };
+        lastCrossing = quarter;
+        crossings[crossingNext] = { quarter, frame };
         crossingNext = (crossingNext + 1) % crossings.size();
     }
-    crossingsFresh = false;
 }
 
 CutProcedure& Cutter::procedureFor (Procedure p)
