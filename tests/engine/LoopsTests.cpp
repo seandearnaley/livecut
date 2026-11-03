@@ -1002,6 +1002,9 @@ TEST_CASE ("On drums and bass, Loops stays near the track's level and never peak
             CHECK (peakOf (host.outLeft) <= peakOf (host.inLeft));
             CHECK (overInput <= most);
             CHECK (overInput >= -.5);
+            // On this loop. On sparse material the outer loop, which replays the
+            // capture at unity, can be louder than Cut: a lone kick on beat 1 is
+            // +6.0 dB at a quarter-bar loop, Cut's busiest +1.7 dB.
             CHECK (output <= busiest);
         }
 }
