@@ -950,3 +950,122 @@ TEST_CASE ("In 5/4, 7/4, 5/8 and 13/8, every stop on a bar line spins back up", 
             CHECK (spun > 0);
         }
 }
+
+namespace
+{
+// One stop through a host tempo ramp: from beat 11 to 16 the tempo moves by
+// `ramp` bpm a beat, re-timed at every host buffer. X picks a one- or four-beat
+// stop ending on beat 16; Y 0 makes it the only one.
+struct RampedStop
+{
+    std::vector<double> speed; // at each of the stop's frames
+    float endStep = 0.f;       // from the stop's last frame into the next cut
+    float sineStep = 0.f;      // the input's own largest step
+};
+
+RampedStop rampedStop (double ramp, int buffer, double x)
+{
+    TapeCutter tape (padSpot (x, 0.0));
+    RampedStop result;
+    float previous = 0.f, previousIn = 0.f;
+    auto before = TapeMotion::play;
+    while (tape.beats() < 18.0)
+    {
+        const auto at = tape.beats();
+        if (at >= 11.0 && at < 16.0)
+            tape.setTempo (120.0 + ramp * (at - 11.0));
+        std::vector<float> left (static_cast<std::size_t> (buffer)), right (left.size()), in (left.size());
+        for (std::size_t i = 0; i < left.size(); ++i)
+            in[i] = left[i] = right[i] = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 220.0 * static_cast<double> (tape.frame + static_cast<std::int64_t> (i)) / 48000.0));
+        // One frame at a time inside the host buffer, at the buffer's tempo and position.
+        const auto first = tape.beats();
+        const auto bar = static_cast<std::int64_t> (std::floor (first / 4.0));
+        for (std::size_t i = 0; i < left.size(); ++i)
+        {
+            const auto beat = first - 4.0 * static_cast<double> (bar) + static_cast<double> (i) * tape.bpm / 60.0 / 48000.0;
+            tape.cutter.process (&left[i], &right[i], 1, { tape.bpm, 4.0 }, { bar, beat });
+            const auto motion = renderedMotion (tape.cutter);
+            if (motion == TapeMotion::stop)
+                result.speed.push_back (tape.cutter.fractureDiagnostics().tapeSpeed);
+            if (before == TapeMotion::stop && motion != TapeMotion::stop)
+                result.endStep = std::max (result.endStep, std::abs (left[i] - previous));
+            if (i > 0 || tape.frame > 0)
+                result.sineStep = std::max (result.sineStep, std::abs (in[i] - previousIn));
+            previous = left[i];
+            previousIn = in[i];
+            before = motion;
+        }
+        tape.frame += buffer;
+        REQUIRE (tape.cutter.error() == Cutter::Error::none);
+    }
+    return result;
+}
+} // namespace
+
+TEST_CASE ("Under tempo automation a stop keeps its brake and ends in silence", "[tape][cutter][tempo]")
+{
+    // At a steady tempo the speed stays above 0.9 for 32% of a stop (u below
+    // 0.316), and falls from 0.5 to 0 over its last 29%.
+    for (const auto ramp : { .5, -.5, 3.0, -3.0 })
+        for (const auto buffer : { 64, 512 })
+            for (const auto x : { .3, 1.0 })
+            {
+                const auto stop = rampedStop (ramp, buffer, x);
+                REQUIRE (stop.speed.size() > 1000);
+                const auto frames = static_cast<double> (stop.speed.size());
+                const auto above = static_cast<double> (std::count_if (stop.speed.begin(), stop.speed.end(), [] (double v) { return v > .9; })) / frames;
+                const auto below = static_cast<double> (std::count_if (stop.speed.begin(), stop.speed.end(), [] (double v) { return v < .5; })) / frames;
+                CAPTURE (ramp, buffer, x, frames, above, below, stop.speed.back(), stop.endStep, stop.sineStep);
+                CHECK (above > .25);
+                CHECK (above < .40);
+                CHECK (below > .22);
+                CHECK (below < .36);
+                CHECK (stop.speed.back() < .05);
+                CHECK (stop.endStep <= stop.sineStep);
+            }
+}
+
+TEST_CASE ("A stop the next block cuts short fades out over 5 ms", "[tape][cutter][tempo]")
+{
+    // A host whose positions run ahead by just under the jump tolerance at every
+    // buffer through the second half of a four-beat stop: the next bar begins 400
+    // or so frames before the stop's frames end, while it still sounds. It fades
+    // out under the spin-up rather than cutting to it.
+    TapeCutter tape (padSpot (1.0, 0.0));
+    double skew = 0.0;
+    float sineStep = 0.f, previousIn = 0.f;
+    std::int64_t cutShort = -1, barLine = -1;
+    std::vector<float> out;
+    std::array<float, 512> left {}, right {}, in {};
+    while (tape.frame < 4 * 96000 + 4800)
+    {
+        for (std::size_t i = 0; i < left.size(); ++i)
+            in[i] = left[i] = right[i] = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 220.0 * static_cast<double> (tape.frame + static_cast<std::int64_t> (i)) / 48000.0));
+        const auto beats = tape.beats();
+        if (beats > 14.0 && beats < 15.9)
+            skew += .0009;
+        const auto at = beats + skew;
+        const auto bar = static_cast<std::int64_t> (std::floor (at / 4.0));
+        const auto speedBefore = tape.cutter.fractureDiagnostics().tapeSpeed;
+        tape.cutter.process (left.data(), right.data(), 512, { 120.0, 4.0 }, { bar, at - 4.0 * static_cast<double> (bar) });
+        if (cutShort < 0 && bar == 4 && speedBefore > 0.0 && speedBefore < 1.0)
+            cutShort = tape.frame;
+        for (std::size_t i = 0; i < left.size(); ++i)
+        {
+            if (barLine < 0 && at + static_cast<double> (i) / 24000.0 >= 16.0 - 1e-9)
+                barLine = tape.frame + static_cast<std::int64_t> (i);
+            if (tape.frame > 0 || i > 0)
+                sineStep = std::max (sineStep, std::abs (in[i] - previousIn));
+            previousIn = in[i];
+            out.push_back (left[i]);
+        }
+        tape.frame += 512;
+    }
+    REQUIRE (tape.cutter.error() == Cutter::Error::none);
+    REQUIRE (cutShort > 0); // the bar line came while the stop still sounded
+    // Around the bar line: the stop's end, faded, into the spin-up's first 5 ms.
+    const auto at = static_cast<std::size_t> (barLine);
+    const auto step = largestStep (out, at - 240, at + 240);
+    CAPTURE (skew, cutShort, barLine, step, sineStep);
+    CHECK (step <= sineStep);
+}

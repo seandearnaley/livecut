@@ -79,12 +79,16 @@ struct FractureDiagnostics
 class TapeTrajectory
 {
 public:
-    void start (double from, double to, int frames, FractureParameters::Tape::Curve);
+    // A quadratic curve may start part of the way along, at `phase` in [0, 1), so a
+    // brake re-timed for a new tempo keeps its shape rather than starting over.
+    void start (double from, double to, int frames, FractureParameters::Tape::Curve, double phase = 0.0);
     double speed (int frame) const;
     double position (int frame) const;
     std::int64_t sourceFrames() const;
+    // How far along the curve frame `frame` is, counting a starting phase.
+    double phaseAt (int frame) const;
 private:
-    double from = 1.0, to = 0.0;
+    double from = 1.0, to = 0.0, phase = 0.0;
     int frames = 1;
     FractureParameters::Tape::Curve curve = FractureParameters::Tape::Curve::smooth;
 };
@@ -165,6 +169,8 @@ public:
     void retimeTape (int age, int remainingFrames);
     // The sounding motion from its next frame on, if a pad motion is playing.
     std::optional<TapeTail> tail() const;
+    // Whether a playing stop still sounds, or a spin-up hasn't landed, before its last frame.
+    bool motionUnfinished() const;
     // Returns true exactly once when the source is first admitted for this cut.
     bool process (const LivePlayer&, int age, int soundingFrames, float& left, float& right);
     const FractureDiagnostics& diagnostics() const { return state; }

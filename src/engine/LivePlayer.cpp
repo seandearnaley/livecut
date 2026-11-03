@@ -96,6 +96,9 @@ void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit
     playing.clear();
     current = 0;
     position = 0;
+    exactRetime = false;
+    retimedUnits = 0.0;
+    retimedPosition = 0;
     samplesPerUnit = newSamplesPerUnit;
 
     auto units = 0.0;
@@ -142,9 +145,15 @@ void LivePlayer::startBlock (std::span<const Cut> cuts, double newSamplesPerUnit
 void LivePlayer::setSamplesPerUnit (double newSamplesPerUnit)
 {
     const auto unchanged = std::abs (newSamplesPerUnit - samplesPerUnit) <= 1.0e-9 * samplesPerUnit;
+    const auto exactElapsed = retimedUnits + (position - retimedPosition) / samplesPerUnit;
 
     if (unchanged || current >= playing.size())
     {
+        if (exactRetime && current < playing.size())
+        {
+            retimedUnits = exactElapsed;
+            retimedPosition = position;
+        }
         samplesPerUnit = newSamplesPerUnit;
         return;
     }
@@ -152,7 +161,12 @@ void LivePlayer::setSamplesPerUnit (double newSamplesPerUnit)
     // Lay out the rest of the block again in units from the current sample,
     // rounding cumulatively so the cuts still add up to the block.
     auto& now = playing[current];
-    const auto elapsedUnits = position / samplesPerUnit;
+    const auto elapsedUnits = exactRetime ? exactElapsed : position / samplesPerUnit;
+    if (exactRetime)
+    {
+        retimedUnits = elapsedUnits;
+        retimedPosition = position;
+    }
     const auto samplesFromCutStart = [&] (double unitsFromNow)
     {
         return position + static_cast<int> (std::lround (std::max (unitsFromNow, 0.0) * newSamplesPerUnit));
@@ -192,6 +206,8 @@ void LivePlayer::skipFinishedCuts()
     {
         ++current;
         position = 0;
+        retimedUnits = 0.0;
+        retimedPosition = 0;
         transform.reset();
     }
 }
@@ -213,6 +229,8 @@ void LivePlayer::resetRendering()
     playing.clear();
     current = 0;
     position = 0;
+    retimedUnits = 0.0;
+    retimedPosition = 0;
     sourceError = false;
 }
 
@@ -258,6 +276,8 @@ void LivePlayer::advanceToUnits (double logicalUnits)
     {
         ++current;
         position = 0;
+        retimedUnits = 0.0;
+        retimedPosition = 0;
         transform.reset();
     }
 }

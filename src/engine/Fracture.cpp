@@ -45,13 +45,21 @@ double fractureDraw (const CutIdentity& id, std::uint64_t tag, std::uint64_t ord
     return static_cast<double> (hash (result ^ tag ^ hash (ordinal)) >> 11) * 0x1p-53;
 }
 
-void TapeTrajectory::start (double a, double b, int length, FractureParameters::Tape::Curve shape)
+void TapeTrajectory::start (double a, double b, int length, FractureParameters::Tape::Curve shape, double startPhase)
 {
     assert (std::isfinite (a) && a >= 0 && a <= 1 && std::isfinite (b) && b >= 0 && b <= 1);
+    assert (std::isfinite (startPhase) && startPhase >= 0 && startPhase < 1);
     from = a;
     to = b;
     frames = std::max (length,1);
     curve = shape;
+    phase = shape == FractureParameters::Tape::Curve::quadratic ? startPhase : 0.0;
+}
+
+double TapeTrajectory::phaseAt (int frame) const
+{
+    const auto u = frames == 1 ? (frame <= 0 ? 0.0 : 1.0) : std::clamp (static_cast<double> (frame) / (frames - 1), 0.0, 1.0);
+    return phase + (1.0 - phase) * u;
 }
 
 double TapeTrajectory::speed (int frame) const
@@ -64,8 +72,9 @@ double TapeTrajectory::speed (int frame) const
     if (frames == 1)
         return frame <= 0 ? from : to;
     const auto u = std::clamp (static_cast<double> (frame) / (frames-1),0.0,1.0);
+    const auto along = phase + (1.0 - phase) * u;
     const auto shape = curve == FractureParameters::Tape::Curve::linear ? u
-                     : curve == FractureParameters::Tape::Curve::quadratic ? u*u : u*u*(3-2*u);
+                     : curve == FractureParameters::Tape::Curve::quadratic ? along*along : u*u*(3-2*u);
     return std::clamp (from + (to-from)*shape,0.0,1.0);
 }
 
@@ -86,8 +95,11 @@ double TapeTrajectory::position (int frame) const
     const auto sum1 = n*(n-1)/2;
     const auto sum2 = n*(n-1)*(2*n-1)/6;
     const auto sum3 = sum1*sum1;
+    // From a phase p, the quadratic sums (p + q k)^2 with q = (1 - p) / d.
+    const auto q = (1.0 - phase) / d;
     const auto shapeSum = curve == FractureParameters::Tape::Curve::linear ? sum1/d
-                        : curve == FractureParameters::Tape::Curve::quadratic ? sum2/(d*d)
+                        : curve == FractureParameters::Tape::Curve::quadratic
+                            ? (phase == 0.0 ? sum2/(d*d) : n*phase*phase + 2.0*phase*q*sum1 + q*q*sum2)
                         : 3*sum2/(d*d)-2*sum3/(d*d*d);
     return std::max (0.0,n*from+(to-from)*shapeSum) + std::max (frame-frames,0)*to;
 }
@@ -400,9 +412,14 @@ void FractureReader::retimeTape (int age, int remainingFrames)
         return;
     const auto position=tapeBase+tape.position(age-tapeSegmentAge);
     const auto speed=tape.speed(age-tapeSegmentAge);
+    const auto phase=tape.phaseAt(age-tapeSegmentAge);
     tapeBase=position;
     tapeSegmentAge=age;
-    tape.start (speed, speeds.to, remainingFrames, speeds.curve);
+    // A brake carries on along its curve from where it is, over the new length.
+    if (speeds.curve == FractureParameters::Tape::Curve::quadratic && phase < 1.0)
+        tape.start (speeds.from, speeds.to, remainingFrames, speeds.curve, phase);
+    else
+        tape.start (speed, speeds.to, remainingFrames, speeds.curve);
 }
 
 std::optional<TapeTail> FractureReader::tail() const
@@ -418,6 +435,16 @@ std::optional<TapeTail> FractureReader::tail() const
     tail.segmentAge = tapeSegmentAge;
     panMatrix (context.cut.pan, context.cut.amp, tail.ll, tail.lr, tail.rl, tail.rr);
     return tail;
+}
+
+bool FractureReader::motionUnfinished() const
+{
+    if (parameters.procedure != FractureProcedure::tapeCut || state.state != FractureState::playing
+        || nextAge >= context.outputFrames)
+        return false;
+    // A stop with only its silent last frame left has nothing to fade.
+    return context.cut.tape == TapeMotion::spinUp
+        || (context.cut.tape == TapeMotion::stop && tape.speed (nextAge - tapeSegmentAge) > 0.0);
 }
 
 bool TapeTail::next (const LivePlayer& player, float& left, float& right)

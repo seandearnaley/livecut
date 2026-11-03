@@ -890,11 +890,22 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         const auto& next = plans[queueHead];
         if (next.activationBar > bar || (next.activationBar == bar && next.activationBeat > beats + halfSample))
             return;
+        // A Tape stop or spin-up the new block cuts short, as tempo automation
+        // can, fades out under it over 5 ms instead of splicing.
+        if (hasActivePlan && ! tapeRunOn && activePlan.fracture.procedure == FractureProcedure::tapeCut
+            && livePlayer.currentCut() < livePlayer.cuts().size() && fractureCut && *fractureCut == livePlayer.currentCut()
+            && fractureReader.motionUnfinished())
+        {
+            tapeTail = fractureReader.tail();
+            tapeTailAge = 0;
+        }
         activePlan = next;
         queueHead = (queueHead + 1) % plans.size();
         --queued;
         hasActivePlan = true;
         livePlayer.startBlock ({ activePlan.cuts.data(), activePlan.count }, samplesPerUnit (timing), activePlan.source);
+        livePlayer.setExactRetime (activePlan.fracture.procedure == FractureProcedure::tapeCut
+                                   && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops);
         const auto& fx = activePlan.effects;
         bitCrusher.setBlock (fx[0], fx[1], fx[2], fx[3]);
         combFilter.setBlock (activePlan.comb, fx[4], fx[5]);
