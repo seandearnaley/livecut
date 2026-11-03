@@ -908,3 +908,45 @@ TEST_CASE ("At any tempo, Tape plays every frame of the track between its stops"
             CHECK (wrong == 0);
         }
 }
+
+TEST_CASE ("In 5/4, 7/4, 5/8 and 13/8, every stop on a bar line spins back up", "[tape][cutter][meter]")
+{
+    // 16 units over 5, 7, 2.5 or 6.5 beats isn't exact in binary. The block's cuts
+    // summed an ulp short of the bar line, so a zero-length block took the spin-up,
+    // and the bar started hard from the stop's silence.
+    for (const auto meter : { 5.0, 7.0, 2.5, 6.5 })
+        for (const auto bpm : { 93.0, 120.0, 140.0 })
+        for (const auto x : { 0.0, 1.0 })
+        for (const auto y : { .5, .75, 1.0 })
+        {
+            CAPTURE (meter, bpm, x, y);
+            TapeCutter tape (padSpot (x, y), 48000.0, bpm, meter);
+            const auto end = static_cast<std::int64_t> (6.0 * meter * 60.0 / bpm * 48000.0);
+            int hard = 0, empty = 0, spun = 0;
+            float previous = 0.f, worst = 0.f;
+            auto before = TapeMotion::play;
+            while (tape.frame < end)
+            {
+                const auto t = static_cast<double> (tape.frame) / 48000.0;
+                auto left = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 97.0 * t) + .2), right = left;
+                tape.process (&left, &right, 1);
+                const auto cuts = tape.cutter.currentCuts();
+                empty += cuts.size() == 1 && cuts[0].units < 1e-6 ? 1 : 0;
+                const auto motion = renderedMotion (tape.cutter);
+                if (before == TapeMotion::stop && motion != TapeMotion::stop)
+                    spun += motion == TapeMotion::spinUp ? 1 : 0;
+                if (tape.frame > 1 && std::abs (previous) < 1e-3f && std::abs (left) > .05f)
+                {
+                    ++hard;
+                    worst = std::max (worst, std::abs (left - previous));
+                }
+                previous = left;
+                before = motion;
+            }
+            CAPTURE (hard, worst, empty, spun);
+            CHECK (tape.cutter.error() == Cutter::Error::none);
+            CHECK (empty == 0);
+            CHECK (hard == 0);
+            CHECK (spun > 0);
+        }
+}

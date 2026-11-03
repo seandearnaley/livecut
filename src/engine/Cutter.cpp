@@ -592,6 +592,11 @@ void Cutter::planBlock (const Timing& timing)
     else
         chooseFractureBlock (context);
     blockEnd = blockStart + totalUnits (cuts);
+    // The pad's Tape lays out the rest of the bar. In meters whose units per beat
+    // aren't exact in binary its cuts can sum an ulp short of the line, which left a
+    // zero-length block there; it ends exactly on the bar or phrase line instead.
+    if (fractureProcedure == FractureProcedure::tapeCut && fractureParams.tape.layout == FractureParameters::Tape::Layout::stops)
+        blockEnd = std::min ((std::floor (blockStart / unitsPerBar) + 1.0) * unitsPerBar, context.phraseUnits);
 
     if (queued == plans.size())
     {
