@@ -2,6 +2,7 @@
 
 #include "engine/Cutter.h"
 #include "engine/AllocationCounter.h"
+#include "engine/PortableSignal.h"
 #include "engine/PadPrograms.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -439,8 +440,8 @@ std::uint64_t classicFractureHash(const FractureParameters& fracture)
         const auto count=std::min(333,96000-frame);
         for(int i=0;i<count;++i)
         {
-            left[static_cast<std::size_t>(i)]=static_cast<float>(.5*std::sin((frame+i)*.031)+.2*std::sin((frame+i)*.0047));
-            right[static_cast<std::size_t>(i)]=static_cast<float>(.4*std::cos((frame+i)*.023));
+            left[static_cast<std::size_t>(i)]=testing::portableSignal(frame+i,0);
+            right[static_cast<std::size_t>(i)]=testing::portableSignal(frame+i,1);
         }
         const auto beat=frame/4000.0;
         const auto bar=static_cast<std::int64_t>(beat/4.0);
@@ -458,22 +459,23 @@ std::uint64_t classicFractureHash(const FractureParameters& fracture)
 
 TEST_CASE("Classic Fracture is bit-identical","[fracture][integration][pinned]")
 {
-    // Measured before the pad's Tape motions existed.
+    // Measured on the engine before the pad's Tape motions existed (d2cbbb2), on a
+    // libm-free input, so the hashes don't depend on the toolchain's sin and cos.
     FractureParameters tape;
     tape.procedure=FractureProcedure::tapeCut;
-    CHECK(classicFractureHash(tape)==UINT64_C(0x196832f071bdfe50));
+    CHECK(classicFractureHash(tape)==UINT64_C(0xf1d3e685441b8157));
     tape.tape.curve=FractureParameters::Tape::Curve::linear;
     tape.tape.alternate=true;
     tape.tape.cycle=FractureParameters::Tape::Cycle::halfBeat;
-    CHECK(classicFractureHash(tape)==UINT64_C(0xaabd5f83201bfb55));
+    CHECK(classicFractureHash(tape)==UINT64_C(0x6157d6ae9f6874b2));
     tape.tape.startSpeed=.8f;
     tape.tape.endSpeed=.2f;
     tape.tape.curve=FractureParameters::Tape::Curve::smooth;
     tape.tape.cycle=FractureParameters::Tape::Cycle::fourBeats;
-    CHECK(classicFractureHash(tape)==UINT64_C(0xb7df1520fa304da0));
+    CHECK(classicFractureHash(tape)==UINT64_C(0xe03b3b0ea04e1205));
     FractureParameters grain;
     grain.procedure=FractureProcedure::grainCut;
-    CHECK(classicFractureHash(grain)==UINT64_C(0xc2d6efd1f39e08f6));
+    CHECK(classicFractureHash(grain)==UINT64_C(0xc62cd44318cc7a1d));
 }
 
 namespace
@@ -551,9 +553,8 @@ std::uint64_t pinnedEventHash (int which)
     {
         for (std::size_t i = 0; i < left.size(); ++i)
         {
-            const auto t = static_cast<double> (frame + static_cast<std::int64_t> (i)) / rate;
-            left[i] = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 97.0 * t) + .2 * std::sin (2.0 * 3.141592653589793 * 3.1 * t));
-            right[i] = static_cast<float> (.4 * std::cos (2.0 * 3.141592653589793 * 141.0 * t));
+            left[i] = testing::portableSignal (frame + static_cast<std::int64_t> (i), 0);
+            right[i] = testing::portableSignal (frame + static_cast<std::int64_t> (i), 1);
         }
         const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
         cutter.process (left.data(), right.data(), 512, { bpm, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
@@ -576,10 +577,11 @@ std::uint64_t pinnedEventHash (int which)
 
 TEST_CASE("Classic Fracture and the built programs are bit-identical through restarts, idle and tempo changes","[fracture][integration][pinned]")
 {
-    // Measured on the engine before Tape (d2cbbb2), and equal on this branch.
+    // Measured on the engine before Tape (d2cbbb2), and equal on this branch, on a
+    // libm-free input, so the hashes don't depend on the toolchain's sin and cos.
     constexpr std::array<std::uint64_t,8> expected {
-        UINT64_C(0x194961d45cfbbcf8), UINT64_C(0x1905c0bb4ce8d470), UINT64_C(0x9b7a3cd3812597e0), UINT64_C(0xfa9c1f5dd756b1e4),
-        UINT64_C(0x123e875928e6e77c), UINT64_C(0xfb45509a7f8d65bc), UINT64_C(0x294cc4ca5cf7b910), UINT64_C(0xdc48106401969736) };
+        UINT64_C(0x2f582588aa69dda7), UINT64_C(0xa09e8c6a97ac05eb), UINT64_C(0x8dfd275471cb838b), UINT64_C(0xbd765792b25f5b6a),
+        UINT64_C(0x102182ecbb1e9824), UINT64_C(0xc802fe7c3ef2261e), UINT64_C(0xf16d4f18e2706587), UINT64_C(0x53c8983cba5b2842) };
     for(int which=0;which<8;++which)
     {
         CAPTURE(which);

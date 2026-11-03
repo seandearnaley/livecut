@@ -3,6 +3,7 @@
 #include "PluginProcessor.h"
 #include "ProcessorTestSupport.h"
 #include "engine/AllocationCounter.h"
+#include "engine/PortableSignal.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -55,6 +56,7 @@ struct PadSession
     std::vector<float> output, input;
     double rate = 48000.0; // in 4/4
     double bpm = 120.0;
+    float (*source) (int, int) = signal; // the input, at a frame and channel
 
     explicit PadSession (bool spectral = false, double sampleRate = 48000.0, double tempo = 120.0)
         : rate (sampleRate), bpm (tempo)
@@ -84,7 +86,7 @@ struct PadSession
             for (int i = 0; i < size; ++i)
                 for (int channel = 0; channel < 2; ++channel)
                 {
-                    const auto value = signal (frame + i, channel);
+                    const auto value = source (frame + i, channel);
                     buffer.setSample (channel, i, value);
                     input.push_back (value);
                 }
@@ -994,17 +996,20 @@ std::uint64_t outputHash (const std::vector<float>& output)
 
 TEST_CASE ("Every built program is bit-identical", "[pad][processor][pinned]")
 {
-    // Measured before Tape existed: each program touched at (0.3, 0.75) for
+    // Measured on the plugin before Tape existed (d2cbbb2), on a libm-free input:
+    // each program touched at (0.3, 0.75) for
     // two and a half bars, then let go for a bar.
     const auto [program, expected] = GENERATE (table<int, std::uint64_t> ({
-        { 0, UINT64_C (0xc3552b8eade6fafe) },
-        { 1, UINT64_C (0x24143edda0fe92b3) },
-        { 2, UINT64_C (0x01895a9e6e6d8aad) },
-        { 3, UINT64_C (0x76768e46ff115f21) },
-        { 4, UINT64_C (0x86d884687164bc1b) },
+        { 0, UINT64_C (0x01b9799feb2580b3) },
+        { 1, UINT64_C (0x5beb3bdc95277b1e) },
+        { 2, UINT64_C (0x5b6d7fbe6f37ceaf) },
+        { 3, UINT64_C (0xab0587de0062f957) },
+        { 4, UINT64_C (0x4e1b59cfbdff4bdb) },
     }));
     CAPTURE (program);
     PadSession session;
+    // libm's sin differs in its last bits between toolchains, so the pin's input doesn't use it.
+    session.source = [] (int frame, int channel) { return livecut::engine::testing::portableSignal (frame, channel); };
     set (session.processor, livecut::ids::padProgram, static_cast<float> (program));
     set (session.processor, livecut::ids::padX, .3f);
     set (session.processor, livecut::ids::padY, .75f);
