@@ -167,7 +167,8 @@ void Cutter::resetRendering()
     // A jump in the host's position (a seek, a loop's wrap) lets the roll's sound
     // run on under what follows, as at its own joins. It counts only if rendering
     // carries on from the next frame.
-    if (const auto sound = rushSound (renderCursor))
+    // A Loops track is the input itself, which whatever follows plays too.
+    if (const auto sound = activePlan.loops && ! loopsReplay (activePlan) ? std::nullopt : rushSound (renderCursor))
     {
         rushJoin = sound;
         rushJoinAge = 0;
@@ -199,15 +200,24 @@ void Cutter::resetRendering()
     renderContextActive = false;
 }
 
-// What Rush plays from `frame` on, as a tail: the cut it was playing, run on past
-// its end if it has just ended, or the input once its block has run out.
+// What Rush or Loops plays from `frame` on, as a tail: the cut it was playing, run
+// on past its end if it has just ended, or the input once a track block has run
+// out. A Loops replay block that has run out plays its last cut on.
 std::optional<LivePlayer::Tail> Cutter::rushSound (std::int64_t frame) const
 {
-    if (! hasActivePlan || ! activePlan.rush)
+    if (! hasActivePlan || ! seamless (activePlan))
         return std::nullopt;
     const auto& cuts = livePlayer.cuts();
     const auto index = livePlayer.currentCut();
-    if (cuts.size() >= 2 && rushCut < cuts.size() && index != rushCut)
+    if (loopsReplay (activePlan) && ! cuts.empty())
+    {
+        if (index >= cuts.size())
+            return loopRunOn ? loopRunOn : livePlayer.tail (cuts.size() - 1, cuts.back().size);
+        if (rushCut < cuts.size() && index != rushCut)
+            return livePlayer.tail (rushCut, cuts[rushCut].size);
+        return livePlayer.tail();
+    }
+    if (activePlan.rush && cuts.size() >= 2 && rushCut < cuts.size() && index != rushCut)
         return livePlayer.tail (rushCut, cuts[rushCut].size);
     if (index < cuts.size())
         return livePlayer.tail();
@@ -483,7 +493,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                     tapeTailAge = 0;
                 }
                 // So does Rush's sound: a roll's repeat fades out rather than splicing.
-                if (hasActivePlan && activePlan.rush)
+                if (hasActivePlan && seamless (activePlan))
                 {
                     rushTail = rushSound (frame);
                     rushTailAge = 0;
@@ -492,7 +502,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                 // way under Rush's track, but before the effects, so a filter the
                 // outgoing program held as it fades shapes it too. Silence fades
                 // in from silence.
-                else if (hasActivePlan && pendingProcedure == Procedure::rush && fractureParams.procedure == FractureProcedure::classic
+                else if (hasActivePlan && (pendingProcedure == Procedure::rush || pendingProcedure == Procedure::loops) && fractureParams.procedure == FractureProcedure::classic
                          && activePlan.fracture.procedure == FractureProcedure::classic)
                 {
                     // On a cut boundary, the cut that was playing, run on past its end.
@@ -1039,9 +1049,9 @@ void Cutter::renderSource (std::int64_t frame,float& left,float& right,bool adva
         // isn't a whole number of samples. Between them, a Rush block plays the
         // input: its track itself, or the next bar's track a frame early, at the
         // splice its roll ends on. Other blocks keep their silent frame.
-        if (activePlan.rush && livePlayer.cuts().size() >= 2 && livePlayer.currentCut() != rushCut)
+        if (((activePlan.rush && livePlayer.cuts().size() >= 2) || loopsReplay (activePlan)) && livePlayer.currentCut() != rushCut)
         {
-            // A join inside a roll, or its run-on: the cut before runs on from its end.
+            // A join inside a roll or a Loops replay, or its run-on: the cut before runs on from its end.
             rushJoin = livePlayer.tail (rushCut, livePlayer.cuts()[rushCut].size);
             rushJoinAge = 0;
             rushJoinFrame = frame;
@@ -1127,7 +1137,9 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         // can, fades out under it over 5 ms instead of splicing.
         // The bar line after a roll: its last cut runs on under the downbeat, unless
         // its run-on began that already.
-        if (hasActivePlan && activePlan.rush && livePlayer.cuts().size() >= 2 && rushCut < livePlayer.cuts().size())
+        // So do a Loops replay's, and a Loops track's into a replay, at every pass boundary.
+        const auto loopsJoin = hasActivePlan && activePlan.loops && (loopsReplay (activePlan) || loopsReplay (next));
+        if (hasActivePlan && ((activePlan.rush && livePlayer.cuts().size() >= 2) || loopsJoin) && rushCut < livePlayer.cuts().size())
         {
             rushJoin = rushSound (renderCursor - 1);
             rushJoinAge = 0;

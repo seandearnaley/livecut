@@ -1054,3 +1054,358 @@ TEST_CASE ("The hold never lifts a level, never cuts one below its bound, and le
                 CHECK (gain == 1.f);
     }
 }
+
+namespace
+{
+// A held bass: 55 Hz (or `hz`) at 0.6 with its octave at 0.15.
+template <int Hz = 55>
+StereoFrame heldBass (std::int64_t frame)
+{
+    const auto t = static_cast<double> (frame) / 48000.0;
+    const auto v = static_cast<float> (.6 * std::sin (2.0 * 3.141592653589793 * Hz * t + .7) + .15 * std::sin (2.0 * 3.141592653589793 * 2 * Hz * t + .2));
+    return { v, v };
+}
+
+float largestStep (const std::vector<float>& samples, std::size_t from, std::size_t to)
+{
+    float step = 0.f;
+    for (auto i = std::max<std::size_t> (from, 1); i < std::min (to, samples.size()); ++i)
+        step = std::max (step, std::abs (samples[i] - samples[i - 1]));
+    return step;
+}
+
+// Where each cut of a run reads: from `start` on, frame f reads `read + (f - start)`,
+// at `gain`, and runs on past its end until the next.
+struct Segment
+{
+    std::int64_t start = 0, read = 0;
+    float gain = 1.f;
+    bool replay = false;
+    bool blockStart = false;
+};
+
+std::vector<Segment> segmentsOf (const LoopsHost& host, double samplesPerUnit)
+{
+    std::vector<Segment> segments;
+    for (const auto& block : host.blocks)
+    {
+        auto units = 0.0;
+        std::int64_t start = 0;
+        for (std::size_t k = 0; k < block.cuts.size(); ++k)
+        {
+            const auto& cut = block.cuts[k];
+            const auto replay = cut.loopLevel > 0;
+            const auto read = replay || block.source.firstFrame != block.frame ? block.source.firstFrame : block.frame + start;
+            segments.push_back ({ block.frame + start, replay ? read : block.frame + start,
+                                  replay ? block.loop.gains[static_cast<std::size_t> (cut.loopLevel - 1)] : 1.f, replay, k == 0 });
+            units += cut.units;
+            start = std::lround (units * samplesPerUnit);
+        }
+    }
+    return segments;
+}
+
+float sampleOf (const LoopsHost& host, const Segment& segment, std::int64_t frame)
+{
+    return segment.gain * host.inLeft[static_cast<std::size_t> (segment.read + (frame - segment.start))];
+}
+
+// The largest difference from what the joins should make: a replay's cut, and the
+// cut a replay block ends on, runs on under what follows for 2 ms, fading linearly.
+// A replay block that runs out early begins that fade where it runs out.
+float joinError (const LoopsHost& host, double samplesPerUnit, std::int64_t& joins)
+{
+    const auto segments = segmentsOf (host, samplesPerUnit);
+    const auto fade = static_cast<std::int64_t> (std::lround (.002 * host.rate));
+    float worst = 0.f;
+    joins = 0;
+    for (std::size_t s = 1; s < segments.size(); ++s)
+    {
+        const auto& before = segments[s - 1];
+        const auto& now = segments[s];
+        if (! before.replay && ! now.replay)
+            continue;
+        ++joins;
+        // Where the outgoing cut's layout ended: an early run-out begins the fade there.
+        auto from = now.start;
+        if (now.blockStart && before.replay)
+        {
+            const auto& block = *std::find_if (host.blocks.rbegin(), host.blocks.rend(), [&] (const Activated& b) { return b.frame < now.start; });
+            auto units = 0.0;
+            for (const auto& cut : block.cuts)
+                units += cut.units;
+            from = std::min (now.start, block.frame + std::lround (units * samplesPerUnit));
+        }
+        for (auto f = from; f < from + fade && f < static_cast<std::int64_t> (host.outLeft.size()); ++f)
+        {
+            const auto weight = static_cast<float> (fade - (f - from)) / static_cast<float> (fade);
+            const auto under = f < now.start ? sampleOf (host, before, f) : sampleOf (host, now, f);
+            const auto expected = weight * sampleOf (host, before, f) + (1.f - weight) * under;
+            worst = std::max (worst, std::abs (host.outLeft[static_cast<std::size_t> (f)] - expected));
+        }
+    }
+    return worst;
+}
+} // namespace
+
+TEST_CASE ("Every Loops join crossfades over 2 ms", "[loops][joins]")
+{
+    for (const auto rate : { 48000.0, 44100.0 })
+        for (const auto bars : { 1.0, .5, .25 })
+            for (int depth = 0; depth <= 3; ++depth)
+            {
+                CAPTURE (rate, bars, depth);
+                LoopsHost host (loops (bars, depth), rate, 120.0, 4.0, true);
+                host.source = drums<55>;
+                host.run (static_cast<std::int64_t> (8 * 2.0 * rate));
+                std::int64_t joins = 0;
+                const auto error = joinError (host, samplesPerUnitOf (host), joins);
+                CHECK (joins > 6);
+                CHECK (error <= 1.0e-6f);
+            }
+}
+
+TEST_CASE ("On a held bass, no Loops join steps more than 0.025", "[loops][joins]")
+{
+    // Prototype: 0.016 with the joins crossfaded, 0.598 spliced.
+    float worst = 0.f, material = 0.f;
+    for (const auto bars : { 1.0, .5, .25 })
+        for (int depth = 0; depth <= 3; ++depth)
+        {
+            CAPTURE (bars, depth);
+            LoopsHost host (loops (bars, depth), 48000.0, 120.0, 4.0, true);
+            host.source = heldBass<>;
+            host.run (16 * 96000);
+            worst = std::max (worst, largestStep (host.outLeft, 0, host.outLeft.size()));
+            material = std::max (material, largestStep (host.inLeft, 0, host.inLeft.size()));
+        }
+    CAPTURE (worst, material);
+    CHECK (worst <= .025f);
+}
+
+TEST_CASE ("A join where the track continues the track leaves the input untouched", "[loops][joins]")
+{
+    // The epoch starts mid-pass, so a track pass runs into another before the first repeat.
+    LoopsHost host (loops (.25, 3));
+    host.bounds.epoch = 5;
+    host.bounds.first = 96000 + 5 * 6000;
+    host.cutter.setIdle (true);
+    host.run (96000 + 5 * 6000 + 10);
+    host.cutter.setIdle (false);
+    host.run (96000);
+    REQUIRE (host.blocks.size() >= 3);
+    REQUIRE_FALSE (host.blocks[1].replay());
+    for (auto f = host.blocks[0].frame; f < host.blocks[2].frame; ++f)
+        REQUIRE (host.outLeft[static_cast<std::size_t> (f)] == host.inLeft[static_cast<std::size_t> (f)]);
+}
+
+namespace
+{
+// The restart's tail: the cut playing at `restart`, run on, fading over 5 ms under `incoming`.
+float restartError (const LoopsHost& host, std::int64_t restart, StereoFrame (*incoming) (const LoopsHost&, std::int64_t))
+{
+    const auto segments = segmentsOf (host, samplesPerUnitOf (host));
+    const auto fade = static_cast<std::int64_t> (std::lround (.005 * host.rate));
+    const auto before = *std::find_if (segments.rbegin(), segments.rend(), [&] (const Segment& s) { return s.start < restart; });
+    float worst = 0.f;
+    for (auto f = restart; f < restart + fade; ++f)
+    {
+        const auto weight = static_cast<float> (fade - (f - restart)) / static_cast<float> (fade);
+        const auto expected = weight * sampleOf (host, before, f) + (1.f - weight) * incoming (host, f).left;
+        worst = std::max (worst, std::abs (host.outLeft[static_cast<std::size_t> (f)] - expected));
+    }
+    return worst;
+}
+
+StereoFrame inputOf (const LoopsHost& host, std::int64_t frame)
+{
+    return { host.inLeft[static_cast<std::size_t> (frame)], host.inRight[static_cast<std::size_t> (frame)] };
+}
+} // namespace
+
+TEST_CASE ("A restart in the middle of a Loops cut fades it out under what follows over 5 ms", "[loops][joins]")
+{
+    // A one-bar loop: bar 2 repeats bar 1. A restart asked for in the middle of it
+    // lands on the next 16th; what follows is a new phrase's track.
+    for (const auto rate : { 48000.0, 44100.0 })
+    {
+        LoopsHost host (loops (1.0, 0), rate, 120.0, 4.0, true);
+        host.source = heldBass<57>;
+        const auto bar = static_cast<std::int64_t> (2.0 * rate);
+        host.run (bar + bar / 3, [] (std::int64_t) { return 1; });
+        host.cutter.restartAtNextUnit();
+        host.run (bar / 2, [] (std::int64_t) { return 1; });
+        const auto restart = host.blocks.back().frame;
+        CAPTURE (rate, restart);
+        REQUIRE_FALSE (host.blocks.back().replay());
+        REQUIRE (host.blocks[host.blocks.size() - 2].replay());
+        CHECK (restartError (host, restart, inputOf) <= 1.0e-6f);
+    }
+}
+
+TEST_CASE ("A restart on a Loops pass boundary fades the last cut out too, with no zero sample", "[loops][joins]")
+{
+    for (const auto rate : { 44100.0, 48000.0, 96000.0 })
+        for (int beat = 1; beat < 4; ++beat) // beat 1 ends the track pass; 2 and 3 end repeats
+        {
+            CAPTURE (rate, beat);
+            LoopsHost host (loops (.25, 3), rate, 120.0, 4.0, true);
+            host.source = heldBass<57>;
+            const auto beatFrames = .5 * rate;
+            // Asked for a frame before the beat, so the restart lands on it, a pass boundary.
+            host.run (static_cast<std::int64_t> (4 * beatFrames + beat * beatFrames) - 1, [] (std::int64_t) { return 1; });
+            host.cutter.restartAtNextUnit();
+            host.run (static_cast<std::int64_t> (beatFrames), [] (std::int64_t) { return 1; });
+            const auto restart = host.blocks.back().frame;
+            CAPTURE (restart);
+            CHECK (host.blocks[host.blocks.size() - 2].replay() == (beat > 1));
+            CHECK (restartError (host, restart, inputOf) <= 1.0e-6f);
+            for (auto f = restart - 10; f < restart + 300; ++f)
+                CHECK ((host.outLeft[static_cast<std::size_t> (f)] != 0.f || host.inLeft[static_cast<std::size_t> (f)] == 0.f));
+        }
+}
+
+TEST_CASE ("A restart into Loops fades the outgoing cut out", "[loops][joins]")
+{
+    // CutProc11 with no pan, pitch or level changes, then Loops from a restart asked
+    // for at each 16th of bar 1; only restarts that cut off a repeat count.
+    CutParameters classic;
+    classic.minPan = classic.maxPan = 0.f;
+    classic.minRepeats = 1;
+    classic.maxRepeats = 3;
+    int repeats = 0;
+    for (int sixteenth = 0; sixteenth < 16; ++sixteenth)
+    {
+        CAPTURE (sixteenth);
+        LoopsHost host (classic, 48000.0, 120.0, 4.0, true);
+        host.source = heldBass<57>;
+        host.cutter.setProcedure (Procedure::cutProc11);
+        host.cutter.setSeed (5);
+        host.run (96000 + sixteenth * 6000 + 1000, [] (std::int64_t) { return 1; });
+        host.cutter.setProcedure (Procedure::loops);
+        host.cutter.setParameters (loops (.5, 3));
+        host.cutter.restartAtNextUnit();
+        const auto asked = host.frame;
+        host.run (12000, [] (std::int64_t) { return 1; });
+        REQUIRE (host.cutter.activeProcedure() == Procedure::loops);
+        // The restart lands on the next 16th, where Loops' first block, a track, starts.
+        const auto first = std::find_if (host.blocks.begin(), host.blocks.end(), [&] (const Activated& b) { return b.frame >= asked; });
+        REQUIRE (first != host.blocks.end());
+        REQUIRE (first != host.blocks.begin());
+        const auto restart = first->frame;
+        CHECK (restart - asked == 5000);
+        CHECK_FALSE (first->replay());
+        // The outgoing classic cut that played the frame before, read on from its block's source.
+        const auto& out = *(first - 1);
+        std::vector<std::int64_t> starts { 0 };
+        auto units = 0.0;
+        for (const auto& cut : out.cuts)
+        {
+            units += cut.units;
+            starts.push_back (std::lround (units * samplesPerUnitOf (host)));
+        }
+        auto k = std::size_t { 0 };
+        while (k + 2 < starts.size() && restart - out.frame > starts[k + 1])
+            ++k;
+        if (k == 0)
+            continue; // the live cut: its tail is the input
+        ++repeats;
+        const auto read = out.source.firstFrame - out.frame - starts[k]; // input frame = frame + read
+        float worst = 0.f;
+        for (auto f = restart; f < restart + 240; ++f)
+        {
+            const auto weight = static_cast<float> (240 - (f - restart)) / 240.f;
+            const auto expected = weight * host.inLeft[static_cast<std::size_t> (f + read)] + (1.f - weight) * host.inLeft[static_cast<std::size_t> (f)];
+            worst = std::max (worst, std::abs (host.outLeft[static_cast<std::size_t> (f)] - expected));
+        }
+        CHECK (worst <= 1.0e-6f);
+        // Then the track, exactly.
+        for (auto f = restart + 240; f < restart + 480; ++f)
+            CHECK (host.outLeft[static_cast<std::size_t> (f)] == host.inLeft[static_cast<std::size_t> (f)]);
+    }
+    CHECK (repeats >= 3);
+}
+
+namespace
+{
+// An arrangement loop of `bars` bars, wrapping `early` 16ths before its end, on
+// `material` addressed by the host's position, as a host replays its audio. Each
+// wrap steps no more than the input's own step there, or three times the material's
+// largest step: a 2 ms crossfade between two phases of a held bass is a little
+// steeper than the bass itself, as the joins' bar allows.
+struct Wrapped
+{
+    float worstRatio = 0.f;
+    int wraps = 0;
+};
+
+Wrapped wrapLoop (StereoFrame (*material) (std::int64_t), int bars, double meter, double bpm, int early)
+{
+    constexpr double rate = 48000.0;
+    Cutter cutter;
+    OnsetDetector detector;
+    Epoch bounds;
+    REQUIRE (detector.prepare (rate, 8192, 3.0));
+    bounds.epoch = detector.epoch();
+    cutter.prepare (rate);
+    cutter.setTransformSource (detector, bounds);
+    cutter.setProcedure (Procedure::loops);
+    cutter.setUnitsPerBar (unitsPerBar);
+    cutter.setParameters (loops (.25, 3));
+    const auto perBeat = rate * 60.0 / bpm;
+    const auto loopEnd = bars * meter - early * meter / unitsPerBar;
+    // The host wraps on the frame nearest the loop's end.
+    const auto loopFrames = static_cast<std::int64_t> (std::llround (loopEnd * perBeat));
+    std::int64_t position = 0;
+    std::vector<float> in, out;
+    std::vector<std::size_t> wraps;
+    float material_ = 0.f;
+    for (std::int64_t frame = 0; frame < 3 * loopFrames; ++frame)
+    {
+        if (position == loopFrames)
+        {
+            position = 0;
+            ++bounds.epoch;
+            bounds.first = frame;
+            REQUIRE (detector.beginTransportEpoch (bounds.epoch));
+            wraps.push_back (static_cast<std::size_t> (frame));
+        }
+        const auto beats = static_cast<double> (position) / perBeat;
+        const auto at = material (position);
+        auto left = at.left, right = at.right;
+        detector.process (frame, left, right);
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / meter));
+        cutter.process (&left, &right, 1, { bpm, meter }, { bar, beats - meter * static_cast<double> (bar) });
+        REQUIRE (cutter.error() == Cutter::Error::none);
+        in.push_back (at.left);
+        out.push_back (left);
+        ++position;
+    }
+    material_ = largestStep (in, 0, in.size());
+    Wrapped wrapped;
+    for (const auto w : wraps)
+    {
+        ++wrapped.wraps;
+        const auto own = std::abs (in[w] - in[w - 1]);
+        const auto ours = largestStep (out, w, w + 200);
+        wrapped.worstRatio = std::max (wrapped.worstRatio, ours / std::max (own, 3.f * material_));
+    }
+    return wrapped;
+}
+} // namespace
+
+TEST_CASE ("An arrangement loop that wraps on or off a pass boundary crossfades from the loop", "[loops][joins][loop]")
+{
+    for (auto* material : { heldBass<57>, drums<0> })
+        for (const auto meter : { 4.0, 3.0 })
+            for (const auto bpm : { 93.0, 120.0 })
+                for (const auto bars : { 2, 4 })
+                    for (const auto early : { 0, 2 })
+                    {
+                        CAPTURE (meter, bpm, bars, early);
+                        const auto wrapped = wrapLoop (material, bars, meter, bpm, early);
+                        CAPTURE (wrapped.worstRatio);
+                        CHECK (wrapped.wraps == 2);
+                        CHECK (wrapped.worstRatio <= 1.f);
+                    }
+}
