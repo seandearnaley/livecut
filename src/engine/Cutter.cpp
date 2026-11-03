@@ -149,7 +149,7 @@ void Cutter::setFadeMilliseconds (double milliseconds)
 void Cutter::reset()
 {
     resetRendering();
-    tapeSilent = false;
+    tapeSilentFrame = -1;
     livePlayer.resetSource();
     transforms = {};
 }
@@ -461,10 +461,11 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             startEffectsCut();
     }
 
-    tapeSilent = cutting && hasActivePlan && processingError == Error::none
-              && activePlan.fracture.procedure == FractureProcedure::tapeCut
-              && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops
-              && fractureReader.diagnostics().tapeSpeed <= 0.0;
+    const auto silent = cutting && hasActivePlan && processingError == Error::none
+                     && activePlan.fracture.procedure == FractureProcedure::tapeCut
+                     && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops
+                     && fractureReader.diagnostics().tapeSpeed <= 0.0;
+    tapeSilentFrame = silent ? frame : -1;
 
     if (tapeTail)
     {
@@ -674,8 +675,9 @@ void Cutter::chooseFractureBlock (const BlockContext& context)
     {
         const auto bar = phraseBar + static_cast<std::int64_t> (std::floor (blockStart / unitsPerBar));
         // A block straight after a stop's silence spins up, including after a reset.
+        const auto afterSilence = tapeSilentFrame >= 0 && planningSource.firstFrame == tapeSilentFrame + 1;
         tapeSpinUpNext = layOutTapeStops (fractureParams.tape, phraseImpactSeed, bar, intoBar / unitsPerBeat, context.beatsPerBar,
-                                          unitsPerBeat, remaining, tapeSpinUpNext || tapeSilent, cuts);
+                                          unitsPerBeat, remaining, tapeSpinUpNext || afterSilence, cuts);
         return;
     }
     tapeSpinUpNext = false;

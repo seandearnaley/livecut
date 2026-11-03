@@ -1173,3 +1173,59 @@ TEST_CASE ("A loop that wraps where a stop ends opens with a spin-up", "[tape][c
         CHECK (largestStep (out, wrap, wrap + 48) <= .025f); // the spin-up's own onset
     }
 }
+
+TEST_CASE ("A stop's silence spins the next block up only when it comes straight after", "[tape][cutter][loop]")
+{
+    // Rendering pauses on the stop's silent last frame, while the input passes
+    // through: the transport stops (the processor then skips the cutter), or the
+    // timing goes unsupported. When cutting resumes on a bar line, the last thing
+    // heard was the input, so the block starts on the track, not from silence.
+    constexpr std::int64_t silent = 4 * 96000 - 1, gap = 4800;
+    const auto bass = [] (std::int64_t frame)
+    {
+        const auto t = static_cast<double> (frame) / 48000.0;
+        return static_cast<float> (.6 * std::sin (2.0 * 3.141592653589793 * 55.0 * t + .7) + .15 * std::sin (2.0 * 3.141592653589793 * 110.0 * t + .2));
+    };
+    for (const bool stoppedTransport : { true, false })
+    {
+        CAPTURE (stoppedTransport);
+        TapeCutter tape (padSpot (.5, 0.0));
+        float last = 1.f;
+        while (tape.frame <= silent)
+        {
+            auto left = bass (tape.frame), right = left;
+            tape.process (&left, &right, 1);
+            last = left;
+        }
+        REQUIRE (last == 0.f); // the stop's silent last frame
+        // The pause: the input passes through untouched.
+        for (std::int64_t i = 0; i < gap; ++i)
+        {
+            auto left = bass (tape.frame), right = left;
+            if (stoppedTransport)
+                REQUIRE (tape.cutter.ingestInputFrame (tape.frame, { left, right }));
+            else
+                tape.cutter.process (&left, &right, 1, { 20.0, 4.0 }, { 0, 0.0 }); // a 12 s bar: unsupported
+            ++tape.frame;
+        }
+        // Resume on bar 0's line.
+        const auto first = tape.frame;
+        const auto before = bass (first - 1);
+        std::vector<float> out;
+        tape.cutter.beginRenderContext ({ 120.0, 4.0 }, { 0, 0.0 }, first, 0, nullptr);
+        for (int i = 0; i < 480; ++i)
+        {
+            auto left = bass (tape.frame), right = left;
+            REQUIRE (tape.cutter.ingestInputFrame (tape.frame, { left, right }));
+            tape.cutter.renderOne (tape.frame, left, right, i, nullptr);
+            out.push_back (left);
+            ++tape.frame;
+        }
+        tape.cutter.endRenderContext (480, nullptr);
+        REQUIRE (tape.cutter.error() == Cutter::Error::none);
+        REQUIRE (tape.cutter.isCutting());
+        CAPTURE (before, out[0]);
+        CHECK (tape.cutter.currentCuts().front().tape == TapeMotion::play);
+        CHECK (out[0] == bass (first)); // the track, straight on from the input
+    }
+}
