@@ -657,8 +657,8 @@ TEST_CASE("Classic Fracture and the built programs are bit-identical through res
         testing::pinnedHash(UINT64_C(0x582da3bde16cd917),UINT64_C(0xf1220989e57a4a9f)), testing::pinnedHash(UINT64_C(0xf471244cf27e91e7),UINT64_C(0x2628a4760968298d)), testing::pinnedHash(UINT64_C(0x08bbb0f7a7d88d38),UINT64_C(0x6a0984dc22ec138f)), testing::pinnedHash(UINT64_C(0x48b6b22fc72be4e4),UINT64_C(0x8d01597ed4912dbe)),
         testing::pinnedHash(UINT64_C(0xf2958df8ef88e9b5),UINT64_C(0x22effe140e38afa6)), 
         testing::pinnedHash(UINT64_C(0x8bd9eaa04dee1db7),UINT64_C(0xc20c02f50e06a2fc)),
-        testing::pinnedHash(UINT64_C(0xb47274f03b5de091),UINT64_C(0xb47274f03b5de091)), testing::pinnedHash(UINT64_C(0x47b7aaa4cb94bb9b),UINT64_C(0x47b7aaa4cb94bb9b)), // MSVC: from CI
-        testing::pinnedHash(UINT64_C(0xcd2057fd1671cbef),UINT64_C(0xcd2057fd1671cbef)) }; // MSVC: from CI
+        testing::pinnedHash(UINT64_C(0xb47274f03b5de091),UINT64_C(0xace8c087c19d6fa1)), testing::pinnedHash(UINT64_C(0x47b7aaa4cb94bb9b),UINT64_C(0xc5ea2673a9be3c67)),
+        testing::pinnedHash(UINT64_C(0xcd2057fd1671cbef),UINT64_C(0x0638bbf53f06569a)) };
     for(int which=0;which<17;++which)
     {
         CAPTURE(which);

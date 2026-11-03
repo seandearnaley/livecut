@@ -997,7 +997,7 @@ TEST_CASE ("Every built program is bit-identical", "[pad][processor][pinned]")
         { 3, livecut::engine::testing::pinnedHash (UINT64_C (0xab0587de0062f957), UINT64_C (0xaba874b9e1d950e3)) },
         { 4, livecut::engine::testing::pinnedHash (UINT64_C (0x4e1b59cfbdff4bdb), UINT64_C (0x4a5a3b006d248f5d)) },
         { 5, livecut::engine::testing::pinnedHash (UINT64_C (0xf72072bf9a21e014), UINT64_C (0x1471bfe233c4a6bb)) },
-        { 6, livecut::engine::testing::pinnedHash (UINT64_C (0x57d4f26a80f83c0f), UINT64_C (0x57d4f26a80f83c0f)) }, // MSVC: from CI; Loops as built
+        { 6, livecut::engine::testing::pinnedHash (UINT64_C (0x57d4f26a80f83c0f), UINT64_C (0xdf1980eefca79e5d)) }, // Loops as built
         { 7, livecut::engine::testing::pinnedHash (UINT64_C (0xea1c089e0d518617), UINT64_C (0x3c2f0009669c7c06)) },
     }));
     CAPTURE (program);
@@ -1021,14 +1021,14 @@ TEST_CASE ("Every built program switches bit-identically", "[pad][processor][pin
     // 0.75) for two and a half bars, switched to Cut (Rush, for Cut) on the next beat,
     // switched back three 16ths into a beat a bar later, and let go a bar after that.
     const auto [program, expected] = GENERATE (table<int, std::uint64_t> ({
-        { 0, livecut::engine::testing::pinnedHash (UINT64_C (0x6dab29898b79dd85), UINT64_C (0x6dab29898b79dd85)) }, // MSVC: from CI
-        { 1, livecut::engine::testing::pinnedHash (UINT64_C (0xbac7f7e1cca54556), UINT64_C (0xbac7f7e1cca54556)) }, // MSVC: from CI
-        { 2, livecut::engine::testing::pinnedHash (UINT64_C (0xb9f993a332c6ffca), UINT64_C (0xb9f993a332c6ffca)) }, // MSVC: from CI
-        { 3, livecut::engine::testing::pinnedHash (UINT64_C (0x09b8d3fd0a9b06e6), UINT64_C (0x09b8d3fd0a9b06e6)) }, // MSVC: from CI
-        { 4, livecut::engine::testing::pinnedHash (UINT64_C (0x306dda6b3a7eac36), UINT64_C (0x306dda6b3a7eac36)) }, // MSVC: from CI
-        { 5, livecut::engine::testing::pinnedHash (UINT64_C (0xd857837f91c81b5e), UINT64_C (0xd857837f91c81b5e)) }, // MSVC: from CI
-        { 6, livecut::engine::testing::pinnedHash (UINT64_C (0xfe2887418ea75230), UINT64_C (0xfe2887418ea75230)) }, // MSVC: from CI; Loops as built
-        { 7, livecut::engine::testing::pinnedHash (UINT64_C (0xa7733985eefaacb2), UINT64_C (0xa7733985eefaacb2)) }, // MSVC: from CI
+        { 0, livecut::engine::testing::pinnedHash (UINT64_C (0x6dab29898b79dd85), UINT64_C (0x8ad359fbd6e2be2c)) },
+        { 1, livecut::engine::testing::pinnedHash (UINT64_C (0xbac7f7e1cca54556), UINT64_C (0x7525c29ab9e89f6b)) },
+        { 2, livecut::engine::testing::pinnedHash (UINT64_C (0xb9f993a332c6ffca), UINT64_C (0x11856cdc9dbe0a78)) },
+        { 3, livecut::engine::testing::pinnedHash (UINT64_C (0x09b8d3fd0a9b06e6), UINT64_C (0xade8ac13a88cbe6e)) },
+        { 4, livecut::engine::testing::pinnedHash (UINT64_C (0x306dda6b3a7eac36), UINT64_C (0x7e4481b53be5d1ae)) },
+        { 5, livecut::engine::testing::pinnedHash (UINT64_C (0xd857837f91c81b5e), UINT64_C (0xffe1f62cbbf1e324)) },
+        { 6, livecut::engine::testing::pinnedHash (UINT64_C (0xfe2887418ea75230), UINT64_C (0xd2b85a1cb0e285eb)) }, // Loops as built
+        { 7, livecut::engine::testing::pinnedHash (UINT64_C (0xa7733985eefaacb2), UINT64_C (0x201af8c535160760)) },
     }));
     CAPTURE (program);
     PadSession session;
