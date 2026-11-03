@@ -622,6 +622,7 @@ void Cutter::planBlock (const Timing& timing)
     plan.transformSeed = seed;
     plan.fracture = fractureParams;
     plan.fracture.procedure = fractureProcedure;
+    plan.rush = procedure == Procedure::rush && fractureProcedure == FractureProcedure::classic;
     plan.frequency = frequencyParams;
     plan.resonator = resonatorParams;
     plan.transportEpoch = 0;
@@ -844,6 +845,20 @@ void Cutter::renderSource (std::int64_t frame,float& left,float& right,bool adva
 {
     if(activePlan.fracture.procedure==FractureProcedure::classic)
     {
+        // The player lays a block out in samples from its first frame, but the next
+        // block begins on the musical grid, which can fall a frame later when a bar
+        // isn't a whole number of samples. Between them, a Rush block plays the
+        // input: its track itself, or the next bar's track a frame early, at the
+        // splice its roll ends on. Other blocks keep their silent frame.
+        if (activePlan.rush && livePlayer.currentCut() >= livePlayer.cuts().size())
+        {
+            if (const auto input = livePlayer.rawFrame (frame))
+            {
+                left = input->left;
+                right = input->right;
+            }
+            return;
+        }
         selectTransform(frame);
         startImpactCut();
         livePlayer.renderFrame(left,right,advanceBySamples);
@@ -914,8 +929,8 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         --queued;
         hasActivePlan = true;
         livePlayer.startBlock ({ activePlan.cuts.data(), activePlan.count }, samplesPerUnit (timing), activePlan.source);
-        livePlayer.setExactRetime (activePlan.fracture.procedure == FractureProcedure::tapeCut
-                                   && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops);
+        livePlayer.setExactRetime (activePlan.rush || (activePlan.fracture.procedure == FractureProcedure::tapeCut
+                                                       && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops));
         const auto& fx = activePlan.effects;
         bitCrusher.setBlock (fx[0], fx[1], fx[2], fx[3]);
         combFilter.setBlock (activePlan.comb, fx[4], fx[5]);

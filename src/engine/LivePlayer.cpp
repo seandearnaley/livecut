@@ -380,7 +380,8 @@ void LivePlayer::renderFrame (float& left, float& right, bool advanceBySamples)
         inLeft = frame->left;
         inRight = frame->right;
 
-        const auto envelope = fadeEnvelope (position, fade, sounding);
+        // A cut with no fade joins the audio before it sample for sample.
+        const auto envelope = cut.requested.fade ? fadeEnvelope (position, fade, sounding) : 1.0f;
         outLeft = envelope * (cut.leftToLeft * inLeft + cut.rightToLeft * inRight);
         outRight = envelope * (cut.leftToRight * inLeft + cut.rightToRight * inRight);
     }

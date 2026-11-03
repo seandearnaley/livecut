@@ -202,6 +202,7 @@ private:
         std::uint64_t firstCutOrdinal = 0;
         std::uint32_t transformSeed = 1;
         std::uint32_t impactSeed = 1;
+        bool rush = false; // the pad's Rush: counts elapsed time exactly, and plays the input once its cuts run out
     };
     // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
     // 1/32-bar block starts plus a boundary/recovery plan await activation.
