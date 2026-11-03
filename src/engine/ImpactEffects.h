@@ -36,6 +36,10 @@ struct ImpactParameters
         float repeatOctaves = 0.0f; // [-4, 4]
         float bandLowHz = 30.0f; // [30, 18000], band only
         float bandHighHz = 18000.0f; // [30, 18000], band only
+        // A sweep's tail, struck by the cut after each roll: its RMS at the
+        // strike as a fraction of the roll's, and its decay time to -60 dB.
+        float tailLevel = 0.0f; // [0, 1], sweep only
+        float tailDecayMs = 600.0f; // [50, 2000], sweep only
         float mix = 1.0f;
     } filter;
 
@@ -84,6 +88,9 @@ inline constexpr double sweepLowHz = 30.0, sweepLowQ = 0.707;
 // high-pass, with resonance q. The high-pass keeps sweepLowQ.
 double sweepPinkPower (double widthOctaves, double q);
 double integrateSweepPinkPower (double widthOctaves, double q, double stepOctaves);
+// The tail's note for a cutoff: the nearest equal-tempered semitone, with A4
+// at 440 Hz, moved by whole octaves into C4 to B5.
+double tailNoteHz (double cutoffHz);
 } // namespace detail
 
 // JUCE-free, allocation-free stereo processing. Production rates are 8–384 kHz;
@@ -107,6 +114,9 @@ public:
         // switch into band, until the band next runs.
         double bandLowHz = 0.0, bandHighHz = 0.0;
         double levelHoldGain = 1.0;
+        // A sweep's tail: its note, its amplitude before the duck, and the
+        // duck's gain; 0 Hz, 0 and 1 while it is silent or reset.
+        double tailHz = 0.0, tailAmplitude = 0.0, tailDuck = 1.0;
     };
 
     void prepare (double sampleRate);
@@ -133,8 +143,25 @@ private:
         bool primed = false;
     };
 
+    // A sweep's tail: one mono sine, struck by the cut after each roll at a
+    // level measured from the roll, tuned to the cutoff's note, and ducked at
+    // every cut. Plain values only, so ImpactEffects stays trivially copyable.
+    struct Tail
+    {
+        double rollEnergy = 0.0; // the sweep's output, over the current block
+        std::uint64_t rollSamples = 0;
+        bool rollEnding = false; // the current cut is a roll's last
+        double amplitude = 0.0, peak = 0.0, attackStep = 0.0, decay = 1.0;
+        std::uint32_t attackRemaining = 0;
+        double hz = 0.0, phase = 0.0, increment = 0.0;
+        double duck = 1.0, duckStep = 0.0;
+        std::uint32_t duckRemaining = 0;
+    };
+
     double nextEnvelope();
     void adoptFilter();
+    void startTail (const CutIdentity&);
+    double nextTail();
     void resetBand();
     void processFilter (double& left, double& right, double envelope, double repeatProgress);
     void processBand (double& left, double& right, double envelope, double repeatProgress, double mix);
@@ -166,6 +193,8 @@ private:
     double bandLow = 0.0, bandHigh = 0.0, bandQ = 0.0;
     bool bandPrimed = false;
     double smoothingPole = 0.0;
+    Tail tail;
+    double tailRecoveryPole = 0.0;
     std::array<DriveState, 2> driveState;
     double fastEnvelope = 0.0, slowEnvelope = 0.0;
     double transientAttack = 0.0, transientRelease = 0.0;

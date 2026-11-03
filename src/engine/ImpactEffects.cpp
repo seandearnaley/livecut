@@ -19,6 +19,8 @@ constexpr double log1000 = 6.907755278982137;
 constexpr double semitone = 1.0594630943592953; // 2^(1/12)
 constexpr double makeupCeiling = 2.0; // +6 dB
 constexpr double makeupHighestHz = 18000.0;
+constexpr double tailDuckFloor = 0.25; // -12 dB
+constexpr double tailSilence = 1.0e-6; // -120 dBFS
 
 // The band's pink-noise power, tabulated over its width w (octaves) and log2 q.
 // The widest band the clamps allow is log2 (0.45 * 384 kHz / 30 Hz) = 12.49
@@ -162,6 +164,16 @@ double integrateSweepPinkPower (double widthOctaves, double q, double stepOctave
 {
     return integratePinkPower (widthOctaves, sweepLowQ, q, stepOctaves, bandPowerMargin);
 }
+
+double tailNoteHz (double cutoffHz)
+{
+    auto semitones = std::lround (12.0 * std::log2 (cutoffHz / 440.0));
+    while (semitones < -9) // C4
+        semitones += 12;
+    while (semitones >= 15) // C6
+        semitones -= 12;
+    return 440.0 * std::exp2 (static_cast<double> (semitones) / 12.0);
+}
 } // namespace detail
 
 void ImpactEffects::Ramp::setTarget (double value, std::uint32_t samples)
@@ -187,6 +199,7 @@ void ImpactEffects::prepare (double newSampleRate)
     rampSamples = static_cast<std::uint32_t> (std::ceil (0.002 * sampleRate));
     dcPole = std::exp (-2.0 * pi * 5.0 / sampleRate);
     smoothingPole = std::exp (-1.0 / (0.020 * sampleRate));
+    tailRecoveryPole = std::exp (-1.0 / (0.040 * sampleRate));
     pinkPowerTable(); // Builds the makeup tables off the audio thread.
     sweepPowerTable();
     reset();
@@ -212,8 +225,11 @@ void ImpactEffects::resetBand()
     filterState = {};
     bandState = {};
     bandPrimed = false;
+    tail = {};
     state.bandLowHz = state.bandHighHz = 0.0;
     state.levelHoldGain = 1.0;
+    state.tailHz = state.tailAmplitude = 0.0;
+    state.tailDuck = 1.0;
 }
 
 void ImpactEffects::adoptFilter()
@@ -247,6 +263,8 @@ void ImpactEffects::setParameters (const ImpactParameters& next)
     f.repeatOctaves = std::clamp (f.repeatOctaves, -4.0f, 4.0f);
     f.bandLowHz = std::clamp (f.bandLowHz, 30.0f, 18000.0f);
     f.bandHighHz = std::clamp (f.bandHighHz, 30.0f, 18000.0f);
+    f.tailLevel = std::clamp (f.tailLevel, 0.0f, 1.0f);
+    f.tailDecayMs = std::clamp (f.tailDecayMs, 50.0f, 2000.0f);
     f.mix = std::clamp (f.mix, 0.0f, 1.0f);
     const auto filter = parameters.filter;
     parameters = next;
@@ -319,6 +337,68 @@ void ImpactEffects::startCut (const CutIdentity& identity)
     attackPosition = 0;
     adEnvelope = attackSamples == 0 ? 1.0 : 0.0;
     state.envelope = adEnvelope;
+    // A held sweep runs on as if this cut never came: its tail neither strikes nor ducks.
+    if (! filterHeld && parameters.filter.type == ImpactParameters::Filter::Type::sweep)
+        startTail (identity);
+}
+
+void ImpactEffects::startTail (const CutIdentity& identity)
+{
+    const auto& p = parameters.filter;
+    // The cut after a roll's last strikes the tail, at tailLevel times the
+    // roll's RMS, so a roll of silence strikes nothing.
+    if (tail.rollEnding && state.filterActive && p.tailLevel > 0.0f && tail.rollSamples > 0)
+    {
+        const auto peak = p.tailLevel * std::numbers::sqrt2 * std::sqrt (tail.rollEnergy / static_cast<double> (tail.rollSamples));
+        if (peak > 0.0)
+        {
+            // A silent tail starts at phase 0, so a strike sounds the same
+            // every time; a ringing one changes note with its phase intact.
+            if (tail.amplitude == 0.0)
+                tail.phase = 0.0;
+            tail.hz = detail::tailNoteHz (p.cutoffHz);
+            tail.increment = 2.0 * pi * tail.hz / sampleRate;
+            tail.decay = std::exp (-log1000 / (0.001 * p.tailDecayMs * sampleRate));
+            tail.peak = peak;
+            tail.attackRemaining = rampSamples;
+            tail.attackStep = (peak - tail.amplitude) / rampSamples;
+        }
+    }
+    tail.rollEnding = identity.cutCount >= 2 && identity.cutIndex + 1 == identity.cutCount;
+    if (identity.cutIndex == 0)
+    {
+        tail.rollEnergy = 0.0;
+        tail.rollSamples = 0;
+    }
+    // Every cut ducks the tail, so the hits stay clean and it sings between them.
+    tail.duckRemaining = rampSamples;
+    tail.duckStep = (tail.duck - tailDuckFloor) / rampSamples;
+}
+
+double ImpactEffects::nextTail()
+{
+    if (tail.duckRemaining > 0)
+        tail.duck = --tail.duckRemaining == 0 ? tailDuckFloor : tail.duck - tail.duckStep;
+    else
+        tail.duck = 1.0 - tailRecoveryPole * (1.0 - tail.duck);
+    if (tail.attackRemaining > 0)
+        tail.amplitude = --tail.attackRemaining == 0 ? tail.peak : tail.amplitude + tail.attackStep;
+    else if (tail.amplitude * tail.decay < tailSilence)
+    {
+        tail.amplitude = tail.phase = tail.hz = 0.0;
+    }
+    else
+        tail.amplitude *= tail.decay;
+    state.tailHz = tail.hz;
+    state.tailAmplitude = tail.amplitude;
+    state.tailDuck = tail.duck;
+    if (tail.amplitude == 0.0)
+        return 0.0;
+    const auto sample = tail.amplitude * tail.duck * std::sin (tail.phase);
+    tail.phase += tail.increment;
+    if (tail.phase >= 2.0 * pi)
+        tail.phase -= 2.0 * pi;
+    return sample;
 }
 
 double ImpactEffects::nextEnvelope()
@@ -457,6 +537,17 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
     const auto width = std::log2 (std::min (high, makeupHighestHz) / low);
     const auto hold = std::min (makeupCeiling, std::exp (0.5 * (table.logOpen - table.interpolate (width, bandQ))));
     state.levelHoldGain = hold;
+    if (sweep)
+    {
+        // The tail joins the wet. The roll it measures is the sweep's own output.
+        const auto heardLeft = hold * bandLeft, heardRight = hold * bandRight;
+        tail.rollEnergy += 0.5 * (heardLeft * heardLeft + heardRight * heardRight);
+        ++tail.rollSamples;
+        const auto ring = nextTail();
+        left += mix * (heardLeft + ring - left);
+        right += mix * (heardRight + ring - right);
+        return;
+    }
     left += mix * (hold * bandLeft - left);
     right += mix * (hold * bandRight - right);
 }
