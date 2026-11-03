@@ -198,6 +198,7 @@ void Cutter::resetRendering()
     rushTail.reset();
     rushEntry.reset();
     loop = {};
+    hold = {};
     loopRunOn.reset();
     impactCut.reset();
     renderContextActive = false;
@@ -257,66 +258,82 @@ void Cutter::startLoopsBlock (const Timing& timing, std::int64_t bar, double bea
             const auto framesBack = std::floor ((beatsBack + rushTieBeats) / renderBeatsPerSample + .5);
             const auto capture = frame - static_cast<std::int64_t> (framesBack);
             if (capture >= first)
+            {
                 loop.captureFrame = std::min (capture, frame);
+                hold.passUnits = activePlan.loopPass;
+            }
         }
         return;
     }
     assert (loop.captureFrame >= 0);
-    if (loop.readFrame < 0)
+    if (! hold.done)
     {
-        // The loop's length in frames, from this block's first cut and its level.
-        const auto& cut = activePlan.cuts[0];
-        const auto loopFrames = cut.units * std::exp2 (cut.loopLevel - 1) * samplesPerUnit (timing);
-        const auto preroll = static_cast<std::int64_t> (std::ceil (.002 * sampleRate));
-        auto start = loop.captureFrame;
-        // Snap to the nearest hit within 20 ms, or a quarter of the loop, of the
-        // capture's first frame. Every frame of that window has been analysed: it
-        // ended at least three quarters of a loop ago.
-        if (onsetDetector != nullptr && bounds)
+        // Finish the level hold: what the track pass hasn't summed yet, up to this frame.
+        if (! hold.started)
+            snapLoop (timing, frame);
+        sumLoopHold (frame, std::numeric_limits<std::int64_t>::max());
+        const auto recorded = std::min (hold.lengths[0], frame + 1 - loop.readFrame);
+        hold.energy[0] = hold.sum;
+        const auto whole = hold.energy[0] / static_cast<double> (std::max<std::int64_t> (recorded, 1));
+        for (std::size_t level = 1; level < hold.lengths.size(); ++level)
         {
-            const auto radius = std::min (static_cast<std::int64_t> (std::ceil (.020 * sampleRate)),
-                                          static_cast<std::int64_t> (loopFrames / 4.0));
-            const OnsetDetector::SourceBounds epoch { bounds->epoch, bounds->first, bounds->end ? *bounds->end : onsetDetector->nextFrame() };
-            if (const auto hit = onsetDetector->nearest (epoch, start, std::max (bounds->first, start - radius), start + radius + 1, 3.0))
-            {
-                start = hit->frame;
-                loop.snapped = true;
-            }
-        }
-        loop.readFrame = std::max (first, start - preroll);
-
-        // Hold each level to the loop's level: a level that repeats a loud attack is
-        // turned down to the whole loop's RMS, never up. One pass over the recorded
-        // loop, up to the frame being rendered, summing at each level's length.
-        std::array<std::int64_t, 4> lengths {};
-        for (std::size_t level = 0; level < lengths.size(); ++level)
-            lengths[level] = std::max<std::int64_t> (1, std::lround (loopFrames / std::exp2 (static_cast<double> (level))));
-        const auto recorded = std::min (lengths[0], frame + 1 - loop.readFrame);
-        std::array<double, 4> energy {};
-        auto sum = 0.0;
-        for (std::int64_t i = 0; i < recorded; ++i)
-        {
-            if (const auto raw = livePlayer.rawFrame (loop.readFrame + i))
-                sum += static_cast<double> (raw->left) * raw->left + static_cast<double> (raw->right) * raw->right;
-            for (std::size_t level = 1; level < lengths.size(); ++level)
-                if (i + 1 == lengths[level])
-                    energy[level] = sum;
-        }
-        energy[0] = sum;
-        const auto whole = energy[0] / static_cast<double> (std::max<std::int64_t> (recorded, 1));
-        for (std::size_t level = 1; level < lengths.size(); ++level)
-        {
-            const auto part = energy[level] / static_cast<double> (lengths[level]);
+            const auto part = hold.energy[level] / static_cast<double> (hold.lengths[level]);
             loop.gains[level] = part > whole && part > 0.0 ? static_cast<float> (std::sqrt (whole / part)) : 1.0f;
             // The loop holds at least its first part's energy, so no gain falls under 2^(-level/2).
             assert (loop.gains[level] >= std::exp2 (-.5 * static_cast<double> (level)) - 1.0e-3);
         }
+        hold.done = true;
     }
     activePlan.source = livePlayer.sourceAtFrame (loop.readFrame);
     // Room for a snap and a join's run-on past the end of the longest loop.
     activePlan.source.frameCount += static_cast<std::int64_t> (std::ceil (.025 * sampleRate));
     for (std::size_t i = 0; i < activePlan.count; ++i)
         activePlan.cuts[i].amp *= loop.gains[static_cast<std::size_t> (activePlan.cuts[i].loopLevel - 1)];
+}
+
+// The pad's Loops: choose the phrase's read frame. Snap to the nearest hit within
+// 20 ms, or a quarter of the loop, of the capture's first frame; every frame of
+// that window has been analysed by now. Then 2 ms of preroll before it.
+void Cutter::snapLoop (const Timing& timing, std::int64_t frame)
+{
+    const auto bounds = sourceContext != nullptr ? sourceContext->sourceBoundsAt (frame) : std::nullopt;
+    const auto first = std::max (bounds ? bounds->first : std::int64_t { 0 }, livePlayer.retainedSource().firstFrame);
+    const auto loopFrames = hold.passUnits * samplesPerUnit (timing);
+    const auto preroll = static_cast<std::int64_t> (std::ceil (.002 * sampleRate));
+    auto start = loop.captureFrame;
+    if (onsetDetector != nullptr && bounds)
+    {
+        const auto radius = std::min (static_cast<std::int64_t> (std::ceil (.020 * sampleRate)),
+                                      static_cast<std::int64_t> (loopFrames / 4.0));
+        const OnsetDetector::SourceBounds epoch { bounds->epoch, bounds->first, bounds->end ? *bounds->end : onsetDetector->nextFrame() };
+        if (const auto hit = onsetDetector->nearest (epoch, start, std::max (bounds->first, start - radius), start + radius + 1, 3.0))
+        {
+            start = hit->frame;
+            loop.snapped = true;
+        }
+    }
+    loop.readFrame = std::max (first, start - preroll);
+    for (std::size_t level = 0; level < hold.lengths.size(); ++level)
+        hold.lengths[level] = std::max<std::int64_t> (1, std::lround (loopFrames / std::exp2 (static_cast<double> (level))));
+    hold.started = true;
+}
+
+// The pad's Loops: the level hold's running sum of the loop's energy, from its read
+// frame, at most `most` frames of history, never past the frame being rendered or
+// the loop's end. It notes the sum at each level's length on the way.
+void Cutter::sumLoopHold (std::int64_t frame, std::int64_t most)
+{
+    const auto end = std::min (hold.lengths[0], frame + 1 - loop.readFrame);
+    std::int64_t reads = 0;
+    for (; hold.next < end && reads < most; ++hold.next, ++reads)
+    {
+        if (const auto raw = livePlayer.rawFrame (loop.readFrame + hold.next))
+            hold.sum += static_cast<double> (raw->left) * raw->left + static_cast<double> (raw->right) * raw->right;
+        for (std::size_t level = 1; level < hold.lengths.size(); ++level)
+            if (hold.next + 1 == hold.lengths[level])
+                hold.energy[level] = hold.sum;
+    }
+    holdMostReads = std::max (holdMostReads, reads);
 }
 
 void Cutter::mixTail (std::optional<LivePlayer::Tail>& tail, int& age, int frames, float& left, float& right)
@@ -607,6 +624,21 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
         }
     }
 
+    // The pad's Loops: once the window round the capture is analysed, snap, then sum
+    // the level hold a few frames a sample, so the first repeat has little left to do.
+    if (cutting && loop.captureFrame >= 0 && ! hold.done && hasActivePlan && activePlan.loops)
+    {
+        if (! hold.started)
+        {
+            const auto loopFrames = hold.passUnits * samplesPerUnit (timing);
+            const auto radius = std::min (static_cast<std::int64_t> (std::ceil (.020 * sampleRate)), static_cast<std::int64_t> (loopFrames / 4.0));
+            const auto window = onsetDetector != nullptr ? static_cast<std::int64_t> (onsetDetector->windowFrames()) : 0;
+            if (frame >= loop.captureFrame + radius + window + 1)
+                snapLoop (timing, frame);
+        }
+        if (hold.started)
+            sumLoopHold (frame, holdReadsPerFrame);
+    }
     activatePlans (bar, beats, halfSampleBeats, timing);
     if (cutting && hasActivePlan && processingError == Error::none)
     {
@@ -790,6 +822,7 @@ void Cutter::startPhrase (std::int64_t bar, int unitsIntoBar, const Timing& timi
     }
     cutOrdinal = 0;
     loop = {}; // a new phrase captures a new loop
+    hold = {};
     assert (phraseBars >= 1);
 
     cutting = true;
@@ -839,6 +872,7 @@ void Cutter::planBlock (const Timing& timing)
     plan.rush = procedure == Procedure::rush && fractureProcedure == FractureProcedure::classic;
     plan.loops = procedure == Procedure::loops && fractureProcedure == FractureProcedure::classic;
     plan.loopIntoPass = -1.0;
+    plan.loopPass = plan.loops ? unitsPerBar * params.loopBars : 0.0;
     if (plan.loops && params.loopBars > 0.0 && ! cuts.empty() && cuts.front().loopLevel == 0)
     {
         const auto pass = unitsPerBar * params.loopBars;

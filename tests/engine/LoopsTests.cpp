@@ -1629,3 +1629,80 @@ TEST_CASE ("A press on a half-sample 16th captures its pass from its start, for 
             }
         }
 }
+
+TEST_CASE ("The level hold reads a bounded number of frames for each frame it renders", "[loops][level][cpu]")
+{
+    // It used to read the whole loop on the sample of the phrase's first repeat: a
+    // bar of 768,000 frames at 96 kHz and 30 bpm, 0.5 to 2 ms on one sample. Now it
+    // reads at most 32 frames of history a sample while the track pass plays.
+    struct Config
+    {
+        double rate, bpm, meter;
+        int buffer;
+    };
+    for (const auto [rate, bpm, meter, buffer] : { Config { 96000.0, 60.0, 4.0, 32 }, Config { 96000.0, 70.0, 7.0, 64 }, Config { 192000.0, 30.0, 4.0, 128 } })
+    {
+        CAPTURE (rate, bpm, meter, buffer);
+        LoopsHost host (loops (1.0, 3), rate, bpm, meter, true);
+        host.source = drums<0>;
+        static int size = 0;
+        size = buffer;
+        host.run (static_cast<std::int64_t> (2.25 * meter * 60.0 / bpm * rate), [] (std::int64_t) { return size; });
+        int replays = 0;
+        for (const auto& block : host.blocks)
+            replays += block.replay() ? 1 : 0;
+        CHECK (replays >= 1);
+        CHECK (host.cutter.loopHoldMostReads() > 0);
+        CHECK (host.cutter.loopHoldMostReads() <= 32);
+    }
+}
+
+TEST_CASE ("The level hold sums the snapped loop exactly", "[loops][level]")
+{
+    // Spread over the track pass or not, the gains are the same sum, in the same
+    // order, of the same frames: from the read frame for a loop's length, up to the
+    // frame of the first repeat.
+    for (const auto [rate, bpm] : { std::pair { 48000.0, 120.0 }, { 44100.0, 128.0 }, { 96000.0, 93.0 } })
+        for (const auto bars : { 1.0, .5, .25 })
+        {
+            CAPTURE (rate, bpm, bars);
+            LoopsHost host (loops (bars, 3), rate, bpm, 4.0, true);
+            host.source = drums<0>;
+            host.cutter.setIdle (true);
+            host.run (static_cast<std::int64_t> (rate) / 3);
+            host.cutter.setIdle (false);
+            host.run (static_cast<std::int64_t> (6 * 4 * 60.0 / bpm * rate));
+            int checked = 0;
+            for (std::size_t b = 1; b < host.blocks.size(); ++b)
+            {
+                const auto& block = host.blocks[b];
+                if (! block.replay() || host.blocks[b - 1].replay())
+                    continue; // a phrase's first repeat
+                const auto read = block.loop.readFrame;
+                const auto loopFrames = unitsPerBar * bars * samplesPerUnitOf (host);
+                std::array<std::int64_t, 4> lengths {};
+                for (std::size_t level = 0; level < 4; ++level)
+                    lengths[level] = std::max<std::int64_t> (1, std::lround (loopFrames / std::exp2 (static_cast<double> (level))));
+                const auto recorded = std::min (lengths[0], block.frame + 1 - read);
+                std::array<double, 4> energy {};
+                auto sum = 0.0;
+                for (std::int64_t i = 0; i < recorded; ++i)
+                {
+                    const auto l = host.inLeft[static_cast<std::size_t> (read + i)], r = host.inRight[static_cast<std::size_t> (read + i)];
+                    sum += static_cast<double> (l) * l + static_cast<double> (r) * r;
+                    for (std::size_t level = 1; level < 4; ++level)
+                        if (i + 1 == lengths[level])
+                            energy[level] = sum;
+                }
+                const auto whole = sum / static_cast<double> (std::max<std::int64_t> (recorded, 1));
+                for (std::size_t level = 1; level < 4; ++level)
+                {
+                    const auto part = energy[level] / static_cast<double> (lengths[level]);
+                    const auto gain = part > whole && part > 0.0 ? static_cast<float> (std::sqrt (whole / part)) : 1.0f;
+                    CHECK (block.loop.gains[level] == gain);
+                }
+                ++checked;
+            }
+            CHECK (checked >= 2);
+        }
+}

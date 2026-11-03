@@ -172,6 +172,8 @@ public:
         bool snapped = false;           // the read frame came from a hit, not the grid
     };
     const LoopDiagnostics& loopDiagnostics() const { return loop; }
+    // The most frames of history the level hold has read while rendering one frame.
+    std::int64_t loopHoldMostReads() const { return holdMostReads; }
     const Resonator& resonator() const { return routeRack.resonator(); }
     const RouteRack::Diagnostics& routeDiagnostics() const { return routeRack.diagnostics(); }
 
@@ -217,11 +219,14 @@ private:
         bool rush = false; // the pad's Rush: counts elapsed time exactly, and plays the input once its cuts run out
         bool loops = false; // the pad's Loops: the same, and its replays read the phrase's loop
         double loopIntoPass = -1.0; // a Loops track block: units into its pass; -1 for any other block
+        double loopPass = 0.0;      // a Loops track block: its pass's length in units
     };
     // Rush's and Loops' plans: the track is the input, and their joins crossfade.
     static bool seamless (const BlockPlan& plan) { return plan.rush || plan.loops; }
     static bool loopsReplay (const BlockPlan& plan) { return plan.loops && plan.count > 0 && plan.cuts[0].loopLevel > 0; }
     void startLoopsBlock (const Timing& timing, std::int64_t bar, double beats);
+    void snapLoop (const Timing& timing, std::int64_t frame);
+    void sumLoopHold (std::int64_t frame, std::int64_t most);
     // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
     // 1/32-bar block starts plus a boundary/recovery plan await activation.
     // Sub-quarter bars are straight; SQPusher fills are >=1/8 beat and Bounce
@@ -293,6 +298,21 @@ private:
     std::int64_t rushJoinFrame = -1;
     std::size_t rushCut = 0;
     LoopDiagnostics loop; // the pad's Loops: this phrase's loop
+    std::int64_t holdMostReads = 0;
+    // The pad's Loops: the level hold's sum over the snapped loop, a few frames each
+    // sample as the track pass records, so the phrase's first repeat only finishes it.
+    struct LoopHold
+    {
+        double passUnits = 0.0;               // the loop's length in units, from its capture
+        std::array<std::int64_t, 4> lengths {}; // the whole loop, its half, quarter and eighth, in frames
+        std::array<double, 4> energy {};       // the sum at each length; the whole loop's once finished
+        double sum = 0.0;
+        std::int64_t next = 0;                 // frames summed, from the read frame
+        bool started = false;                  // the read frame is chosen
+        bool done = false;                     // the gains are set
+    };
+    LoopHold hold;
+    static constexpr std::int64_t holdReadsPerFrame = 32;
     std::optional<LivePlayer::Tail> loopRunOn; // the pad's Loops: a replay block's last cut, run on to the next block
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;
