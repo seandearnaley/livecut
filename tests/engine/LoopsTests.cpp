@@ -646,7 +646,7 @@ TEST_CASE ("In 3/4, 5/4, 7/4, 5/8, 7/8 and 13/8, Loops' passes land", "[loops][c
             }
 }
 
-TEST_CASE ("Through tempo automation, Loops' passes land within 4 frames", "[loops][cutter][tempo]")
+TEST_CASE ("Through tempo automation, Loops' passes land within 2 frames", "[loops][cutter][tempo]")
 {
     for (const auto ramp : { .5, -.5, 3.0, -3.0 })
         for (int (*size) (std::int64_t) : { +[] (std::int64_t) { return 1; }, +[] (std::int64_t) { return 64; },
@@ -673,7 +673,7 @@ TEST_CASE ("Through tempo automation, Loops' passes land within 4 frames", "[loo
                     replays += block.replay() ? 1 : 0;
                 }
                 CHECK (replays >= 4);
-                CHECK (worst <= 4.0);
+                CHECK (worst <= 2.0); // measured 1
                 CHECK (host.silent == 0);
             }
 }

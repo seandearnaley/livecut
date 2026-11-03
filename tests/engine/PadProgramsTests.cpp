@@ -51,6 +51,8 @@ void checkCutEqual (const CutParameters& a, const CutParameters& b)
     CHECK_THAT (a.rollBeats, WithinAbs (b.rollBeats, 0.0));
     CHECK_THAT (a.rollCurve, WithinAbs (b.rollCurve, 0.0));
     CHECK_THAT (a.rollCents, WithinAbs (b.rollCents, 0.0));
+    CHECK_THAT (a.loopBars, WithinAbs (b.loopBars, 0.0));
+    CHECK (a.loopDepth == b.loopDepth);
 }
 
 void checkCrusherEqual (const CrusherParameters& a, const CrusherParameters& b)
@@ -62,7 +64,7 @@ void checkCrusherEqual (const CrusherParameters& a, const CrusherParameters& b)
     CHECK_THAT (a.maxHz, WithinAbs (b.maxHz, 0.0));
 }
 
-CutProcedure& procedureFor (const PadMapping& mapping, CutProc11& cut, Bounce& bounce, SQPusher& glitch, Rush& rush)
+CutProcedure& procedureFor (const PadMapping& mapping, CutProc11& cut, Bounce& bounce, SQPusher& glitch, Rush& rush, Loops& loops)
 {
     switch (mapping.procedure)
     {
@@ -70,6 +72,7 @@ CutProcedure& procedureFor (const PadMapping& mapping, CutProc11& cut, Bounce& b
         case Procedure::bounce: return bounce;
         case Procedure::sqPusher: return glitch;
         case Procedure::rush: return rush;
+        case Procedure::loops: return loops;
         case Procedure::warpCut: break;
     }
 
@@ -77,7 +80,7 @@ CutProcedure& procedureFor (const PadMapping& mapping, CutProc11& cut, Bounce& b
 }
 } // namespace
 
-TEST_CASE ("Only Loops isn't available", "[pad]")
+TEST_CASE ("Every program is available, and nothing outside the eight is", "[pad]")
 {
     CHECK (padProgramCount == 8);
     CHECK (isAvailable (PadProgram::cut));
@@ -86,13 +89,15 @@ TEST_CASE ("Only Loops isn't available", "[pad]")
     CHECK (isAvailable (PadProgram::suction));
     CHECK (isAvailable (PadProgram::filter));
     CHECK (isAvailable (PadProgram::tape));
-    CHECK_FALSE (isAvailable (PadProgram::loops));
+    CHECK (isAvailable (PadProgram::loops));
     CHECK (isAvailable (PadProgram::rush));
+    CHECK_FALSE (isAvailable (static_cast<PadProgram> (padProgramCount)));
+    CHECK_FALSE (isAvailable (static_cast<PadProgram> (-1)));
     CHECK (PadZones{}.x == -1);
     CHECK (PadZones{}.y == -1);
 }
 
-TEST_CASE ("Captions can be looked up for any program, empty for those not yet built", "[pad]")
+TEST_CASE ("Every program has captions, and a value outside the eight has none", "[pad]")
 {
     const auto caption = [] (const char* text) { return std::string_view (text); };
     CHECK (caption (padCaptions (PadProgram::cut).x) == "Density");
@@ -102,13 +107,15 @@ TEST_CASE ("Captions can be looked up for any program, empty for those not yet b
     CHECK (caption (padCaptions (PadProgram::glitch).x) == "Rate");
     CHECK (caption (padCaptions (PadProgram::glitch).y) == "Pitch");
 
-    CHECK (caption (padCaptions (PadProgram::loops).x).empty());
-    CHECK (caption (padCaptions (PadProgram::loops).y).empty());
+    CHECK (caption (padCaptions (static_cast<PadProgram> (padProgramCount)).x).empty());
+    CHECK (caption (padCaptions (static_cast<PadProgram> (padProgramCount)).y).empty());
 
     // The same words the mapping carries, from one table.
     for (const auto program : { PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
-                                PadProgram::tape, PadProgram::rush })
+                                PadProgram::tape, PadProgram::loops, PadProgram::rush })
     {
+        CHECK_FALSE (caption (padCaptions (program).x).empty());
+        CHECK_FALSE (caption (padCaptions (program).y).empty());
         CAPTURE (program);
         const auto mapping = mapPad (program, .5f, .5f, {});
         CHECK (caption (mapping.xCaption) == caption (padCaptions (program).x));
@@ -155,7 +162,7 @@ TEST_CASE ("Cut maps density to 8, 16 and 32 units", "[pad]")
 TEST_CASE ("Mappings are deterministic", "[pad]")
 {
     const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
-                                   PadProgram::tape, PadProgram::rush);
+                                   PadProgram::tape, PadProgram::loops, PadProgram::rush);
     const auto x = GENERATE (0.f, .34f, .5f, .85f, 1.f);
     const auto y = GENERATE (0.f, .25f, .5f, .75f, 1.f);
     const auto usePrevious = GENERATE (false, true);
@@ -187,10 +194,11 @@ TEST_CASE ("Mappings are deterministic", "[pad]")
 TEST_CASE ("Every mapping stays inside the parameter ranges", "[pad]")
 {
     const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
-                                   PadProgram::tape, PadProgram::rush);
+                                   PadProgram::tape, PadProgram::loops, PadProgram::rush);
     const auto seed = program == PadProgram::cut ? 101u : program == PadProgram::bounce ? 202u
                     : program == PadProgram::glitch ? 303u : program == PadProgram::suction ? 404u
-                    : program == PadProgram::filter ? 505u : program == PadProgram::tape ? 606u : 808u;
+                    : program == PadProgram::filter ? 505u : program == PadProgram::tape ? 606u
+                    : program == PadProgram::loops ? 707u : 808u;
     constexpr std::array allowedUnits { 6, 8, 12, 16, 18, 24, 32 };
 
     for (int xi = 0; xi <= 20; ++xi)
@@ -243,6 +251,9 @@ TEST_CASE ("Every mapping stays inside the parameter ranges", "[pad]")
             CHECK (cut.rollCurve >= -1.0);
             CHECK (cut.rollCurve <= 1.0);
             CHECK (std::abs (cut.rollCents) <= 500.0);
+            CHECK ((cut.loopBars == 0.0 || cut.loopBars == 1.0 || cut.loopBars == .5 || cut.loopBars == .25));
+            CHECK (cut.loopDepth >= 0);
+            CHECK (cut.loopDepth <= 3);
         }
     }
 }
@@ -263,7 +274,7 @@ TEST_CASE ("Glitch gets crunchier as it gets faster", "[pad]")
 TEST_CASE ("Each available program plays legal phrases at its corners", "[pad]")
 {
     const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
-                                   PadProgram::rush);
+                                   PadProgram::loops, PadProgram::rush);
     const auto x = GENERATE (0.f, 1.f);
     const auto y = GENERATE (0.f, 1.f);
     const auto mapping = mapPad (program, x, y, {});
@@ -271,8 +282,9 @@ TEST_CASE ("Each available program plays legal phrases at its corners", "[pad]")
     Bounce bounce;
     SQPusher glitch;
     Rush rush;
+    Loops loops;
     Random random { mapping.seed };
-    testing::playPhrase (procedureFor (mapping, cut, bounce, glitch, rush), random, mapping.cut, mapping.unitsPerBar);
+    testing::playPhrase (procedureFor (mapping, cut, bounce, glitch, rush, loops), random, mapping.cut, mapping.unitsPerBar);
 }
 
 TEST_CASE ("Pad programs use the pinned curves and preserve other defaults", "[pad]")
@@ -412,9 +424,9 @@ TEST_CASE ("Suction never restarts the cutting while you move", "[pad]")
     }
 }
 
-TEST_CASE ("Cut, Bounce, Glitch and Rush keep Impact off", "[pad]")
+TEST_CASE ("Cut, Bounce, Glitch, Rush and Loops keep Impact off", "[pad]")
 {
-    const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::rush);
+    const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::rush, PadProgram::loops);
     const auto x = GENERATE (0.f, .5f, 1.f);
     const auto y = GENERATE (0.f, .5f, 1.f);
     const auto mapping = mapPad (program, x, y, {});
@@ -431,7 +443,7 @@ TEST_CASE ("Cut, Bounce, Glitch and Rush keep Impact off", "[pad]")
 TEST_CASE ("Only Tape leaves Fracture's Classic family", "[pad]")
 {
     const auto program = GENERATE (PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
-                                   PadProgram::rush);
+                                   PadProgram::rush, PadProgram::loops);
     const auto x = GENERATE (0.f, .5f, 1.f);
     const auto y = GENERATE (0.f, .5f, 1.f);
     const auto mapping = mapPad (program, x, y, {});
@@ -738,4 +750,79 @@ TEST_CASE ("Rush never restarts the cutting while you move", "[pad]")
             CHECK (sameDiscreteState (first, mapPad (PadProgram::rush, x, y, {})));
             previous = next;
         }
+}
+
+TEST_CASE ("Loops is available, with Loop and Depth", "[pad]")
+{
+    CHECK (isAvailable (PadProgram::loops));
+    CHECK (std::string_view (padCaptions (PadProgram::loops).x) == "Loop");
+    CHECK (std::string_view (padCaptions (PadProgram::loops).y) == "Depth");
+    const auto mapping = mapPad (PadProgram::loops, .5f, .5f, {});
+    CHECK (std::string_view (mapping.xCaption) == "Loop");
+    CHECK (std::string_view (mapping.yCaption) == "Depth");
+}
+
+TEST_CASE ("Loops maps X to a bar, half a bar or a quarter bar, and Y to four depths", "[pad]")
+{
+    for (int xi = 0; xi <= 40; ++xi)
+        for (int yi = 0; yi <= 40; ++yi)
+        {
+            const auto x = static_cast<float> (xi) / 40.f, y = static_cast<float> (yi) / 40.f;
+            CAPTURE (x, y);
+            const auto mapping = mapPad (PadProgram::loops, x, y, {});
+            constexpr double lengths[] { 1.0, .5, .25 };
+            CHECK (mapping.zones.x == padZone (x, 3, -1));
+            CHECK (mapping.cut.loopBars == lengths[mapping.zones.x]);
+            CHECK (mapping.cut.loopDepth == std::min (static_cast<int> (4.f * y), 3));
+        }
+    // Zone edges at a third and two thirds, held 3% either way.
+    CHECK (mapPad (PadProgram::loops, .33f, 0.f, {}).cut.loopBars == 1.0);
+    CHECK (mapPad (PadProgram::loops, .34f, 0.f, {}).cut.loopBars == .5);
+    CHECK (mapPad (PadProgram::loops, .67f, 0.f, {}).cut.loopBars == .25);
+    CHECK (mapPad (PadProgram::loops, .35f, 0.f, { 0, 0 }).cut.loopBars == 1.0);
+    CHECK (mapPad (PadProgram::loops, .37f, 0.f, { 0, 0 }).cut.loopBars == .5);
+    CHECK (mapPad (PadProgram::loops, .64f, 0.f, { 2, 0 }).cut.loopBars == .25);
+    // Y in four equal steps, with no hysteresis.
+    CHECK (mapPad (PadProgram::loops, 0.f, .24f, {}).cut.loopDepth == 0);
+    CHECK (mapPad (PadProgram::loops, 0.f, .25f, {}).cut.loopDepth == 1);
+    CHECK (mapPad (PadProgram::loops, 0.f, .5f, {}).cut.loopDepth == 2);
+    CHECK (mapPad (PadProgram::loops, 0.f, .75f, {}).cut.loopDepth == 3);
+    CHECK (mapPad (PadProgram::loops, 0.f, 1.f, {}).cut.loopDepth == 3);
+}
+
+TEST_CASE ("Loops cuts on 16ths with its own procedure and seed, and nothing else", "[pad]")
+{
+    const auto x = GENERATE (0.f, .5f, 1.f);
+    const auto y = GENERATE (0.f, .5f, 1.f);
+    const auto mapping = mapPad (PadProgram::loops, x, y, {});
+    CutParameters expected;
+    expected.minPhraseBars = 1;
+    expected.maxPhraseBars = 2;
+    expected.loopBars = mapping.cut.loopBars;
+    expected.loopDepth = mapping.cut.loopDepth;
+    checkCutEqual (mapping.cut, expected);
+    checkCrusherEqual (mapping.crusher, CrusherParameters{});
+    CHECK (mapping.procedure == Procedure::loops);
+    CHECK (mapping.unitsPerBar == 16);
+    CHECK (mapping.seed == 707);
+    CHECK (mapping.zones.y == 0);
+}
+
+TEST_CASE ("Loops restarts the cutting only when X changes zone", "[pad]")
+{
+    auto previous = mapPad (PadProgram::loops, 0.f, 0.f, {});
+    int restarts = 0;
+    for (int xi = 0; xi <= 20; ++xi)
+        for (int yi = 0; yi <= 20; ++yi)
+        {
+            CAPTURE (xi, yi);
+            const auto x = static_cast<float> (xi) / 20.f;
+            const auto y = static_cast<float> (xi % 2 == 0 ? yi : 20 - yi) / 20.f; // a boustrophedon sweep
+            const auto next = mapPad (PadProgram::loops, x, y, previous.zones);
+            const auto same = sameDiscreteState (previous, next);
+            CHECK (same == (next.zones.x == previous.zones.x));
+            restarts += same ? 0 : 1;
+            previous = next;
+        }
+    CHECK (restarts == 2); // into the middle zone, then the right
 }

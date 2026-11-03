@@ -836,6 +836,31 @@ TEST_CASE ("padSettings carries Rush's roll and the pad's Straight, and no Class
     CHECK_THAT (settings.fadeMilliseconds, WithinAbs (0.0, 0.0));
 }
 
+TEST_CASE ("padSettings carries Loops' loop and depth, and the pad's Straight", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    setValue (state, ids::procedure, 1); // the Classic page's WarpCut
+    setValue (state, ids::attackAlign, 1); // and its Attack Align, which Loops' snap doesn't use
+    setValue (state, ids::padStraight, 1);
+    const auto user = reader.read();
+    REQUIRE (user.procedure == engine::Procedure::warpCut);
+
+    const auto mapping = engine::mapPad (engine::PadProgram::loops, .5f, .6f, {});
+    const auto settings = padSettings (user, mapping);
+    CHECK (settings.procedure == engine::Procedure::loops);
+    CHECK (settings.unitsPerBar == 16);
+    CHECK (settings.seed == 707u);
+    CHECK_THAT (settings.cut.loopBars, WithinAbs (.5, 0.0));
+    CHECK (settings.cut.loopDepth == 2);
+    CHECK (settings.cut.straight);
+    CHECK_FALSE (settings.attackAlign);
+    CHECK (settings.fracture.procedure == engine::FractureProcedure::classic);
+    CHECK_FALSE (settings.impact.filter.enabled);
+    CHECK_THAT (settings.fadeMilliseconds, WithinAbs (0.0, 0.0));
+}
+
 TEST_CASE ("padSettings carries Tape's stops, and the other programs keep Classic Fracture", "[parameters][pad]")
 {
     LivecutAudioProcessor processor;
