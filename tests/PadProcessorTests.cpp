@@ -1421,7 +1421,7 @@ TEST_CASE ("Switching Rush to Cut or Tape mid-roll, and Cut to Rush, doesn't cli
         int from, to;
         float bar;
     };
-    for (const auto [from, to, bar] : { Case { rushProgram, cutProgram, 1.25f }, Case { rushProgram, tapeProgram, 1.25f },
+    for (const auto [from, to, bar] : { Case { rushProgram, cutProgram, .5f }, Case { rushProgram, tapeProgram, 1.25f },
                                         Case { cutProgram, rushProgram, 2.f } })
     {
         const auto steps = switchSteps (from, to, midRoll, 1.f, 1.f);
@@ -1470,6 +1470,25 @@ TEST_CASE ("Switching Rush to Classic doesn't click, before or during a roll", "
         // Measured 0.36x before the roll and 0.75x during it.
         CHECK (rushToClassic <= std::max (rushThroughout, classicThroughout));
     }
+}
+
+TEST_CASE ("An arrangement loop opens Rush on the track, after a roll that lands on the loop's end", "[pad][processor][rush][loop]")
+{
+    // X 0.5, Y 0: an even one-beat roll on beat 4, its first 16th the hit itself.
+    constexpr int repeats = 3 * beatFrames + 6000;
+    PadSession session;
+    set (session.processor, livecut::ids::padProgram, rushProgram);
+    set (session.processor, livecut::ids::padY, 0);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (2 * barFrames); // a two-bar loop
+    const auto wrapped = static_cast<int> (session.input.size () / 2);
+    CHECK_FALSE (session.dryBetween (wrapped - barFrames + repeats, wrapped)); // the roll, up to the loop's end
+    session.frame = 0; // the host loops back to bar 1
+    session.render (barFrames);
+    REQUIRE (session.processor.getCutter ().isCutting ());
+    CHECK (session.dryBetween (wrapped, wrapped + repeats)); // the track from the loop's first sample
+    CHECK_FALSE (session.dryBetween (wrapped + repeats, wrapped + barFrames));
+    CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
 }
 
 TEST_CASE ("Rush at the same spot in the same bar sounds the same", "[pad][processor][rush]")

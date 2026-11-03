@@ -378,20 +378,30 @@ struct Played
 };
 
 // Plays `bars` bars of `tone` through Rush from the first sample, checking every
-// frame of the input bitwise. `ramp` adds bpm per beat at each `buffer` frames.
+// frame of the input bitwise. `ramp` adds bpm per beat at each `buffer` frames. A
+// `loop` of that many bars wraps the host back to its start, as an arrangement loop does.
 Played playRush (const CutParameters& params, double rate, double bpm, double meter, double bars, double ramp = 0.0,
-                 int buffer = 512)
+                 int buffer = 512, int loop = 0)
 {
     RushCutter rush (params, rate, bpm, meter);
     Played played;
+    double elapsed = 0.0;
     std::int64_t phrase = -1;
     double blockStart = -1.0;
     std::size_t index = 0, count = 0, highest = 0;
     int remaining = 0, runOn = 0;
-    while (rush.beats() < bars * meter)
+    while (elapsed < bars * meter)
     {
         if (ramp != 0.0 && rush.frame % buffer == 0)
             rush.setTempo (bpm + ramp * rush.beats());
+        if (loop > 0 && rush.beats() >= loop * meter - .5 * rush.bpm / 60.0 / rate)
+        {
+            // On the frame nearest the loop's end, the host starts its next pass
+            // exactly on its first beat.
+            rush.tempoBeats = 0.0;
+            rush.tempoFrame = rush.frame;
+        }
+        elapsed += rush.bpm / 60.0 / rate;
         const auto at = rush.beats();
         const auto halfSample = .5 * rush.bpm / 60.0 / rate;
         const auto exhausted = index >= count && count > 0;
@@ -710,4 +720,19 @@ TEST_CASE ("A restart in the middle of a roll fades the repeat out under what fo
     };
     CAPTURE (largest (out), largest (rush), largest (in));
     CHECK (largest (out) <= std::max (largest (rush), largest (in)));
+}
+
+TEST_CASE ("An arrangement loop that wraps on a bar line opens on the track after a landed roll", "[rush][cutter][loop]")
+{
+    // A two-bar loop wraps the host from its end back to its start. The roll before
+    // the wrap lands on the loop's end, and the wrap restarts the cutting on the
+    // loop's first sample: the track, exactly.
+    const auto meter = GENERATE (4.0, 3.0);
+    const auto bpm = GENERATE (93.0, 120.0);
+    for (const auto beats : { 1.0, 3.0 })
+        for (const auto curve : { -1.0, 1.0 })
+        {
+            CAPTURE (meter, bpm, beats, curve);
+            checkLanded (playRush (roll (beats, curve, 500.0 * curve), 48000.0, bpm, meter, 6.0, 0.0, 512, 2), 6);
+        }
 }
