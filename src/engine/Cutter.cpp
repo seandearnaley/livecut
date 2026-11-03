@@ -524,7 +524,11 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                     tapeTailAge = 0;
                 }
                 // So does Rush's sound: a roll's repeat fades out rather than splicing.
-                if (hasActivePlan && seamless (activePlan))
+                // A Loops track into a new Loops phrase, whose first block is a track too,
+                // is the input into the input: nothing to fade.
+                const auto trackIntoTrack = hasActivePlan && activePlan.loops && ! loopsReplay (activePlan)
+                                         && pendingProcedure == Procedure::loops && fractureParams.procedure == FractureProcedure::classic;
+                if (hasActivePlan && seamless (activePlan) && ! trackIntoTrack)
                 {
                     rushTail = rushSound (frame);
                     rushTailAge = 0;
@@ -533,7 +537,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                 // way under Rush's track, but before the effects, so a filter the
                 // outgoing program held as it fades shapes it too. Silence fades
                 // in from silence.
-                else if (hasActivePlan && (pendingProcedure == Procedure::rush || pendingProcedure == Procedure::loops) && fractureParams.procedure == FractureProcedure::classic
+                else if (! trackIntoTrack && hasActivePlan && (pendingProcedure == Procedure::rush || pendingProcedure == Procedure::loops) && fractureParams.procedure == FractureProcedure::classic
                          && activePlan.fracture.procedure == FractureProcedure::classic)
                 {
                     // On a cut boundary, the cut that was playing, run on past its end.

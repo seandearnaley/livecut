@@ -1706,3 +1706,30 @@ TEST_CASE ("The level hold sums the snapped loop exactly", "[loops][level]")
             CHECK (checked >= 2);
         }
 }
+
+TEST_CASE ("A new loop length during the track pass leaves the track untouched", "[loops][joins]")
+{
+    // A restart from a Loops track into a new Loops phrase's track: both are the
+    // input, so nothing fades, and the track stays the input bit for bit.
+    for (const auto rate : { 44100.0, 48000.0 })
+    {
+        CAPTURE (rate);
+        LoopsHost host (loops (.25, 3), rate, 147.0, 3.5);
+        host.source = heldBass<57>;
+        host.cutter.setIdle (true);
+        host.run (static_cast<std::int64_t> (rate));
+        host.cutter.setIdle (false);
+        host.run (static_cast<std::int64_t> (rate / 8.0));
+        REQUIRE (host.cutter.isCutting());
+        REQUIRE_FALSE (host.blocks.back().replay());
+        host.cutter.setParameters (loops (.5, 3)); // X to the middle zone
+        host.cutter.restartAtNextUnit();
+        const auto asked = host.frame;
+        host.run (static_cast<std::int64_t> (rate / 4.0), [] (std::int64_t) { return 1; });
+        const auto first = std::find_if (host.blocks.begin(), host.blocks.end(), [&] (const Activated& b) { return b.frame >= asked; });
+        REQUIRE (first != host.blocks.end());
+        const auto end = first + 1 != host.blocks.end() ? (first + 1)->frame : host.frame;
+        for (auto f = host.blocks.front().frame; f < end; ++f)
+            REQUIRE (host.outLeft[static_cast<std::size_t> (f)] == host.inLeft[static_cast<std::size_t> (f)]);
+    }
+}
