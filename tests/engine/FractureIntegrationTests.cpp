@@ -482,9 +482,9 @@ TEST_CASE("Classic Fracture is bit-identical","[fracture][integration][pinned]")
 namespace
 {
 // Classic Tape (0, 1), Grain (2), the pad's Cut, Bounce, Glitch, Suction, Filter
-// and Tape (3 to 8), and Classic's CutProc11, WarpCut, SQPusher and Bounce (9 to
-// 12) through a restart, an idle toggle and two tempo changes, at a tempo whose
-// bars aren't whole samples.
+// and Tape (3 to 8), Classic's CutProc11, WarpCut, SQPusher and Bounce (9 to 12),
+// and the pad's Rush (13) through a restart, an idle toggle and two tempo changes,
+// at a tempo whose bars aren't whole samples.
 std::uint64_t pinnedEventHash (int which)
 {
     constexpr double rate = 44100.0;
@@ -523,11 +523,11 @@ std::uint64_t pinnedEventHash (int which)
         }
         cutter.setFracture (f);
     }
-    else if (which < 9)
+    else if (which < 9 || which == 13)
     {
         const PadProgram programs[] { PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
                                       PadProgram::tape };
-        const auto m = mapPad (programs[which - 3], .3f, .75f, {});
+        const auto m = mapPad (which == 13 ? PadProgram::rush : programs[which - 3], .3f, .75f, {});
         cutter.setProcedure (m.procedure);
         cutter.setUnitsPerBar (m.unitsPerBar);
         cutter.setSeed (m.seed);
@@ -602,13 +602,14 @@ TEST_CASE("Classic Fracture and the built programs are bit-identical through res
     // Measured on the engine before Tape (d2cbbb2), and equal on this branch, on a
     // libm-free input. The MSVC values are Windows CI's, measured at b34dd71. Tape (8)
     // and Classic's procedures (9 to 12) were measured on pad/tape before Rush
-    // (b34dd71), with Apple Clang only until Windows CI reports MSVC's.
-    constexpr std::array<std::uint64_t,13> expected {
+    // (b34dd71), and Rush (13) as it was built, with Apple Clang only until Windows CI
+    // reports MSVC's.
+    constexpr std::array<std::uint64_t,14> expected {
         testing::pinnedHash(UINT64_C(0x2f582588aa69dda7),UINT64_C(0x1f3d82b817cc3135)), testing::pinnedHash(UINT64_C(0xa09e8c6a97ac05eb),UINT64_C(0x8d0225cdfc3b26f0)), testing::pinnedHash(UINT64_C(0x8dfd275471cb838b),UINT64_C(0xa315ceaf0d35f004)), testing::pinnedHash(UINT64_C(0xbd765792b25f5b6a),UINT64_C(0x3d812833c479f0d2)),
         testing::pinnedHash(UINT64_C(0x102182ecbb1e9824),UINT64_C(0x3227a7eafd96dc39)), testing::pinnedHash(UINT64_C(0xc802fe7c3ef2261e),UINT64_C(0x71987b5803b1b4e5)), testing::pinnedHash(UINT64_C(0xf16d4f18e2706587),UINT64_C(0x1af7d9c363b0f056)), testing::pinnedHash(UINT64_C(0x53c8983cba5b2842),UINT64_C(0x4b629cf30fab193d)),
         UINT64_C(0x582da3bde16cd917), UINT64_C(0xf471244cf27e91e7), UINT64_C(0x08bbb0f7a7d88d38), UINT64_C(0x48b6b22fc72be4e4),
-        UINT64_C(0xf2958df8ef88e9b5) };
-    for(int which=0;which<13;++which)
+        UINT64_C(0xf2958df8ef88e9b5), UINT64_C(0xbfd2252a38b0868c) };
+    for(int which=0;which<14;++which)
     {
         CAPTURE(which);
         CHECK(pinnedEventHash(which)==expected[static_cast<std::size_t>(which)]);
