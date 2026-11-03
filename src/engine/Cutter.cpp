@@ -24,6 +24,12 @@ namespace
 // is a jump: a loop, a relocation or a restart.
 constexpr double jumpToleranceBeats = 1.0e-3;
 
+// Where a Rush boundary falls exactly half a sample between two frames, rounding in
+// the accumulated position, which depends on the host's buffer size, would pick the
+// frame. A Rush plan counts a boundary this close as reached, so the earlier frame
+// always takes it.
+constexpr double rushTieBeats = 1.0e-9;
+
 bool hasSwingWarp (double swing, double beatsPerBar)
 {
     // SwingGrid only warps complete pairs of eighths (one quarter note).
@@ -309,8 +315,10 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
     const auto dryRight = right;
     planningSource = livePlayer.sourceAtFrame (frame);
 
+    const auto tie = cutting && hasActivePlan && activePlan.rush ? rushTieBeats : 0.0;
+
     // A sample within half a sample of the bar line starts the next bar.
-    if (beats >= timing.beatsPerBar - halfSampleBeats)
+    if (beats >= timing.beatsPerBar - halfSampleBeats - tie)
     {
         beats -= timing.beatsPerBar;
         ++bar;
@@ -367,9 +375,10 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
     const auto unitsPerBeat = unitsPerBar / timing.beatsPerBar;
     const auto unitsIntoBar = beats * unitsPerBeat;
     const auto halfSample = halfSampleBeats * unitsPerBeat;
+    const auto tieUnits = tie * unitsPerBeat;
 
     const auto newBar = unitsIntoBar < halfSample && (! emittedBar || lastEmittedBar != bar);
-    const auto phraseEnding = cutting && (static_cast<double> (bar - phraseBar) * unitsPerBar + unitsIntoBar >= phraseBars * unitsPerBar - halfSample);
+    const auto phraseEnding = cutting && (static_cast<double> (bar - phraseBar) * unitsPerBar + unitsIntoBar >= phraseBars * unitsPerBar - halfSample - tieUnits);
     if (phraseEnding && ! phraseCompletionNotified)
     {
         if (observer != nullptr)
@@ -405,7 +414,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
         const auto structuralChange = pendingProcedure != procedure || pendingUnitsPerBar != unitsPerBar || std::abs (pendingSwing - swing) > 1.0e-9
                                    || fractureParams.procedure != fractureProcedure;
 
-        if (unitsIntoPhrase >= phraseBars * unitsPerBar - halfSample)
+        if (unitsIntoPhrase >= phraseBars * unitsPerBar - halfSample - tieUnits)
         {
             if (observer != nullptr && ! phraseCompletionNotified)
                 observer->phraseCompleted (sampleOffset);
@@ -419,7 +428,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             blockEnd = barsIntoPhrase * unitsPerBar;
             planBlock (timing);
         }
-        else if (unitsIntoPhrase >= blockEnd - halfSample)
+        else if (unitsIntoPhrase >= blockEnd - halfSample - tieUnits)
         {
             planBlock (timing);
         }
@@ -934,7 +943,7 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
     while (queued > 0)
     {
         const auto& next = plans[queueHead];
-        if (next.activationBar > bar || (next.activationBar == bar && next.activationBeat > beats + halfSample))
+        if (next.activationBar > bar || (next.activationBar == bar && next.activationBeat > beats + halfSample + (next.rush ? rushTieBeats : 0.0)))
             return;
         // A Tape stop or spin-up the new block cuts short, as tempo automation
         // can, fades out under it over 5 ms instead of splicing.
@@ -946,6 +955,11 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
             tapeTailAge = 0;
         }
         activePlan = next;
+        // A Rush block reads from the frame it starts on, so its first cut is the
+        // input itself. Where a bar line or a beat falls exactly half a sample
+        // between two frames, a block can activate a frame after it was planned.
+        if (activePlan.rush)
+            activePlan.source = planningSource;
         queueHead = (queueHead + 1) % plans.size();
         --queued;
         hasActivePlan = true;

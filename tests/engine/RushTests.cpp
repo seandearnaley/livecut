@@ -375,6 +375,7 @@ struct Played
     int mistimed = 0;           // bar lines not within half a sample of the host's
     int worstRunOn = 0;         // frames of input after a roll's last cut
     int worstTruncated = 0;     // frames of a roll's last cut the bar line cut off
+    std::vector<float> output;  // left and right, interleaved
 };
 
 // Plays `bars` bars of `tone` through Rush from the first sample, checking every
@@ -455,9 +456,53 @@ Played playRush (const CutParameters& params, double rate, double bpm, double me
         else
             ++played.repeats;
         played.dropouts += left == 0.f && right == 0.f && std::abs (in.left) > .05f ? 1 : 0;
+        played.output.push_back (left);
+        played.output.push_back (right);
     }
     return played;
 }
+
+// The same steady run as playRush, in host buffers of `buffer` frames.
+std::vector<float> renderRush (const CutParameters& params, double rate, double bpm, double meter, std::size_t frames, int buffer)
+{
+    RushCutter rush (params, rate, bpm, meter);
+    std::vector<float> output, left (static_cast<std::size_t> (buffer)), right (left.size());
+    output.reserve (2 * frames);
+    while (output.size() < 2 * frames)
+    {
+        const auto count = std::min<std::size_t> (left.size(), frames - output.size() / 2);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const auto in = tone (rush.frame + static_cast<std::int64_t> (i));
+            left[i] = in.left;
+            right[i] = in.right;
+        }
+        rush.process (left.data(), right.data(), static_cast<int> (count));
+        REQUIRE (rush.cutter.error() == Cutter::Error::none);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            output.push_back (left[i]);
+            output.push_back (right[i]);
+        }
+    }
+    return output;
+}
+
+// Whether a bar line, or a point a whole number of beats before one, falls exactly
+// half a sample between two frames in the first `bars` bars.
+bool halfSampleTie (double rate, int bpm, double meter, int bars)
+{
+    const auto beat = rate * 60.0 / bpm;
+    for (int bar = 1; bar <= bars; ++bar)
+        for (int back = 0; back < meter; ++back)
+        {
+            const auto at = (bar * meter - back) * beat;
+            if (std::abs (at - std::floor (at) - .5) < 1.0e-6)
+                return true;
+        }
+    return false;
+}
+
 
 // At a steady tempo a roll's last cut ends within a frame of the bar line, either
 // side. Through a tempo ramp each re-time rounds its cut's start, so up to two
@@ -474,6 +519,20 @@ void checkLanded (const Played& played, int bars, int runOn = 1, int truncated =
     CHECK (played.worstTruncated <= truncated);
     CHECK (played.repeats > 0);
     CHECK (played.compared > 0);
+}
+
+// Rush lands, plays the input bitwise outside its repeats, and gives the same
+// output for every host buffer size.
+void checkLandedAnyBuffer (const CutParameters& params, double rate, double bpm, double meter, int bars)
+{
+    const auto played = playRush (params, rate, bpm, meter, bars);
+    checkLanded (played, bars);
+    const auto frames = played.output.size() / 2;
+    for (const auto buffer : { 37, 512, 4096 })
+    {
+        CAPTURE (buffer);
+        CHECK (renderRush (params, rate, bpm, meter, frames, buffer) == played.output);
+    }
 }
 
 // Every whole-number tempo from 80 to 180 bpm, with the roll's length and curve
@@ -735,4 +794,70 @@ TEST_CASE ("An arrangement loop that wraps on a bar line opens on the track afte
             CAPTURE (meter, bpm, beats, curve);
             checkLanded (playRush (roll (beats, curve, 500.0 * curve), 48000.0, bpm, meter, 6.0, 0.0, 512, 2), 6);
         }
+}
+
+TEST_CASE ("At 128 bpm in 4/4 at 44.1 kHz, where a bar ends half a sample between frames, Rush's track is the input", "[rush][cutter][tempo]")
+{
+    // A bar is 82687.5 samples, so bar 4's line ties between two frames. The block
+    // after it used to activate a frame after it was planned and play the input a
+    // sample late, and which frame won depended on the host's buffer size.
+    REQUIRE (halfSampleTie (44100.0, 128, 4.0, 5));
+    for (const auto curve : { -1.0, 0.0, 1.0 })
+    {
+        CAPTURE (curve);
+        checkLandedAnyBuffer (roll (1.0, curve, 500.0 * curve), 44100.0, 128.0, 4.0, 5);
+    }
+}
+
+namespace
+{
+// Every whole-number tempo from 80 to 180 bpm at 44.1 kHz where a bar line or a
+// roll's start ties half a sample between two frames, in five bars.
+void checkTies (double meter)
+{
+    int ties = 0;
+    for (int bpm = 80; bpm <= 180; ++bpm)
+    {
+        if (! halfSampleTie (44100.0, bpm, meter, 5))
+            continue;
+        ++ties;
+        for (const auto beats : { 1.0, 4.0 })
+            for (const auto curve : { -1.0, 1.0 })
+            {
+                CAPTURE (meter, bpm, beats, curve);
+                checkLandedAnyBuffer (roll (beats, curve, 500.0 * curve, bpm % 2 == 0), 44100.0, bpm, meter, 5);
+            }
+    }
+    CHECK (ties > 0);
+}
+} // namespace
+
+TEST_CASE ("At every half-sample tie tempo in 4/4, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (4.0);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 3/4, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (3.0);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 5/4, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (5.0);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 7/8, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (3.5);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 5/8, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (2.5);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 13/8, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (6.5);
 }
