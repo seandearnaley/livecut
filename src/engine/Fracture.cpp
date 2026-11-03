@@ -180,6 +180,7 @@ bool layOutTapeStops (const FractureParameters::Tape& tape, std::uint32_t seed, 
                       double beatsPerBar, double unitsPerBeat, double blockUnits, bool spinUpFirst,
                       std::vector<Cut>& cuts)
 {
+    assert (tape.stopBeats > 0.0f);
     cuts.clear();
     const auto end = fromBeat + blockUnits / unitsPerBeat;
     auto at = fromBeat;
@@ -208,7 +209,8 @@ bool layOutTapeStops (const FractureParameters::Tape& tape, std::uint32_t seed, 
         if (tapeStopEnds (seed, tape.stopDensity, bar, stopEnd, beatsPerBar))
         {
             const auto stopStart = stopEnd - tapeStopBeats (tape, seed, bar, stopEnd, beatsPerBar);
-            if (stopStart >= at - beatTolerance)
+            // A stop with no length (a stopBeats of 0) is no stop at all.
+            if (stopStart >= at - beatTolerance && stopStart < stopEnd - beatTolerance)
             {
                 if (stopStart > at + beatTolerance)
                     add (TapeMotion::play, stopStart);

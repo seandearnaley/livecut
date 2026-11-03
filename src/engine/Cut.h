@@ -29,6 +29,9 @@ struct Cut
     TapeMotion tape = TapeMotion::cycle; // read only by TapeCut
 };
 
+// The motion sits in what was padding, so a cut, and every block plan, stays the same size.
+static_assert (sizeof (Cut) == 4 * sizeof (double));
+
 // The largest block is a CutProc11 stutter: under a bar of units, at up to 8 cuts per unit.
 inline constexpr std::size_t maxCutsPerBlock = 256;
 

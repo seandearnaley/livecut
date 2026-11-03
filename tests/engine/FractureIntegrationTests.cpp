@@ -2,6 +2,7 @@
 
 #include "engine/Cutter.h"
 #include "engine/AllocationCounter.h"
+#include "engine/PadPrograms.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -9,6 +10,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <algorithm>
 #include <vector>
 #include <stdexcept>
@@ -472,4 +474,115 @@ TEST_CASE("Classic Fracture is bit-identical","[fracture][integration][pinned]")
     FractureParameters grain;
     grain.procedure=FractureProcedure::grainCut;
     CHECK(classicFractureHash(grain)==UINT64_C(0xc2d6efd1f39e08f6));
+}
+
+namespace
+{
+// Classic Tape (0, 1), Grain (2) and the pad's Cut, Bounce, Glitch, Suction and
+// Filter (3 to 7) through a restart, an idle toggle and two tempo changes, at a
+// tempo whose bars aren't whole samples.
+std::uint64_t pinnedEventHash (int which)
+{
+    constexpr double rate = 44100.0;
+    Cutter cutter;
+    cutter.prepare (rate);
+    OnsetDetector detector;
+    struct EpochBounds final : Cutter::SourceContext
+    {
+        std::optional<Cutter::TransportBounds> sourceBoundsAt (std::int64_t frame) const override
+        {
+            if (frame < 0)
+                return std::nullopt;
+            return Cutter::TransportBounds { 3, 0, std::nullopt };
+        }
+    } bounds;
+    cutter.setTransformSource (detector, bounds);
+    if (which < 3)
+    {
+        CutParameters p;
+        p.minPhraseBars = 1;
+        p.maxPhraseBars = 3;
+        p.minCents = -300;
+        p.maxCents = 200;
+        cutter.setParameters (p);
+        cutter.setSeed (29);
+        cutter.setFadeMilliseconds (2);
+        FractureParameters f;
+        f.procedure = which == 2 ? FractureProcedure::grainCut : FractureProcedure::tapeCut;
+        if (which == 1)
+        {
+            f.tape.curve = FractureParameters::Tape::Curve::linear;
+            f.tape.alternate = true;
+            f.tape.cycle = FractureParameters::Tape::Cycle::halfBeat;
+            f.tape.startSpeed = .9f;
+            f.tape.endSpeed = .1f;
+        }
+        cutter.setFracture (f);
+    }
+    else
+    {
+        const PadProgram programs[] { PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter };
+        const auto m = mapPad (programs[which - 3], .3f, .75f, {});
+        cutter.setProcedure (m.procedure);
+        cutter.setUnitsPerBar (m.unitsPerBar);
+        cutter.setSeed (m.seed);
+        cutter.setParameters (m.cut);
+        cutter.setCrusher (m.crusher);
+        cutter.setImpact (m.impact);
+        cutter.setFracture ({});
+    }
+    std::uint64_t hash = UINT64_C (0xcbf29ce484222325);
+    const auto add = [&hash] (float sample)
+    {
+        const auto bits = std::bit_cast<std::uint32_t> (sample);
+        for (int shift = 0; shift < 32; shift += 8)
+        {
+            hash ^= (bits >> shift) & 0xffu;
+            hash *= UINT64_C (0x100000001b3);
+        }
+    };
+    // Ten bars of 4/4 from 97 bpm, a bar of fractional samples, with a restart, an
+    // idle toggle and two tempo changes, in 512-frame host buffers.
+    double beats = 0.0, bpm = 97.0;
+    std::int64_t frame = 0;
+    std::array<float, 512> left {}, right {};
+    bool restarted = false, idled = false, resumed = false, faster = false, slower = false;
+    while (beats < 40.0)
+    {
+        for (std::size_t i = 0; i < left.size(); ++i)
+        {
+            const auto t = static_cast<double> (frame + static_cast<std::int64_t> (i)) / rate;
+            left[i] = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 97.0 * t) + .2 * std::sin (2.0 * 3.141592653589793 * 3.1 * t));
+            right[i] = static_cast<float> (.4 * std::cos (2.0 * 3.141592653589793 * 141.0 * t));
+        }
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+        cutter.process (left.data(), right.data(), 512, { bpm, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+        for (std::size_t i = 0; i < left.size(); ++i)
+        {
+            add (left[i]);
+            add (right[i]);
+        }
+        frame += 512;
+        beats += 512.0 * bpm / 60.0 / rate;
+        if (! restarted && beats > 9.3) { cutter.restartAtNextUnit(); restarted = true; }
+        if (! idled && beats > 16.4) { cutter.setIdle (true); idled = true; }
+        if (! resumed && beats > 18.5) { cutter.setIdle (false); resumed = true; }
+        if (! faster && beats > 24.7) { bpm = 103.0; faster = true; }
+        if (! slower && beats > 33.2) { bpm = 91.0; slower = true; }
+    }
+    return hash;
+}
+} // namespace
+
+TEST_CASE("Classic Fracture and the built programs are bit-identical through restarts, idle and tempo changes","[fracture][integration][pinned]")
+{
+    // Measured on the engine before Tape (d2cbbb2), and equal on this branch.
+    constexpr std::array<std::uint64_t,8> expected {
+        UINT64_C(0x194961d45cfbbcf8), UINT64_C(0x1905c0bb4ce8d470), UINT64_C(0x9b7a3cd3812597e0), UINT64_C(0xfa9c1f5dd756b1e4),
+        UINT64_C(0x123e875928e6e77c), UINT64_C(0xfb45509a7f8d65bc), UINT64_C(0x294cc4ca5cf7b910), UINT64_C(0xdc48106401969736) };
+    for(int which=0;which<8;++which)
+    {
+        CAPTURE(which);
+        CHECK(pinnedEventHash(which)==expected[static_cast<std::size_t>(which)]);
+    }
 }

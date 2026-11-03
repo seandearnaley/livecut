@@ -216,7 +216,8 @@ int tapeStopLevel (std::int64_t bar, double beat, double beatsPerBar);
 bool tapeStopEnds (std::uint32_t seed, double density, std::int64_t bar, double beat, double beatsPerBar);
 
 // How long a stop ending there is: min (stopBeats, the bar, half the gap back to
-// the latest stop ending in the two bars before it, or a whole bar if none).
+// the latest stop ending in the two bars before it; with none, the gap is two bars, so
+// the bar caps it).
 double tapeStopBeats (const FractureParameters::Tape&, std::uint32_t seed, std::int64_t bar, double beat, double beatsPerBar);
 
 // Lays out host `bar` from `fromBeat` to its line as play, stop and spin-up

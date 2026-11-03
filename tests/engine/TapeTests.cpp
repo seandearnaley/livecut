@@ -606,31 +606,57 @@ TEST_CASE ("The bar after a stop opens with its spin-up, and a restart forgets i
 
 TEST_CASE ("Tape plays the input exactly outside its stops and spin-ups", "[tape][cutter]")
 {
-    for (const auto density : { 0.0, 2.0, 4.0 })
+    // At 120 bpm a bar is a whole number of samples; at 93, 124 and 140 bpm, in 5/4
+    // and 5/8, and through a tempo ramp it isn't, and a block's cuts can end a frame
+    // either side of the musical bar line.
+    struct Case
     {
-        CAPTURE (density);
-        TapeCutter tape (stops (1.0, density));
-        int stopped = 0, compared = 0;
-        // One frame at a time, so each output knows the cut it came from.
-        while (tape.frame < 8 * 96000)
+        double bpm, meter, ramp;
+    };
+    for (const auto [bpm, meter, ramp] : { Case { 120.0, 4.0, 0.0 }, Case { 93.0, 4.0, 0.0 }, Case { 124.0, 5.0, 0.0 },
+                                           Case { 140.0, 2.5, 0.0 }, Case { 120.0, 4.0, .5 } })
+        for (const auto density : { 0.0, 2.0, 4.0 })
         {
-            const auto in = tone (tape.frame);
-            auto left = in.left, right = in.right;
-            tape.process (&left, &right, 1);
-            const auto motion = renderedMotion (tape.cutter);
-            if (motion == TapeMotion::play && tape.cutter.isCutting())
+            CAPTURE (bpm, meter, ramp, density);
+            TapeCutter tape (stops (1.0, density), 48000.0, bpm, meter);
+            const auto bars = 6.0;
+            int stopped = 0, compared = 0, landed = 0;
+            float previous = 0.f, beforeGrid = 0.f;
+            auto before = TapeMotion::play;
+            // One frame at a time, so each output knows the cut it came from.
+            while (tape.beats() < bars * meter)
             {
-                ++compared;
-                REQUIRE (left == in.left);
-                REQUIRE (right == in.right);
+                if (ramp != 0.0 && tape.frame % 512 == 0)
+                    tape.setTempo (bpm + ramp * tape.beats());
+                const auto in = tone (tape.frame);
+                auto left = in.left, right = in.right;
+                tape.process (&left, &right, 1);
+                const auto motion = renderedMotion (tape.cutter);
+                if (motion == TapeMotion::play && tape.cutter.isCutting())
+                {
+                    ++compared;
+                    REQUIRE (left == in.left);
+                    REQUIRE (right == in.right);
+                }
+                // On the grid point between a stop and its spin-up, exact silence.
+                if (before == TapeMotion::stop && motion == TapeMotion::spinUp)
+                {
+                    ++landed;
+                    CHECK (left == 0.f);
+                    beforeGrid = std::max (beforeGrid, std::abs (previous));
+                }
+                stopped += motion == TapeMotion::stop ? 1 : 0;
+                REQUIRE (tape.cutter.fractureDiagnostics().state != FractureState::sourceLost);
+                previous = left;
+                before = motion;
             }
-            stopped += motion == TapeMotion::stop ? 1 : 0;
-            REQUIRE (tape.cutter.fractureDiagnostics().state != FractureState::sourceLost);
+            CAPTURE (beforeGrid);
+            CHECK (tape.cutter.error() == Cutter::Error::none);
+            CHECK (compared > tape.frame / 3);
+            CHECK (stopped > 0);
+            CHECK (landed > 0);
+            CHECK (beforeGrid <= .02f); // the stop's last frame, at most its sqrt (2 / T) of the track
         }
-        CHECK (tape.cutter.error() == Cutter::Error::none);
-        CHECK (compared > 3 * 96000);
-        CHECK (stopped > 0);
-    }
 }
 
 namespace
@@ -734,6 +760,9 @@ double cutRms (const DrumLoop& loop, int frames = 8 * 96000)
 
 TEST_CASE ("On drums, Tape is the track between stops, and its stops and spin-ups are clean", "[tape][drums]")
 {
+    // The loop is 120 bpm at 48 kHz, so a 32nd note is a whole number of samples.
+    constexpr auto thirtySecond = static_cast<std::size_t> (tapeSpinUpBeats * 60.0 / 120.0 * 48000.0);
+    static_assert (thirtySecond == 3000);
     const DrumLoop drums (0.0, DrumLoop::Bass::sine); // no bass: drums alone
     const auto drumStep = largestStep (drums.samples, 0, drums.samples.size());
     for (const auto x : { 0.0, .5, 1.0 })
@@ -759,7 +788,7 @@ TEST_CASE ("On drums, Tape is the track between stops, and its stops and spin-up
             {
                 CAPTURE (first, end);
                 REQUIRE (run.left[end - 1] == 0.f); // silent on its grid point
-                REQUIRE (end % 3000 == 0);         // which is a whole 32nd note
+                REQUIRE (end % thirtySecond == 0); // which is a whole 32nd note
                 tailStep = std::max (tailStep, largestStep (run.left, end - 240, end));
                 for (auto i = first; i < end; ++i)
                 {
@@ -772,7 +801,7 @@ TEST_CASE ("On drums, Tape is the track between stops, and its stops and spin-up
             {
                 CAPTURE (first, end);
                 REQUIRE (run.left[first] == 0.f); // from silence
-                REQUIRE (end - first == 3000);   // a 32nd note
+                REQUIRE (end - first == thirtySecond); // a 32nd note
                 spinStep = std::max (spinStep, largestStep (run.left, first, end) / std::max (largestStep (run.in, first, end), 1e-6f));
                 onset = std::max (onset, largestStep (run.left, first, first + 48));
                 if (end < run.in.size())
@@ -862,9 +891,6 @@ TEST_CASE ("A restart in the middle of a stop fades the stop out under what foll
                                in.begin() + static_cast<std::ptrdiff_t> (at + fade))); // then the track, exactly
     }
 }
-
-// The per-cut motion sits in Cut's padding, so every block plan stays the same size.
-static_assert (sizeof (Cut) == 4 * sizeof (double));
 
 TEST_CASE ("At any tempo, Tape plays every frame of the track between its stops", "[tape][cutter][tempo]")
 {
