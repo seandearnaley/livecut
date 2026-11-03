@@ -174,19 +174,66 @@ ImpactParameters suction (double x, double y = 1.0)
     return mapPad (PadProgram::suction, static_cast<float> (x), static_cast<float> (y), {}).impact;
 }
 
-// The band's steady-state sine gain with the level hold divided back out,
-// sample by sample, using the hold gain the diagnostics report.
-double preHoldGain (const ImpactParameters& parameters, double frequency)
+ImpactParameters sweepParameters (float cutoffHz, float q = 0.707f)
+{
+    ImpactParameters p;
+    p.filter.enabled = true;
+    p.filter.type = ImpactParameters::Filter::Type::sweep;
+    p.filter.cutoffHz = cutoffHz;
+    p.filter.q = q;
+    return p;
+}
+
+// Filter's sweep at a pad position, by the spec's formulas. y 1 is its most
+// resonant.
+ImpactParameters filterProgram (double x, double y = 1.0)
+{
+    return sweepParameters (static_cast<float> (200.0 * std::pow (90.0, x)), static_cast<float> (0.707 + 2.3 * y * (1.0 - 0.5 * x)));
+}
+
+// Pink noise through `first`, then `second` from 500 ms, against the open
+// band's output, in dB. The level 500 ms after the change is measured, so the
+// synthetic noise's energy outside 30 Hz-18 kHz, which every band removes,
+// cancels.
+double pinkLevel (const ImpactParameters& first, const ImpactParameters& second)
 {
     ImpactEffects effects;
     effects.prepare (rate);
+    effects.setParameters (first);
+    effects.startCut ({});
+    Pink pinkLeft, pinkRight;
+    pinkRight.white.state = 0x89abcdefu;
+    const auto half = static_cast<int> (0.5 * rate);
+    double inputEnergy = 0.0, outputEnergy = 0.0;
+    for (int i = 0; i < 6 * half; ++i)
+    {
+        if (i == half)
+            effects.setParameters (second);
+        auto left = pinkLeft.next(), right = pinkRight.next();
+        const auto inLeft = static_cast<double> (left), inRight = static_cast<double> (right);
+        effects.process (left, right);
+        if (i >= 2 * half)
+        {
+            inputEnergy += inLeft * inLeft + inRight * inRight;
+            outputEnergy += left * static_cast<double> (left) + right * static_cast<double> (right);
+        }
+    }
+    return decibels (std::sqrt (outputEnergy / inputEnergy));
+}
+
+// The band's steady-state sine gain with the level hold divided back out,
+// sample by sample, using the hold gain the diagnostics report.
+double preHoldGain (const ImpactParameters& parameters, double frequency, double sampleRate = rate)
+{
+    ImpactEffects effects;
+    effects.prepare (sampleRate);
     effects.setParameters (parameters);
     effects.startCut ({});
-    const auto count = static_cast<int> (rate);
+    const auto count = static_cast<int> (sampleRate);
     double inputEnergy = 0.0, outputEnergy = 0.0;
     for (int i = 0; i < 2 * count; ++i)
     {
-        const auto input = static_cast<float> (0.05 * std::sin (2.0 * pi * frequency * i / rate));
+        const auto input = static_cast<float> (0.05 * std::sin (2.0 * pi * frequency * i / sampleRate));
         auto left = input, right = input;
         effects.process (left, right);
         const auto filtered = left / effects.diagnostics().levelHoldGain;
@@ -781,6 +828,46 @@ TEST_CASE ("Classic filter types are bit-identical", "[impact]")
     CHECK (render (ImpactParameters::Filter::Type::highPass) == UINT64_C (0x7217203d7ef5f2b1));
 }
 
+TEST_CASE ("A band is bit-identical", "[impact]")
+{
+    // Measured on Suction's band before the sweep type existed: breathing at
+    // its 16ths, a jump the glide smooths, a repeat shift, and a switch to a
+    // Classic low-pass and back that the hold fades across.
+    const auto render = [] (double x, double y)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        auto shifted = suction (0.2, 0.9);
+        shifted.filter.repeatOctaves = 0.5f;
+        auto lowPass = shifted;
+        lowPass.filter.type = ImpactParameters::Filter::Type::lowPass;
+        lowPass.filter.cutoffHz = 1500.0f;
+        effects.setParameters (suction (x, y));
+        Pink pinkLeft, pinkRight;
+        pinkRight.white.state = 0x89abcdefu;
+        Fnv1a hash;
+        for (int i = 0; i < 48000; ++i)
+        {
+            if (i == 20000)
+                effects.setParameters (shifted);
+            if (i == 30000)
+                effects.setParameters (lowPass);
+            if (i == 39000)
+                effects.setParameters (suction (x, y));
+            if (i % 6000 == 0)
+                effects.startCut ({ 404, 0, 0.0, 0.0, static_cast<std::size_t> ((i / 6000) % 8), 8 });
+            auto left = pinkLeft.next(), right = pinkRight.next();
+            effects.process (left, right);
+            hash.add (left);
+            hash.add (right);
+        }
+        return hash.value;
+    };
+    CHECK (render (0.0, 1.0) == UINT64_C (0x676bb7f655b3a29c));
+    CHECK (render (0.5, 0.5) == UINT64_C (0x3a39408185122e38));
+    CHECK (render (1.0, 0.25) == UINT64_C (0x977e746dd9b18ecb));
+}
+
 TEST_CASE ("Disabling a Classic filter at a cut is unchanged", "[impact]")
 {
     // Measured on the ImpactEffects of 069eecb, before a disabled band held its
@@ -1361,6 +1448,7 @@ struct TypeSwitch
 {
     double largestError = 0.0; // against the unswitched twin times the ramp
     bool sameShape = true;
+    bool sameHighEdge = true; // a sweep's shape is its high edge; its low edge is always 30 Hz
     float switchedStep = 0.0f, fromStep = 0.0f, toStep = 0.0f;
 };
 
@@ -1430,7 +1518,10 @@ TypeSwitch switchType (const ImpactParameters& from, const ImpactParameters& to)
         const auto ramp = 1.0 - (k + 1) / 96.0;
         result.largestError = std::max (result.largestError, std::abs (l1 - (input + ramp * (static_cast<double> (l2) - input))));
         if (k < 95)
+        {
             result.sameShape = result.sameShape && switched.diagnostics().bandLowHz == unchanged.diagnostics().bandLowHz;
+            result.sameHighEdge = result.sameHighEdge && switched.diagnostics().bandHighHz == unchanged.diagnostics().bandHighHz;
+        }
     }
     return result;
 }
@@ -1563,4 +1654,170 @@ TEST_CASE ("An open band's breathing doesn't dip the level at high rates", "[imp
     }
     CAPTURE (deepest);
     CHECK (deepest > -0.15);
+}
+
+TEST_CASE ("A sweep's edges are where it says", "[impact]")
+{
+    for (const auto sampleRate : { 44100.0, 48000.0, 96000.0 })
+        for (const auto cutoff : { 200.0, 2000.0, 8000.0 })
+        {
+            CAPTURE (sampleRate, cutoff);
+            const auto p = sweepParameters (static_cast<float> (cutoff));
+            CHECK_THAT (decibels (preHoldGain (p, cutoff, sampleRate)), WithinAbs (-3.0, 1.0));
+            CHECK_THAT (decibels (preHoldGain (p, 30.0, sampleRate)), WithinAbs (-3.0, 1.0)); // the fixed high-pass
+            if (4.0 * cutoff < 0.45 * sampleRate)
+                CHECK (decibels (preHoldGain (p, 4.0 * cutoff, sampleRate)) < -20.0);
+        }
+}
+
+TEST_CASE ("A sweep holds its level along Filter's path", "[impact]")
+{
+    const auto open = bandParameters (30.0f, 18000.0f);
+    const auto reference = pinkLevel (open, open);
+    const auto openPower = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, detail::bandPowerStep);
+    for (const auto x : { 0.0, 0.5, 1.0 })
+    {
+        for (int step = 0; step <= 10; ++step)
+        {
+            const auto y = step / 10.0;
+            const auto p = filterProgram (x, y);
+            const auto width = std::log2 (std::min (static_cast<double> (p.filter.cutoffHz), 18000.0) / 30.0);
+            const auto makeup = std::sqrt (openPower / detail::sweepPinkPower (width, p.filter.q));
+            const auto steady = pinkLevel (p, p) - reference;
+            const auto sweeping = pinkLevel (open, p) - reference;
+            CAPTURE (x, y, makeup, steady, sweeping);
+            CHECK (makeup < 2.0); // Filter never reaches the +6 dB cap.
+            CHECK_THAT (steady, WithinAbs (0.0, 1.5));
+            CHECK_THAT (sweeping, WithinAbs (0.0, 1.5));
+        }
+    }
+}
+
+TEST_CASE ("A sweep's pink power table matches its integral", "[impact]")
+{
+    ImpactEffects effects;
+    effects.prepare (rate); // builds the tables
+    const auto powerDecibels = [] (double ratio) { return 10.0 * std::log10 (ratio); };
+
+    // Open, the sweep is the open band.
+    const auto open = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, 1.0 / 1024.0);
+    CHECK_THAT (powerDecibels (detail::integrateSweepPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, 1.0 / 1024.0) / open),
+                WithinAbs (0.0, 1.0e-9));
+    CHECK_THAT (powerDecibels (detail::sweepPinkPower (detail::bandOpenOctaves, detail::bandOpenQ) / open), WithinAbs (0.0, 0.05));
+
+    for (const auto q : { 0.5, 0.707, 1.3, 2.507, 5.0, 8.0 })
+        for (const auto width : { 1.0 / 12.0, 0.1, 0.37, 1.385, 2.737, 4.385, 9.23, 12.49 })
+        {
+            CAPTURE (q, width);
+            const auto direct = detail::integrateSweepPinkPower (width, q, 1.0 / 1024.0);
+            CHECK_THAT (powerDecibels (detail::sweepPinkPower (width, q) / direct), WithinAbs (0.0, 0.05));
+        }
+
+    // Wider keeps more, up to a moderate q.
+    for (const auto q : { 0.5, 0.707, 1.0, 1.4 })
+    {
+        CAPTURE (q);
+        auto previous = 0.0;
+        bool increasing = true;
+        for (auto width = 1.0 / 12.0; width <= 12.5; width += 1.0 / 64.0)
+        {
+            const auto power = detail::sweepPinkPower (width, q);
+            increasing = increasing && power > previous;
+            previous = power;
+        }
+        CHECK (increasing);
+    }
+}
+
+TEST_CASE ("A sweep glides when its cutoff jumps", "[impact]")
+{
+    // A loud tone both cutoffs pass, so only the shape and its makeup move.
+    // Unsmoothed, the makeup alone would step by 0.8 times its change, many
+    // times the tone's own slew.
+    const auto largestStep = [] (float from, float to)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (sweepParameters (from, 2.0f));
+        effects.startCut ({});
+        const auto change = static_cast<int> (0.5 * rate);
+        float previous = 0.0f, largest = 0.0f;
+        for (int i = 0; i < 2 * change; ++i)
+        {
+            if (i == change)
+                effects.setParameters (sweepParameters (to, 2.0f));
+            const auto input = static_cast<float> (0.8 * std::sin (2.0 * pi * 100.0 * i / rate));
+            auto left = input, right = input;
+            effects.process (left, right);
+            if (i >= change)
+                largest = std::max (largest, std::abs (left - previous));
+            previous = left;
+        }
+        return largest;
+    };
+    const auto still = std::max (largestStep (2000.0f, 2000.0f), largestStep (300.0f, 300.0f));
+    CHECK (largestStep (2000.0f, 300.0f) <= 1.5f * still);
+    CHECK (largestStep (300.0f, 2000.0f) <= 1.5f * still);
+}
+
+TEST_CASE ("A sweep's high-pass stays at 30 Hz", "[impact]")
+{
+    // The envelope and the repeats move only the low-pass edge.
+    auto p = sweepParameters (1000.0f, 2.0f);
+    p.filter.envelopeOctaves = 2.0f;
+    p.filter.repeatOctaves = -2.0f;
+    p.attackMs = 0.0f;
+    p.decayMs = 100.0f;
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (p);
+    bool lowFixed = true;
+    double largestError = 0.0;
+    for (int i = 0; i < 24000; ++i)
+    {
+        if (i % 3000 == 0)
+            effects.startCut ({ 505, 0, 0.0, 0.0, static_cast<std::size_t> ((i / 3000) % 4), 4 });
+        auto left = static_cast<float> (0.3 * std::sin (0.05 * i)), right = left;
+        effects.process (left, right);
+        const auto& d = effects.diagnostics();
+        lowFixed = lowFixed && d.bandLowHz == 30.0;
+        const auto expected = std::clamp (1000.0 * std::exp2 (2.0 * d.envelope - 2.0 * d.repeatProgress),
+                                          30.0 * std::exp2 (1.0 / 12.0), 0.45 * rate);
+        largestError = std::max (largestError, std::abs (d.bandHighHz / expected - 1.0));
+    }
+    CHECK (lowFixed);
+    CHECK (largestError < 1.0e-12);
+}
+
+TEST_CASE ("A sweep switched off keeps its shape while it fades", "[impact]")
+{
+    // Pad to Cut: Cut's Impact is off.
+    const auto sweep = filterProgram (0.5);
+    auto off = sweep;
+    off.filter = ImpactParameters::Filter {};
+    const auto result = switchType (sweep, off);
+    CAPTURE (result.largestError, result.switchedStep, result.fromStep, result.toStep);
+    CHECK (result.largestError < 1.0e-6);
+    CHECK (result.sameHighEdge);
+    CHECK (result.switchedStep <= 3.0f * std::max (result.fromStep, result.toStep));
+}
+
+TEST_CASE ("A sweep switched to or from a band or a low-pass keeps its shape while it fades", "[impact]")
+{
+    const auto sweep = filterProgram (0.5);
+    const auto band = suction (0.5);
+    const auto lowPass = suctionLowPass();
+    struct Case { const ImpactParameters* from; const ImpactParameters* to; bool smoothedAfter; };
+    for (const auto& c : { Case { &sweep, &band, true }, Case { &band, &sweep, true },
+                           Case { &sweep, &lowPass, false }, Case { &lowPass, &sweep, true } })
+    {
+        CAPTURE (static_cast<int> (c.from->filter.type), static_cast<int> (c.to->filter.type));
+        const auto result = switchType (*c.from, *c.to);
+        CAPTURE (result.largestError, result.switchedStep, result.fromStep, result.toStep);
+        CHECK (result.largestError < 1.0e-6);
+        CHECK (result.sameShape);
+        CHECK (result.sameHighEdge);
+        CHECK (result.switchedStep <= 3.0f * std::max (result.fromStep, result.toStep));
+        checkTakesOver (*c.from, *c.to, c.smoothedAfter);
+    }
 }

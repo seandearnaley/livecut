@@ -23,8 +23,10 @@ struct ImpactParameters
 {
     struct Filter
     {
-        // band is engine-only: a high-pass at bandLowHz into a low-pass at bandHighHz.
-        enum class Type { lowPass, bandPass, highPass, band };
+        // band and sweep are engine-only, smoothed and level-held. band: a
+        // high-pass at bandLowHz into a low-pass at bandHighHz. sweep: a
+        // Butterworth high-pass at 30 Hz into a low-pass at cutoffHz.
+        enum class Type { lowPass, bandPass, highPass, band, sweep };
         bool enabled = false;
         Type type = Type::lowPass;
         float chance = 1.0f;
@@ -76,6 +78,12 @@ inline constexpr double bandPowerStep = 1.0 / 16.0, bandPowerMargin = 6.0; // oc
 double bandPinkPower (double widthOctaves, double q);
 // For tests: the same integral, computed directly at any step.
 double integrateBandPinkPower (double widthOctaves, double q, double stepOctaves);
+// A sweep's high-pass is fixed: 30 Hz, Butterworth.
+inline constexpr double sweepLowHz = 30.0, sweepLowQ = 0.707;
+// The same for a sweep, whose low-pass edge is widthOctaves above its
+// high-pass, with resonance q. The high-pass keeps sweepLowQ.
+double sweepPinkPower (double widthOctaves, double q);
+double integrateSweepPinkPower (double widthOctaves, double q, double stepOctaves);
 } // namespace detail
 
 // JUCE-free, allocation-free stereo processing. Production rates are 8–384 kHz;
