@@ -149,6 +149,7 @@ void Cutter::setFadeMilliseconds (double milliseconds)
 void Cutter::reset()
 {
     resetRendering();
+    tapeSilent = false;
     livePlayer.resetSource();
     transforms = {};
 }
@@ -460,6 +461,11 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             startEffectsCut();
     }
 
+    tapeSilent = cutting && hasActivePlan && processingError == Error::none
+              && activePlan.fracture.procedure == FractureProcedure::tapeCut
+              && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops
+              && fractureReader.diagnostics().tapeSpeed <= 0.0;
+
     if (tapeTail)
     {
         // A linear crossfade over 5 ms, starting wholly on the tail, which
@@ -667,8 +673,9 @@ void Cutter::chooseFractureBlock (const BlockContext& context)
     if (fractureProcedure == FractureProcedure::tapeCut && fractureParams.tape.layout == FractureParameters::Tape::Layout::stops)
     {
         const auto bar = phraseBar + static_cast<std::int64_t> (std::floor (blockStart / unitsPerBar));
+        // A block straight after a stop's silence spins up, including after a reset.
         tapeSpinUpNext = layOutTapeStops (fractureParams.tape, phraseImpactSeed, bar, intoBar / unitsPerBeat, context.beatsPerBar,
-                                          unitsPerBeat, remaining, tapeSpinUpNext, cuts);
+                                          unitsPerBeat, remaining, tapeSpinUpNext || tapeSilent, cuts);
         return;
     }
     tapeSpinUpNext = false;

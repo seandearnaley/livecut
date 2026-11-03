@@ -246,6 +246,10 @@ private:
     bool tapeSpinUpNext = false; // the pad's Tape: the block before ended in a stop
     std::optional<TapeTail> tapeTail; // the pad's Tape: a motion cut off by a restart, fading out
     std::optional<TapeTail> tapeRunOn; // the pad's Tape: the last motion, running on to the next block
+    // The pad's Tape: the last rendered sample was a stop's silence. Unlike the
+    // spin-up flag it survives resetRendering, so a loop that wraps where a stop
+    // ends opens with a spin-up.
+    bool tapeSilent = false;
     int tapeTailAge = 0, tapeTailFrames = 1;
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;

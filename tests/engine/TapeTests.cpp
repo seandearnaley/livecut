@@ -1069,3 +1069,42 @@ TEST_CASE ("A stop the next block cuts short fades out over 5 ms", "[tape][cutte
     CAPTURE (skew, cutShort, barLine, step, sineStep);
     CHECK (step <= sineStep);
 }
+
+TEST_CASE ("A loop that wraps where a stop ends opens with a spin-up", "[tape][cutter][loop]")
+{
+    // A four-bar arrangement loop: the host jumps from the end of bar 3, where the
+    // bottom of Y stops, back to bar 0. The jump resets the rendering, which used to
+    // forget the stop, so the loop's downbeat started hard from its silence.
+    constexpr std::int64_t loop = 4 * 96000;
+    const auto bass = [] (std::int64_t frame)
+    {
+        const auto t = static_cast<double> (frame) / 48000.0;
+        return static_cast<float> (.6 * std::sin (2.0 * 3.141592653589793 * 55.0 * t + .7) + .15 * std::sin (2.0 * 3.141592653589793 * 110.0 * t + .2));
+    };
+    for (const auto x : { .5, 1.0 })
+    {
+        CAPTURE (x);
+        TapeCutter tape (padSpot (x, 0.0));
+        std::vector<float> out, in;
+        auto motionAfter = TapeMotion::cycle;
+        for (std::int64_t frame = 0; frame < loop + 9600; ++frame)
+        {
+            const auto local = frame % loop;
+            const auto beats = static_cast<double> (local) / 24000.0;
+            const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+            auto left = bass (local), right = left;
+            in.push_back (left);
+            tape.cutter.process (&left, &right, 1, { 120.0, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+            out.push_back (left);
+            if (frame == loop)
+                motionAfter = renderedMotion (tape.cutter);
+        }
+        REQUIRE (tape.cutter.error() == Cutter::Error::none);
+        const auto wrap = static_cast<std::size_t> (loop);
+        const auto step = std::abs (out[wrap] - out[wrap - 1]);
+        CAPTURE (out[wrap - 1], out[wrap], step, largestStep (in, 1, in.size()));
+        CHECK (out[wrap - 1] == 0.f); // the stop ended in silence
+        CHECK (motionAfter == TapeMotion::spinUp);
+        CHECK (largestStep (out, wrap, wrap + 48) <= .025f); // the spin-up's own onset
+    }
+}
