@@ -1339,9 +1339,13 @@ struct Wrapped
     int wraps = 0;
 };
 
-Wrapped wrapLoop (StereoFrame (*material) (std::int64_t), int bars, double meter, double bpm, int early)
+// `jumps` lists frames where the host jumps back `jumpBeats`, as a seek does; with
+// none, the host wraps an arrangement loop of `bars` bars on the frame nearest its
+// end (the later frame where the end falls half a sample between two).
+Wrapped wrapLoop (StereoFrame (*material) (std::int64_t), int bars, double meter, double bpm, int early, double rate = 48000.0,
+                  const CutParameters& params = loops (.25, 3), Procedure procedure = Procedure::loops,
+                  std::vector<std::int64_t> jumps = {}, double jumpBeats = 0.0)
 {
-    constexpr double rate = 48000.0;
     Cutter cutter;
     OnsetDetector detector;
     Epoch bounds;
@@ -1349,9 +1353,9 @@ Wrapped wrapLoop (StereoFrame (*material) (std::int64_t), int bars, double meter
     bounds.epoch = detector.epoch();
     cutter.prepare (rate);
     cutter.setTransformSource (detector, bounds);
-    cutter.setProcedure (Procedure::loops);
+    cutter.setProcedure (procedure);
     cutter.setUnitsPerBar (unitsPerBar);
-    cutter.setParameters (loops (.25, 3));
+    cutter.setParameters (params);
     const auto perBeat = rate * 60.0 / bpm;
     const auto loopEnd = bars * meter - early * meter / unitsPerBar;
     // The host wraps on the frame nearest the loop's end.
@@ -1360,11 +1364,13 @@ Wrapped wrapLoop (StereoFrame (*material) (std::int64_t), int bars, double meter
     std::vector<float> in, out;
     std::vector<std::size_t> wraps;
     float material_ = 0.f;
-    for (std::int64_t frame = 0; frame < 3 * loopFrames; ++frame)
+    const auto length = jumps.empty() ? 3 * loopFrames : jumps.back() + static_cast<std::int64_t> (rate);
+    for (std::int64_t frame = 0; frame < length; ++frame)
     {
-        if (position == loopFrames)
+        const auto jump = std::find (jumps.begin(), jumps.end(), frame) != jumps.end();
+        if (jump || (jumps.empty() && position == loopFrames))
         {
-            position = 0;
+            position = jump ? position - static_cast<std::int64_t> (std::llround (jumpBeats * perBeat)) : 0;
             ++bounds.epoch;
             bounds.first = frame;
             REQUIRE (detector.beginTransportEpoch (bounds.epoch));
@@ -1540,4 +1546,49 @@ TEST_CASE ("Random Loops scenarios are partition-independent, finite and never l
         }
     }
     CHECK (replayed > 0);
+}
+
+TEST_CASE ("An arrangement loop that wraps a frame into a pass boundary's join keeps the join's fade", "[loops][joins][loop]")
+{
+    // At 44.1 kHz and 128 bpm bar 3's line falls at 248062.5: the earlier frame
+    // takes the pass boundary and its join, and a host wrapping on the later frame
+    // reset the rendering one frame into the join, cutting its fade to the
+    // incoming repeat off at once. Spliced, it stepped 2.05 times the bound.
+    for (const auto [bars, depth] : { std::pair { 1.0, 0 }, { .5, 2 }, { .25, 3 } })
+    {
+        CAPTURE (bars, depth);
+        const auto wrapped = wrapLoop (heldBass<55>, 3, 4.0, 128.0, 0, 44100.0, loops (bars, depth));
+        CAPTURE (wrapped.worstRatio);
+        CHECK (wrapped.wraps == 2);
+        CHECK (wrapped.worstRatio <= 1.f);
+    }
+}
+
+TEST_CASE ("A seek within 2 ms after a Loops join keeps the join's fade", "[loops][joins][loop]")
+{
+    // A one-bar loop at the top of Y: bar 4's last pass starts its eighths at 348000.
+    // A seek back two bars 1, 8, 40 or 90 frames later used to splice, up to 0.62.
+    for (const auto after : { 1, 8, 40, 90 })
+    {
+        CAPTURE (after);
+        const auto wrapped = wrapLoop (heldBass<55>, 0, 4.0, 120.0, 0, 48000.0, loops (1.0, 3), Procedure::loops, { 348000 + after }, -8.0);
+        CAPTURE (wrapped.worstRatio);
+        CHECK (wrapped.wraps == 1);
+        CHECK (wrapped.worstRatio <= 1.f);
+    }
+}
+
+TEST_CASE ("A seek within 2 ms after a Rush join keeps the join's fade", "[loops][joins][loop][rush]")
+{
+    // Rush shares the join: a whole-bar even roll joins every 16th, and bar 3's
+    // sixth repeat starts at 222000. A seek just after it spliced the same way.
+    const auto roll = mapPad (PadProgram::rush, .5f, .9f, {}).cut;
+    for (const auto after : { 1, 8, 40, 90 })
+    {
+        CAPTURE (after);
+        const auto wrapped = wrapLoop (heldBass<55>, 0, 4.0, 120.0, 0, 48000.0, roll, Procedure::rush, { 222000 + after }, -8.0);
+        CAPTURE (wrapped.worstRatio);
+        CHECK (wrapped.wraps == 1);
+        CHECK (wrapped.worstRatio <= 1.f);
+    }
 }

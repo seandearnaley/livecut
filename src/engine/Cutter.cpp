@@ -157,6 +157,7 @@ void Cutter::reset()
 {
     resetRendering();
     rushJoin.reset();
+    rushJump.reset();
     tapeSilentFrame = -1;
     livePlayer.resetSource();
     transforms = {};
@@ -166,12 +167,14 @@ void Cutter::resetRendering()
 {
     // A jump in the host's position (a seek, a loop's wrap) lets the roll's sound
     // run on under what follows, as at its own joins. It counts only if rendering
-    // carries on from the next frame.
+    // carries on from the next frame. A join still fading keeps fading over it, so
+    // the two crossfades nest: what was heard fades to what follows.
     // A Loops track is the input itself, which whatever follows plays too.
     if (const auto sound = activePlan.loops && ! loopsReplay (activePlan) ? std::nullopt : rushSound (renderCursor))
     {
-        rushJoin = sound;
-        rushJoinAge = 0;
+        rushJump = sound;
+        rushJumpAge = 0;
+        joinOverJump = false;
         rushJoinFrame = renderCursor;
     }
     cutting = false;
@@ -663,9 +666,23 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
     mixTail (rushTail, rushTailAge, tapeTailFrames, left, right);
 
     // A roll's join: its last cut runs on under what follows for 2 ms.
-    if (rushJoin && frame != rushJoinFrame)
-        rushJoin.reset(); // rendering paused since it began
-    mixTail (rushJoin, rushJoinAge, rushJoinFrames, left, right);
+    if (frame != rushJoinFrame)
+    {
+        rushJoin.reset(); // rendering paused since they began
+        rushJump.reset();
+    }
+    // The later of a jump's run-on and a join fades under the earlier, so each
+    // starts from exactly what was heard.
+    if (joinOverJump)
+    {
+        mixTail (rushJoin, rushJoinAge, rushJoinFrames, left, right);
+        mixTail (rushJump, rushJumpAge, rushJoinFrames, left, right);
+    }
+    else
+    {
+        mixTail (rushJump, rushJumpAge, rushJoinFrames, left, right);
+        mixTail (rushJoin, rushJoinAge, rushJoinFrames, left, right);
+    }
     rushJoinFrame = frame + 1;
 
     if (processingError != Error::none)
@@ -1053,6 +1070,7 @@ void Cutter::renderSource (std::int64_t frame,float& left,float& right,bool adva
         {
             // A join inside a roll or a Loops replay, or its run-on: the cut before runs on from its end.
             rushJoin = livePlayer.tail (rushCut, livePlayer.cuts()[rushCut].size);
+            joinOverJump = rushJump.has_value();
             rushJoinAge = 0;
             rushJoinFrame = frame;
             rushCut = livePlayer.currentCut();
@@ -1142,6 +1160,7 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         if (hasActivePlan && ((activePlan.rush && livePlayer.cuts().size() >= 2) || loopsJoin) && rushCut < livePlayer.cuts().size())
         {
             rushJoin = rushSound (renderCursor - 1);
+            joinOverJump = rushJump.has_value();
             rushJoinAge = 0;
             rushJoinFrame = renderCursor - 1;
         }

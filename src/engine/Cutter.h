@@ -284,6 +284,11 @@ private:
     // The pad's Rush: a roll's last cut, running on under the next for 2 ms at each
     // join, from frame rushJoinFrame. rushCut is the roll's last rendered cut.
     std::optional<LivePlayer::Tail> rushJoin;
+    // Rush's or Loops' sound at a jump in the host's position, running on for 2 ms
+    // under what follows, and under any join that was still fading then.
+    std::optional<LivePlayer::Tail> rushJump;
+    int rushJumpAge = 0;
+    bool joinOverJump = false; // a join began while a jump's run-on was fading, so it fades under it
     int rushJoinAge = 0, rushJoinFrames = 1;
     std::int64_t rushJoinFrame = -1;
     std::size_t rushCut = 0;
