@@ -845,3 +845,6 @@ TEST_CASE ("A restart in the middle of a stop fades the stop out under what foll
                                in.begin() + static_cast<std::ptrdiff_t> (at + fade))); // then the track, exactly
     }
 }
+
+// The per-cut motion sits in Cut's padding, so every block plan stays the same size.
+static_assert (sizeof (Cut) == 4 * sizeof (double));
