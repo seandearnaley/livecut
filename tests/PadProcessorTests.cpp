@@ -1026,6 +1026,39 @@ TEST_CASE ("Every built program is bit-identical", "[pad][processor][pinned]")
     CHECK (outputHash (session.output) == expected);
 }
 
+TEST_CASE ("Every built program switches bit-identically", "[pad][processor][pinned]")
+{
+    // Measured on pad/rush at c0c59e1, before Loops: each program touched at (0.3,
+    // 0.75) for two and a half bars, switched to Cut (Rush, for Cut) on the next beat,
+    // switched back three 16ths into a beat a bar later, and let go a bar after that.
+    const auto [program, expected] = GENERATE (table<int, std::uint64_t> ({
+        { 0, livecut::engine::testing::pinnedHash (UINT64_C (0x6dab29898b79dd85), UINT64_C (0x6dab29898b79dd85)) }, // MSVC: from CI
+        { 1, livecut::engine::testing::pinnedHash (UINT64_C (0xbac7f7e1cca54556), UINT64_C (0xbac7f7e1cca54556)) }, // MSVC: from CI
+        { 2, livecut::engine::testing::pinnedHash (UINT64_C (0xb9f993a332c6ffca), UINT64_C (0xb9f993a332c6ffca)) }, // MSVC: from CI
+        { 3, livecut::engine::testing::pinnedHash (UINT64_C (0x09b8d3fd0a9b06e6), UINT64_C (0x09b8d3fd0a9b06e6)) }, // MSVC: from CI
+        { 4, livecut::engine::testing::pinnedHash (UINT64_C (0x306dda6b3a7eac36), UINT64_C (0x306dda6b3a7eac36)) }, // MSVC: from CI
+        { 5, livecut::engine::testing::pinnedHash (UINT64_C (0xd857837f91c81b5e), UINT64_C (0xd857837f91c81b5e)) }, // MSVC: from CI
+        { 7, livecut::engine::testing::pinnedHash (UINT64_C (0xa7733985eefaacb2), UINT64_C (0xa7733985eefaacb2)) }, // MSVC: from CI
+    }));
+    CAPTURE (program);
+    PadSession session;
+    session.source = [] (int frame, int channel) { return livecut::engine::testing::portableSignal (frame, channel); };
+    set (session.processor, livecut::ids::padProgram, static_cast<float> (program));
+    set (session.processor, livecut::ids::padX, .3f);
+    set (session.processor, livecut::ids::padY, .75f);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (240000);
+    set (session.processor, livecut::ids::padProgram, program == 0 ? 7.f : 0.f);
+    session.render (96000);
+    session.render (3 * 6000 - session.frame % 24000 + (session.frame % 24000 > 18000 ? 24000 : 0));
+    set (session.processor, livecut::ids::padProgram, static_cast<float> (program));
+    session.render (96000);
+    set (session.processor, livecut::ids::padTouch, 0);
+    session.render (96000);
+    CHECK_FALSE (session.dryFrom ());
+    CHECK (outputHash (session.output) == expected);
+}
+
 namespace
 {
 constexpr int tapeProgram = 5, cutProgram = 0;
