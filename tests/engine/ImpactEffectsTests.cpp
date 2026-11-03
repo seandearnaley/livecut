@@ -184,11 +184,11 @@ ImpactParameters sweepParameters (float cutoffHz, float q = 0.707f)
     return p;
 }
 
-// Filter's sweep at a pad position, by the spec's formulas. y 1 is its most
-// resonant.
+// Filter's sweep from the pad's own mapping, so a retuned curve retunes these
+// tests too. y 1 is its most resonant, with its loudest, longest tail.
 ImpactParameters filterProgram (double x, double y = 1.0)
 {
-    return sweepParameters (static_cast<float> (200.0 * std::pow (90.0, x)), static_cast<float> (0.707 + 2.3 * y * (1.0 - 0.5 * x)));
+    return mapPad (PadProgram::filter, static_cast<float> (x), static_cast<float> (y), {}).impact;
 }
 
 // Pink noise through `first`, then `second` from 500 ms, against the open

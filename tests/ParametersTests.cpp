@@ -811,3 +811,24 @@ TEST_CASE ("padSettings carries the program's Impact", "[parameters][pad]")
         CHECK_THAT (impact.decayMs, WithinAbs (engine::ImpactParameters{}.decayMs, 0.0));
     }
 }
+
+TEST_CASE ("padSettings carries Filter's sweep and tail", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    setValue (state, ids::impactFilterEnabled, 1);
+    setValue (state, ids::impactFilterCutoff, 900);
+    const auto user = reader.read();
+
+    const auto mapping = engine::mapPad (engine::PadProgram::filter, .25f, .75f, {});
+    const auto& filter = padSettings (user, mapping).impact.filter;
+    CHECK (filter.enabled);
+    CHECK (filter.type == engine::ImpactParameters::Filter::Type::sweep);
+    CHECK_THAT (filter.cutoffHz, WithinAbs (mapping.impact.filter.cutoffHz, 0.0));
+    CHECK_THAT (filter.q, WithinAbs (mapping.impact.filter.q, 0.0));
+    CHECK_THAT (filter.tailLevel, WithinAbs (.75, 1.0e-6));
+    CHECK_THAT (filter.tailDecayMs, WithinAbs (mapping.impact.filter.tailDecayMs, 0.0));
+    CHECK_FALSE (padSettings (user, mapping).impact.drive.enabled);
+    CHECK_FALSE (padSettings (user, mapping).impact.transient.enabled);
+}
