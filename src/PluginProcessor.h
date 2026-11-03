@@ -135,6 +135,9 @@ class LivecutAudioProcessor final : public juce::AudioProcessor, private livecut
     livecut::engine::PadMapping currentMapping = livecut::engine::mapPad (padGate.activeProgram (), .5f, .5f, {});
     livecut::Settings renderSettings;
     float padGain = 0.0f;
+    // Classic's cuts, releasing on the Pad surface after a switch. They keep
+    // Classic's settings until the gate closes or the pad is touched.
+    bool classicRelease = false;
     double processingSampleRate = 48000.0, processingBeatsPerSample = 0.0, processingBeatsPerBar = 4.0;
     std::atomic<bool> resetHoldRequested{false};
     std::uint64_t transportEpochCounter = 1;

@@ -115,7 +115,23 @@ struct PadSession
         const auto offset = static_cast<std::size_t> (from) * 2;
         return std::memcmp (a.data () + offset, b.data () + offset, static_cast<std::size_t> (to - from) * 2 * sizeof (float)) == 0;
     }
+
+    // The largest sample-to-sample change in the output over [from, to), on either channel.
+    float largestStep (int from, int to) const
+    {
+        float largest = 0.0f;
+        for (auto k = static_cast<std::size_t> (from) * 2; k < static_cast<std::size_t> (to) * 2; ++k)
+            largest = std::max (largest, std::abs (output[k] - output[k - 2]));
+        return largest;
+    }
 };
+
+// Classic's Fade at 5 ms, so its own cuts are smooth and any click is the switch's.
+void useSmoothClassic (PadSession& session)
+{
+    useClassicSurface (session.processor);
+    set (session.processor, livecut::ids::fade, 5);
+}
 } // namespace
 
 TEST_CASE ("An untouched pad outputs the input exactly", "[pad][processor]")
@@ -272,6 +288,46 @@ TEST_CASE ("Switching from Classic to Pad while cutting releases on the next bea
     }
     CHECK (mismatches == 0);
     CHECK (released.dryFrom (beat + fade - 1));
+}
+
+TEST_CASE ("Switching from Classic to Pad while cutting never clicks", "[pad][processor]")
+{
+    constexpr int switched = 31200, end = 48000 + 240 + 12000;
+    const auto program = GENERATE (0, 1, 2); // Cut, Bounce, Glitch
+    PadSession classic, released;
+    for (auto* session : { &classic, &released })
+    {
+        useSmoothClassic (*session);
+        set (session->processor, livecut::ids::padProgram, static_cast<float> (program));
+        session->render (switched);
+        REQUIRE (session->processor.getCutter ().isCutting ());
+        if (session == &released)
+            set (session->processor, livecut::ids::surface, 0); // Pad
+        session->render (end - session->frame);
+    }
+    const auto reference = classic.largestStep (switched, end);
+    REQUIRE (reference > 0.0f);
+    CHECK (released.largestStep (switched, end) <= 3.0f * reference);
+}
+
+TEST_CASE ("A sounding Classic Impact filter carries on through the switch to Pad", "[pad][processor]")
+{
+    constexpr int switched = 31200, end = 48000; // up to the release, so only the filter is measured
+    PadSession classic, released;
+    for (auto* session : { &classic, &released })
+    {
+        useSmoothClassic (*session);
+        set (session->processor, livecut::ids::impactFilterEnabled, 1);
+        set (session->processor, livecut::ids::impactFilterCutoff, 200);
+        session->render (switched);
+        REQUIRE (session->processor.getCutter ().isCutting ());
+        if (session == &released)
+            set (session->processor, livecut::ids::surface, 0); // Pad
+        session->render (end - session->frame);
+    }
+    const auto reference = classic.largestStep (switched, end);
+    REQUIRE (reference > 0.0f);
+    CHECK (released.largestStep (switched, end) <= 3.0f * reference);
 }
 
 TEST_CASE ("A program switch restarts on the beat sample", "[pad][processor]")
