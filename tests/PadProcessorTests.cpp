@@ -1409,12 +1409,14 @@ TEST_CASE ("Rush engages, releases and switches without a fault", "[pad][process
 }
 
 // A switch out of Rush in the middle of a whole-bar roll (X 1, Y 1) lands on its
-// second beat, where the repeat fades out under the next program over 5 ms. Spliced,
-// Rush to Tape stepped 1.33: 4.2 times the larger of the two programs played
-// throughout in the same window. Measured now: 0.27x to Cut and 1.0x to Tape.
-// A switch from Cut into Rush is Cut's last cut meeting Rush's track, the splice
-// any restart out of Cut makes: measured 1.7x.
-TEST_CASE ("Switching Rush to Cut or Tape mid-roll, and Cut to Rush, doesn't click", "[pad][processor][rush]")
+// second beat, where the repeat fades out under the next program over 5 ms. A
+// switch into Rush lets the last program's cut fade out the same way under Rush's
+// track. Spliced, Rush to Tape stepped 1.33 (4.2 times the larger of the two
+// programs played throughout in the same window), Cut to Rush 1.7 times and Glitch
+// to Rush 1.34 times. Measured now on the test's sine, each step is the sine's own
+// or less: 0.012x either way between Rush and Cut, 0.31x and 0.30x between Rush
+// and Tape, and 1.0x from Glitch, whose crusher is in the reference.
+TEST_CASE ("Switching Rush to Cut or Tape mid-roll, and Cut, Tape or Glitch to Rush, doesn't click", "[pad][processor][rush]")
 {
     constexpr int midRoll = 3 * barFrames + 36000; // lands on bar 3's second beat
     struct Case
@@ -1422,8 +1424,9 @@ TEST_CASE ("Switching Rush to Cut or Tape mid-roll, and Cut to Rush, doesn't cli
         int from, to;
         float bar;
     };
-    for (const auto [from, to, bar] : { Case { rushProgram, cutProgram, .5f }, Case { rushProgram, tapeProgram, 1.25f },
-                                        Case { cutProgram, rushProgram, 2.f } })
+    for (const auto [from, to, bar] : { Case { rushProgram, cutProgram, .05f }, Case { rushProgram, tapeProgram, .5f },
+                                        Case { cutProgram, rushProgram, .05f }, Case { tapeProgram, rushProgram, .5f },
+                                        Case { 2 /* Glitch */, rushProgram, 1.25f } })
     {
         const auto steps = switchSteps (from, to, midRoll, 1.f, 1.f);
         CAPTURE (from, to, steps.switched, steps.from, steps.to);

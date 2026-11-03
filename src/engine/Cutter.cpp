@@ -406,6 +406,25 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                     rushTail = rushSound (frame);
                     rushTailAge = 0;
                 }
+                // A switch into Rush lets a Classic program's cut fade out the same
+                // way, under Rush's track. Silence fades in from silence.
+                else if (hasActivePlan && pendingProcedure == Procedure::rush && fractureParams.procedure == FractureProcedure::classic
+                         && activePlan.fracture.procedure == FractureProcedure::classic)
+                {
+                    // On a cut boundary, the cut that was playing, run on past its end.
+                    const auto& playing = livePlayer.cuts();
+                    const auto index = livePlayer.currentCut();
+                    rushTail = index > 0 && (index >= playing.size() || livePlayer.currentCutAge() == 0)
+                                 ? livePlayer.tail (index - 1, playing[index - 1].size)
+                                 : livePlayer.tail();
+                    if (! rushTail)
+                    {
+                        LivePlayer::Tail silence;
+                        silence.ll = silence.lr = silence.rl = silence.rr = 0.0f;
+                        rushTail = silence;
+                    }
+                    rushTailAge = 0;
+                }
                 drop (sampleOffset, observer);
             }
         }
