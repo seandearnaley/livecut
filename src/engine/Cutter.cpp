@@ -422,7 +422,9 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                                  : livePlayer.tail();
                     if (! rushEntry)
                     {
+                        // A readable source, at zero gain: the fade starts from silence.
                         LivePlayer::Tail silence;
+                        silence.source = livePlayer.sourceAtFrame (frame);
                         silence.ll = silence.lr = silence.rl = silence.rr = 0.0f;
                         rushEntry = silence;
                     }

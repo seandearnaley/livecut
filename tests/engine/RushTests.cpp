@@ -1192,3 +1192,47 @@ TEST_CASE ("A switch into Rush from Filter or Suction on the beat fades out what
     CAPTURE (worstStep, worstRatio);
     CHECK (worstRatio <= 2.f);
 }
+
+TEST_CASE ("A switch into Rush from a silent cut fades Rush in from silence", "[rush][cutter][switch]")
+{
+    // CutProc11 with a gate of 0.3 leaves the end of each cut silent. A restart into
+    // Rush there fades Rush's track in over 5 ms; it used to start at full level.
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
+    int fromSilence = 0;
+    float worst = 0.f;
+    for (int sixteenth = 17; sixteenth < 32; ++sixteenth)
+    {
+        Cutter cutter;
+        cutter.prepare (48000.0);
+        cutter.setProcedure (Procedure::cutProc11);
+        cutter.setUnitsPerBar (16);
+        cutter.setSeed (3);
+        CutParameters gated;
+        gated.dutyCycle = .3;
+        cutter.setParameters (gated);
+        const std::int64_t boundary = sixteenth * 6000;
+        std::vector<float> out;
+        for (std::int64_t frame = 0; frame < boundary + 10; ++frame)
+        {
+            if (frame == boundary - 3)
+            {
+                apply (cutter, PadProgram::rush, .5f, .1f);
+                cutter.restartAtNextUnit();
+            }
+            const auto in = held (Held::bass, frame, drums);
+            auto left = in.left, right = in.right;
+            const auto beats = static_cast<double> (frame) / 24000.0;
+            const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+            cutter.process (&left, &right, 1, { 120.0, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+            out.push_back (left);
+        }
+        REQUIRE (cutter.activeProcedure() == Procedure::rush);
+        if (out[static_cast<std::size_t> (boundary - 1)] != 0.f)
+            continue;
+        ++fromSilence;
+        worst = std::max (worst, largestStepIn (out, boundary, boundary + 10));
+    }
+    CAPTURE (fromSilence, worst);
+    REQUIRE (fromSilence > 0);
+    CHECK (worst < .01f); // a 0.6 bass rises from 0 over 240 frames
+}
