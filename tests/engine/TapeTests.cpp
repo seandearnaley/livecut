@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "DrumLoop.h"
 #include "engine/Cutter.h"
 #include "engine/Fracture.h"
 #include "engine/LivePlayer.h"
+#include "engine/PadPrograms.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
 #include <array>
 #include <optional>
+#include <utility>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -610,4 +614,193 @@ TEST_CASE ("Tape plays the input exactly outside its stops and spin-ups", "[tape
         CHECK (compared > 3 * 96000);
         CHECK (stopped > 0);
     }
+}
+
+namespace
+{
+using testing::DrumLoop;
+
+// Tape at a pad spot: X picks the stop length in four steps, Y the density.
+FractureParameters::Tape padSpot (double x, double y)
+{
+    constexpr double lengths[] { .5, 1.0, 2.0, 4.0 };
+    return stops (lengths[std::min (static_cast<int> (4.0 * x), 3)], 4.0 * y);
+}
+
+struct DrumRun
+{
+    std::vector<float> in, left, right;
+    std::vector<TapeMotion> motion;
+    std::vector<double> speed;
+};
+
+// Eight bars of the loop through Tape engaged from the first sample, one frame at a time.
+DrumRun runTape (const FractureParameters::Tape& tape, const DrumLoop& loop, int frames = 8 * 96000)
+{
+    TapeCutter cutter (tape);
+    DrumRun run;
+    for (auto* v : { &run.in, &run.left, &run.right })
+        v->reserve (static_cast<std::size_t> (frames));
+    while (cutter.frame < frames)
+    {
+        const auto in = loop.samples[static_cast<std::size_t> (cutter.frame) % loop.samples.size()];
+        auto left = in, right = in;
+        cutter.process (&left, &right, 1);
+        run.in.push_back (in);
+        run.left.push_back (left);
+        run.right.push_back (right);
+        run.motion.push_back (renderedMotion (cutter.cutter));
+        run.speed.push_back (cutter.cutter.fractureDiagnostics().tapeSpeed);
+    }
+    REQUIRE (cutter.cutter.error() == Cutter::Error::none);
+    return run;
+}
+
+// [first, end) of each run of `motion`.
+std::vector<std::pair<std::size_t, std::size_t>> spans (const DrumRun& run, TapeMotion motion)
+{
+    std::vector<std::pair<std::size_t, std::size_t>> found;
+    for (std::size_t i = 0; i < run.motion.size(); ++i)
+        if (run.motion[i] == motion && (i == 0 || run.motion[i - 1] != motion))
+        {
+            auto end = i;
+            while (end < run.motion.size() && run.motion[end] == motion)
+                ++end;
+            found.emplace_back (i, end);
+        }
+    return found;
+}
+
+float largestStep (const std::vector<float>& signal, std::size_t from, std::size_t to)
+{
+    float largest = 0.f;
+    for (auto i = std::max<std::size_t> (from, 1); i < to; ++i)
+        largest = std::max (largest, std::abs (signal[i] - signal[i - 1]));
+    return largest;
+}
+
+double rms (const std::vector<float>& left, const std::vector<float>& right)
+{
+    double energy = 0.0;
+    for (std::size_t i = 0; i < left.size(); ++i)
+        energy += static_cast<double> (left[i]) * left[i] + static_cast<double> (right[i]) * right[i];
+    return std::sqrt (energy / static_cast<double> (2 * left.size()));
+}
+
+// Cut at its middle, as the Filter's level test compares against.
+double cutRms (const DrumLoop& loop, int frames = 8 * 96000)
+{
+    const auto mapping = mapPad (PadProgram::cut, .5f, 0.f, {});
+    Cutter cutter;
+    cutter.prepare (48000.0);
+    cutter.setProcedure (mapping.procedure);
+    cutter.setUnitsPerBar (mapping.unitsPerBar);
+    cutter.setSeed (mapping.seed);
+    cutter.setParameters (mapping.cut);
+    std::vector<float> left, right;
+    std::array<float, 512> l {}, r {};
+    for (int n = 0; n < frames; n += 512)
+    {
+        for (int i = 0; i < 512; ++i)
+            l[static_cast<std::size_t> (i)] = r[static_cast<std::size_t> (i)]
+                = loop.samples[static_cast<std::size_t> (n + i) % loop.samples.size()];
+        const auto beats = n / 24000.0;
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+        cutter.process (l.data(), r.data(), 512, { 120.0, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+        left.insert (left.end(), l.begin(), l.end());
+        right.insert (right.end(), r.begin(), r.end());
+    }
+    REQUIRE (cutter.error() == Cutter::Error::none);
+    return rms (left, right);
+}
+} // namespace
+
+TEST_CASE ("On drums, Tape is the track between stops, and its stops and spin-ups are clean", "[tape][drums]")
+{
+    const DrumLoop drums (0.0, DrumLoop::Bass::sine); // no bass: drums alone
+    const auto drumStep = largestStep (drums.samples, 0, drums.samples.size());
+    for (const auto x : { 0.0, .5, 1.0 })
+        for (const auto y : { 0.0, .5, 1.0 })
+        {
+            CAPTURE (x, y);
+            const auto run = runTape (padSpot (x, y), drums);
+            for (std::size_t i = 0; i < run.in.size(); ++i)
+                if (run.motion[i] == TapeMotion::play)
+                {
+                    REQUIRE (run.left[i] == run.in[i]);
+                    REQUIRE (run.right[i] == run.in[i]);
+                }
+            const auto stopSpans = spans (run, TapeMotion::stop);
+            const auto spinSpans = spans (run, TapeMotion::spinUp);
+            REQUIRE (! stopSpans.empty());
+            // The tail's largest step in its last 5 ms; each spin-up's largest step
+            // against the hit it plays, and in its first millisecond; and how far
+            // its last frame is from the input it hands back to.
+            float tailStep = 0.f, spinStep = 0.f, landing = 0.f, onset = 0.f;
+            double slowEnergy = 0.0, stopEnergy = 0.0;
+            for (const auto& [first, end] : stopSpans)
+            {
+                CAPTURE (first, end);
+                REQUIRE (run.left[end - 1] == 0.f); // silent on its grid point
+                REQUIRE (end % 3000 == 0);         // which is a whole 32nd note
+                tailStep = std::max (tailStep, largestStep (run.left, end - 240, end));
+                for (auto i = first; i < end; ++i)
+                {
+                    const auto energy = static_cast<double> (run.left[i]) * run.left[i];
+                    stopEnergy += energy;
+                    slowEnergy += run.speed[i] < .25 ? energy : 0.0;
+                }
+            }
+            for (const auto& [first, end] : spinSpans)
+            {
+                CAPTURE (first, end);
+                REQUIRE (run.left[first] == 0.f); // from silence
+                REQUIRE (end - first == 3000);   // a 32nd note
+                spinStep = std::max (spinStep, largestStep (run.left, first, end) / std::max (largestStep (run.in, first, end), 1e-6f));
+                onset = std::max (onset, largestStep (run.left, first, first + 48));
+                if (end < run.in.size())
+                    landing = std::max (landing, std::abs (run.left[end - 1] - run.in[end - 1]));
+            }
+            CAPTURE (drumStep, tailStep, spinStep, onset, landing, slowEnergy / stopEnergy);
+            // Measured: tails 0.0041 at most (0.34% of the drums' largest step), spin-ups
+            // 0.77 of the steps of the hits they play, onsets 0.016 in their first
+            // millisecond, landings 3e-8 off the track, and 1.5% of a stop's energy
+            // below quarter speed.
+            CHECK (tailStep <= .005f * drumStep);
+            CHECK (spinStep <= 1.f);
+            CHECK (onset <= .02f);
+            CHECK (landing <= 1e-6f);
+            CHECK (slowEnergy <= .02 * stopEnergy);
+        }
+}
+
+TEST_CASE ("On drums and bass, Tape is never louder than Cut or the input", "[tape][drums][level]")
+{
+    const auto [bassHz, bass, name] = GENERATE (table<double, DrumLoop::Bass, const char*> ({
+        { 0.0, DrumLoop::Bass::sine, "drums" },
+        { 55.0, DrumLoop::Bass::sine, "sub-bass" },
+        { 150.0, DrumLoop::Bass::sine, "a bass line" },
+    }));
+    CAPTURE (name);
+    const DrumLoop loop (bassHz, bass);
+    const auto cut = cutRms (loop);
+    const auto peak = *std::max_element (loop.samples.begin(), loop.samples.end(), [] (float a, float b) { return std::abs (a) < std::abs (b); });
+    for (const auto x : { 0.0, .5, 1.0 })
+        for (const auto y : { 0.0, .5, 1.0 })
+        {
+            const auto run = runTape (padSpot (x, y), loop);
+            const auto input = rms (run.in, run.in);
+            const auto tape = rms (run.left, run.right);
+            const auto overCut = 20.0 * std::log10 (tape / cut);
+            const auto overInput = 20.0 * std::log10 (tape / input);
+            float loudest = 0.f;
+            for (std::size_t i = 0; i < run.left.size(); ++i)
+                loudest = std::max ({ loudest, std::abs (run.left[i]), std::abs (run.right[i]) });
+            CAPTURE (x, y, overCut, overInput, loudest, peak);
+            // Measured: -0.01 to -0.72 dB against the input, Cut within 0.0002 dB of it.
+            CHECK (overCut <= 0.0);
+            CHECK (overInput <= 0.0);
+            CHECK (overInput >= -1.0);
+            CHECK (loudest <= std::abs (peak));
+        }
 }
