@@ -87,8 +87,18 @@ public:
     std::int64_t sourceFrames() const;
     // How far along the curve frame `frame` is, counting a starting phase.
     double phaseAt (int frame) const;
+    // A spin-up re-timed for a new tempo: from `lag` frames behind the track at
+    // `speed`, it lands on the track at speed 1 with no acceleration left after
+    // `frames`, then plays on at 1. Its lag is w^3 (a + b w), w running from 1 to
+    // 0, which stays at or above 0 (never ahead of the input) whenever
+    // a = 4 lag + frames (1 - speed) is; canLand says so. The first spin-up is the
+    // case lag 0, speed 0.
+    static bool canLand (double lag, double speed, int frames);
+    void land (double lag, double speed, int frames);
 private:
     double from = 1.0, to = 0.0, phase = 0.0;
+    bool landing = false;
+    double landLag = 0.0, landA = 0.0, landB = 0.0;
     int frames = 1;
     FractureParameters::Tape::Curve curve = FractureParameters::Tape::Curve::smooth;
 };

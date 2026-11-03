@@ -47,6 +47,7 @@ double fractureDraw (const CutIdentity& id, std::uint64_t tag, std::uint64_t ord
 
 void TapeTrajectory::start (double a, double b, int length, FractureParameters::Tape::Curve shape, double startPhase)
 {
+    landing = false;
     assert (std::isfinite (a) && a >= 0 && a <= 1 && std::isfinite (b) && b >= 0 && b <= 1);
     assert (std::isfinite (startPhase) && startPhase >= 0 && startPhase < 1);
     from = a;
@@ -54,6 +55,26 @@ void TapeTrajectory::start (double a, double b, int length, FractureParameters::
     frames = std::max (length,1);
     curve = shape;
     phase = shape == FractureParameters::Tape::Curve::quadratic ? startPhase : 0.0;
+}
+
+bool TapeTrajectory::canLand (double lag, double speed, int length)
+{
+    return 4.0 * std::max (lag, 0.0) + std::max (length, 1) * (1.0 - speed) >= 0.0;
+}
+
+void TapeTrajectory::land (double lag, double speed, int length)
+{
+    assert (canLand (lag, speed, length));
+    from = 0.0;
+    to = 1.0;
+    frames = std::max (length, 1);
+    curve = FractureParameters::Tape::Curve::catchUp;
+    phase = 0.0;
+    landing = true;
+    landLag = std::max (lag, 0.0);
+    // lag (1) = a + b, and the speed 1 - d lag / dn = 1 + (3a + 4b) / frames at w = 1.
+    landA = 4.0 * landLag + frames * (1.0 - speed);
+    landB = landLag - landA;
 }
 
 double TapeTrajectory::phaseAt (int frame) const
@@ -64,6 +85,11 @@ double TapeTrajectory::phaseAt (int frame) const
 
 double TapeTrajectory::speed (int frame) const
 {
+    if (landing)
+    {
+        const auto w = 1.0 - std::clamp (static_cast<double> (frame) / frames, 0.0, 1.0);
+        return std::max (0.0, 1.0 + w * w * (3.0 * landA + 4.0 * landB * w) / frames);
+    }
     if (curve == FractureParameters::Tape::Curve::catchUp)
     {
         const auto w = 1.0 - std::clamp (static_cast<double> (frame) / frames, 0.0, 1.0);
@@ -80,6 +106,14 @@ double TapeTrajectory::speed (int frame) const
 
 double TapeTrajectory::position (int frame) const
 {
+    if (landing)
+    {
+        // Relative to where it was re-timed: the frames played, less the lag left, plus the lag it had.
+        const auto n = static_cast<double> (std::clamp (frame, 0, frames));
+        const auto w = 1.0 - n / frames;
+        const auto lag = std::max (0.0, w * w * w * (landA + landB * w));
+        return n - lag + landLag + std::max (frame - frames, 0);
+    }
     if (curve == FractureParameters::Tape::Curve::catchUp)
     {
         // n - n w^3 is the integral 3u^2 - 3u^3 + u^4 scaled to frames, written so
@@ -408,13 +442,26 @@ void FractureReader::fail (FractureState reason)
 void FractureReader::retimeTape (int age, int remainingFrames)
 {
     const auto speeds = tapeCurveFor (parameters.tape, context.cut.tape, context.ordinal);
-    // A spin-up runs its own frames and then plays on at speed 1, on the track.
-    if (parameters.procedure != FractureProcedure::tapeCut || context.completeTapeSource
-        || speeds.curve == FractureParameters::Tape::Curve::catchUp)
+    if (parameters.procedure != FractureProcedure::tapeCut || context.completeTapeSource)
         return;
     const auto position=tapeBase+tape.position(age-tapeSegmentAge);
     const auto speed=tape.speed(age-tapeSegmentAge);
     const auto phase=tape.phaseAt(age-tapeSegmentAge);
+    if (speeds.curve == FractureParameters::Tape::Curve::catchUp)
+    {
+        // A spin-up lands on the track at the cut's new end, from the lag and
+        // speed it has now. A motion reads from the frame it starts on, so the
+        // track is at `age`. A longer cut it can't land in without reading ahead
+        // keeps its frames, lands sooner and plays on at speed 1.
+        const auto lag = static_cast<double> (age) - position;
+        const auto frames = std::max (remainingFrames, 1);
+        if (! TapeTrajectory::canLand (lag, speed, frames))
+            return;
+        tapeBase=position;
+        tapeSegmentAge=age;
+        tape.land (lag, speed, frames);
+        return;
+    }
     tapeBase=position;
     tapeSegmentAge=age;
     // A brake carries on along its curve from where it is, over the new length.

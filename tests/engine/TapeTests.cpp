@@ -192,7 +192,7 @@ TEST_CASE ("A spin-up never lifts the level", "[tape][motion]")
     }
 }
 
-TEST_CASE ("A tempo change re-times a play and a stop by their own curves, and leaves a spin-up alone", "[tape][motion]")
+TEST_CASE ("A tempo change re-times each motion by its own curve", "[tape][motion]")
 {
     SECTION ("A play stays on the track")
     {
@@ -224,19 +224,31 @@ TEST_CASE ("A tempo change re-times a play and a stop by their own curves, and l
         }
         CHECK (speed == 0);
     }
-    SECTION ("A spin-up still lands after its frames and plays on")
+    SECTION ("A spin-up lands on the track at its new end, shorter or longer, then plays on")
     {
-        Rig rig;
-        rig.start (TapeMotion::spinUp, 3000);
-        StereoFrame in {}, out {};
-        for (int age = 0; age < 4000; ++age)
+        for (const auto [at, remaining] : { std::pair { 100, 1400 }, std::pair { 1000, 500 }, std::pair { 1000, 3000 }, std::pair { 2900, 50 } })
         {
-            if (age == 1000)
-                rig.reader.retimeTape (age, 3000);
-            in = tone (rig.recorded);
-            out = rig.play (in, age, 4000);
-            if (age >= 3000)
-                REQUIRE (out.left == in.left);
+            CAPTURE (at, remaining);
+            Rig rig;
+            rig.start (TapeMotion::spinUp, 3000);
+            const auto end = at + remaining;
+            double speed = 0.0;
+            for (int age = 0; age < end + 500; ++age)
+            {
+                if (age == at)
+                    rig.reader.retimeTape (age, remaining);
+                const auto in = tone (rig.recorded);
+                const auto out = rig.play (in, age, end + 500); // the causal rig fails a read ahead of the input
+                const auto next = rig.reader.diagnostics().tapeSpeed;
+                if (age > 0)
+                    REQUIRE (std::abs (next - speed) < .05); // no jump in speed at the re-time
+                speed = next;
+                if (age >= end)
+                {
+                    REQUIRE (out.left == in.left);
+                    REQUIRE (out.right == in.right);
+                }
+            }
         }
     }
 }
@@ -1228,4 +1240,80 @@ TEST_CASE ("A stop's silence spins the next block up only when it comes straight
         CHECK (tape.cutter.currentCuts().front().tape == TapeMotion::play);
         CHECK (out[0] == bass (first)); // the track, straight on from the input
     }
+}
+
+namespace
+{
+// A tempo change `into` frames after an in-flight motion starts, at the top of
+// the pad, where every beat is a half-beat stop and a spin-up, on a 97 Hz sine.
+// The steps across the change and from the motion's last frame into the next
+// cut, where a head that hadn't landed would splice, against the sine's own.
+struct TempoChange
+{
+    float across = 0.f, handBack = 0.f, sineStep = 0.f;
+    std::int64_t frames = 0; // the motion's frames after the change
+};
+
+TempoChange changeTempoDuring (TapeMotion motion, int into, double toBpm)
+{
+    TapeCutter tape (padSpot (1.0, 1.0));
+    TempoChange result;
+    const auto sine = [] (std::int64_t frame)
+    {
+        return static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 97.0 * static_cast<double> (frame) / 48000.0));
+    };
+    // Bar 1's second beat at 120 bpm: a brake from 1.5 beats, a spin-up from beat 2.
+    const std::int64_t start = motion == TapeMotion::stop ? 96000 + 36000 : 96000 + 48000;
+    const auto change = start + into;
+    float previous = 0.f, previousIn = 0.f;
+    bool inMotion = true;
+    while (inMotion || tape.frame <= change)
+    {
+        if (tape.frame == change)
+            tape.setTempo (toBpm);
+        const auto in = sine (tape.frame);
+        auto left = in, right = in;
+        const auto frame = tape.frame;
+        tape.process (&left, &right, 1);
+        const auto now = renderedMotion (tape.cutter);
+        if (frame == start)
+            REQUIRE (now == motion);
+        if (frame == change)
+            result.across = std::abs (left - previous);
+        if (frame > change)
+        {
+            if (now == motion)
+                ++result.frames;
+            else
+            {
+                result.handBack = std::abs (left - previous);
+                inMotion = false;
+            }
+        }
+        if (frame > 0)
+            result.sineStep = std::max (result.sineStep, std::abs (in - previousIn));
+        previous = left;
+        previousIn = in;
+        REQUIRE (tape.frame < change + 4 * 48000);
+    }
+    REQUIRE (tape.cutter.error() == Cutter::Error::none);
+    return result;
+}
+} // namespace
+
+TEST_CASE ("A tempo change during a spin-up or a brake never splices", "[tape][cutter][tempo]")
+{
+    // A brake re-times by its phase, but a spin-up ran its own frames. When a
+    // faster tempo shortened its cut, the next play started before the head had
+    // landed, splicing between source positions: up to 0.86 on a 0.5 sine.
+    for (const auto motion : { TapeMotion::spinUp, TapeMotion::stop })
+        for (const auto into : { 1, 100, 750, 1500, 2900 })
+            for (const auto toBpm : { 240.0, 132.0, 108.0, 60.0 })
+            {
+                const auto change = changeTempoDuring (motion, into, toBpm);
+                CAPTURE (motion == TapeMotion::spinUp ? "spin-up" : "brake", into, toBpm, change.across, change.handBack,
+                         change.sineStep, change.frames);
+                CHECK (change.across <= 1.3f * change.sineStep);
+                CHECK (change.handBack <= 1.3f * change.sineStep);
+            }
 }
