@@ -30,4 +30,17 @@ inline float portableSignal (std::int64_t frame, int channel)
     return static_cast<float> (.5 * triangle (331, 97) + .0625 * noise);
 }
 
+// The engine's own maths still differs in its last bits between toolchains:
+// libm's sin and cos (pan), exp (fades) and pow (pitch), and Apple Clang's fused
+// multiply-adds. So an output pinned to the bit is pinned per toolchain: the
+// Apple Clang value as measured, and the MSVC value as Windows CI measured it.
+constexpr std::uint64_t pinnedHash ([[maybe_unused]] std::uint64_t appleClang, [[maybe_unused]] std::uint64_t msvc)
+{
+#if defined (_MSC_VER)
+    return msvc;
+#else
+    return appleClang;
+#endif
+}
+
 } // namespace livecut::engine::testing

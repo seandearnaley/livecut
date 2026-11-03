@@ -996,15 +996,16 @@ std::uint64_t outputHash (const std::vector<float>& output)
 
 TEST_CASE ("Every built program is bit-identical", "[pad][processor][pinned]")
 {
-    // Measured on the plugin before Tape existed (d2cbbb2), on a libm-free input:
+    // Measured on the plugin before Tape existed (d2cbbb2), on a libm-free input,
+    // with the MSVC values from Windows CI at b34dd71 (Cut's is the same on both):
     // each program touched at (0.3, 0.75) for
     // two and a half bars, then let go for a bar.
     const auto [program, expected] = GENERATE (table<int, std::uint64_t> ({
-        { 0, UINT64_C (0x01b9799feb2580b3) },
-        { 1, UINT64_C (0x5beb3bdc95277b1e) },
-        { 2, UINT64_C (0x5b6d7fbe6f37ceaf) },
-        { 3, UINT64_C (0xab0587de0062f957) },
-        { 4, UINT64_C (0x4e1b59cfbdff4bdb) },
+        { 0, livecut::engine::testing::pinnedHash (UINT64_C (0x01b9799feb2580b3), UINT64_C (0x01b9799feb2580b3)) },
+        { 1, livecut::engine::testing::pinnedHash (UINT64_C (0x5beb3bdc95277b1e), UINT64_C (0xa875dee669894403)) },
+        { 2, livecut::engine::testing::pinnedHash (UINT64_C (0x5b6d7fbe6f37ceaf), UINT64_C (0x46db6be90d87adc4)) },
+        { 3, livecut::engine::testing::pinnedHash (UINT64_C (0xab0587de0062f957), UINT64_C (0xaba874b9e1d950e3)) },
+        { 4, livecut::engine::testing::pinnedHash (UINT64_C (0x4e1b59cfbdff4bdb), UINT64_C (0x4a5a3b006d248f5d)) },
     }));
     CAPTURE (program);
     PadSession session;

@@ -460,22 +460,23 @@ std::uint64_t classicFractureHash(const FractureParameters& fracture)
 TEST_CASE("Classic Fracture is bit-identical","[fracture][integration][pinned]")
 {
     // Measured on the engine before the pad's Tape motions existed (d2cbbb2), on a
-    // libm-free input, so the hashes don't depend on the toolchain's sin and cos.
+    // libm-free input. The MSVC values are Windows CI's, measured at b34dd71, which
+    // the base-against-head fuzz shows is bit-identical to d2cbbb2 here.
     FractureParameters tape;
     tape.procedure=FractureProcedure::tapeCut;
-    CHECK(classicFractureHash(tape)==UINT64_C(0xf1d3e685441b8157));
+    CHECK(classicFractureHash(tape)==testing::pinnedHash(UINT64_C(0xf1d3e685441b8157),UINT64_C(0xfe1888076797dc32)));
     tape.tape.curve=FractureParameters::Tape::Curve::linear;
     tape.tape.alternate=true;
     tape.tape.cycle=FractureParameters::Tape::Cycle::halfBeat;
-    CHECK(classicFractureHash(tape)==UINT64_C(0x6157d6ae9f6874b2));
+    CHECK(classicFractureHash(tape)==testing::pinnedHash(UINT64_C(0x6157d6ae9f6874b2),UINT64_C(0xea63539c65af8102)));
     tape.tape.startSpeed=.8f;
     tape.tape.endSpeed=.2f;
     tape.tape.curve=FractureParameters::Tape::Curve::smooth;
     tape.tape.cycle=FractureParameters::Tape::Cycle::fourBeats;
-    CHECK(classicFractureHash(tape)==UINT64_C(0xe03b3b0ea04e1205));
+    CHECK(classicFractureHash(tape)==testing::pinnedHash(UINT64_C(0xe03b3b0ea04e1205),UINT64_C(0x9a01b463367904f1)));
     FractureParameters grain;
     grain.procedure=FractureProcedure::grainCut;
-    CHECK(classicFractureHash(grain)==UINT64_C(0xc62cd44318cc7a1d));
+    CHECK(classicFractureHash(grain)==testing::pinnedHash(UINT64_C(0xc62cd44318cc7a1d),UINT64_C(0xe7fb2799b21db66a)));
 }
 
 namespace
@@ -578,10 +579,10 @@ std::uint64_t pinnedEventHash (int which)
 TEST_CASE("Classic Fracture and the built programs are bit-identical through restarts, idle and tempo changes","[fracture][integration][pinned]")
 {
     // Measured on the engine before Tape (d2cbbb2), and equal on this branch, on a
-    // libm-free input, so the hashes don't depend on the toolchain's sin and cos.
+    // libm-free input. The MSVC values are Windows CI's, measured at b34dd71.
     constexpr std::array<std::uint64_t,8> expected {
-        UINT64_C(0x2f582588aa69dda7), UINT64_C(0xa09e8c6a97ac05eb), UINT64_C(0x8dfd275471cb838b), UINT64_C(0xbd765792b25f5b6a),
-        UINT64_C(0x102182ecbb1e9824), UINT64_C(0xc802fe7c3ef2261e), UINT64_C(0xf16d4f18e2706587), UINT64_C(0x53c8983cba5b2842) };
+        testing::pinnedHash(UINT64_C(0x2f582588aa69dda7),UINT64_C(0x1f3d82b817cc3135)), testing::pinnedHash(UINT64_C(0xa09e8c6a97ac05eb),UINT64_C(0x8d0225cdfc3b26f0)), testing::pinnedHash(UINT64_C(0x8dfd275471cb838b),UINT64_C(0xa315ceaf0d35f004)), testing::pinnedHash(UINT64_C(0xbd765792b25f5b6a),UINT64_C(0x3d812833c479f0d2)),
+        testing::pinnedHash(UINT64_C(0x102182ecbb1e9824),UINT64_C(0x3227a7eafd96dc39)), testing::pinnedHash(UINT64_C(0xc802fe7c3ef2261e),UINT64_C(0x71987b5803b1b4e5)), testing::pinnedHash(UINT64_C(0xf16d4f18e2706587),UINT64_C(0x1af7d9c363b0f056)), testing::pinnedHash(UINT64_C(0x53c8983cba5b2842),UINT64_C(0x4b629cf30fab193d)) };
     for(int which=0;which<8;++which)
     {
         CAPTURE(which);
