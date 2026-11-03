@@ -172,6 +172,7 @@ void Cutter::resetRendering()
     fractureOrdinal = 0;
     tapeSpinUpNext = false;
     tapeTail.reset();
+    tapeRunOn.reset();
     impactCut.reset();
     renderContextActive = false;
 }
@@ -182,6 +183,7 @@ void Cutter::drop (int sampleOffset, Observer* observer)
     queueHead = queued = 0;
     hasActivePlan = false;
     tapeSpinUpNext = false; // what follows a drop starts on the track
+    tapeRunOn.reset();
     livePlayer.resetRendering();
     if (processingError == Error::planOverflow || processingError == Error::sourceUnavailable)
         processingError = Error::none;
@@ -341,7 +343,7 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
                 // A Tape motion cut off here plays on, fading out under what follows.
                 if (hasActivePlan && activePlan.fracture.procedure == FractureProcedure::tapeCut)
                 {
-                    tapeTail = fractureReader.tail();
+                    tapeTail = tapeRunOn ? tapeRunOn : fractureReader.tail();
                     tapeTailAge = 0;
                 }
                 drop (sampleOffset, observer);
@@ -833,6 +835,22 @@ void Cutter::renderSource (std::int64_t frame,float& left,float& right,bool adva
         return;
     }
     startFractureCut(frame);
+    // The player lays a block out in samples from its first frame, but the next
+    // block begins on the musical grid, which can fall a frame later when a bar
+    // isn't a whole number of samples. Between them, the pad's Tape runs its last
+    // motion on, as its trajectory already defines: a play or a landed spin-up stays
+    // on the track and a stop holds its silence. Classic's cuts end faded, and
+    // keep their silent frame.
+    if (livePlayer.currentCut() >= livePlayer.cuts().size() && activePlan.fracture.procedure == FractureProcedure::tapeCut
+        && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops)
+    {
+        if (! tapeRunOn)
+            tapeRunOn = fractureReader.tail();
+        left = right = 0.0f;
+        if (tapeRunOn && ! tapeRunOn->next (livePlayer, left, right))
+            tapeRunOn.reset();
+        return;
+    }
     const auto age=livePlayer.currentCutAge();
     const auto sounding=livePlayer.currentSoundingFrames();
     // Only an actual BPM value change retargets Tape. A one-frame musical
@@ -880,6 +898,7 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         impactCut.reset();
         fractureCut.reset();
         fractureBpm = 0;
+        tapeRunOn.reset();
         startEffectsCut();
     }
 }

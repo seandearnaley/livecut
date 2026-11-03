@@ -245,6 +245,7 @@ private:
     FractureProcedure fractureProcedure = FractureProcedure::classic;
     bool tapeSpinUpNext = false; // the pad's Tape: the block before ended in a stop
     std::optional<TapeTail> tapeTail; // the pad's Tape: a motion cut off by a restart, fading out
+    std::optional<TapeTail> tapeRunOn; // the pad's Tape: the last motion, running on to the next block
     int tapeTailAge = 0, tapeTailFrames = 1;
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;

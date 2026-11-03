@@ -499,7 +499,8 @@ struct Bounds final : Cutter::SourceContext
     }
 };
 
-// The pad's Tape through a Cutter at 120 bpm in 4/4, fed a block at a time.
+// The pad's Tape through a Cutter, at 120 bpm in 4/4 unless told otherwise, fed
+// a block at a time. The host's position is counted from the last tempo change.
 struct TapeCutter
 {
     Cutter cutter;
@@ -507,9 +508,13 @@ struct TapeCutter
     Bounds bounds;
     double rate;
     std::int64_t frame = 0;
+    double bpm = 120.0, beatsPerBar = 4.0;
+    std::int64_t tempoFrame = 0;
+    double tempoBeats = 0.0;
 
-    explicit TapeCutter (const FractureParameters::Tape& tape, double sampleRate = 48000.0)
-        : rate (sampleRate)
+    explicit TapeCutter (const FractureParameters::Tape& tape, double sampleRate = 48000.0, double tempo = 120.0,
+                         double meter = 4.0)
+        : rate (sampleRate), bpm (tempo), beatsPerBar (meter)
     {
         cutter.prepare (rate);
         cutter.setUnitsPerBar (16);
@@ -525,11 +530,23 @@ struct TapeCutter
         cutter.setTransformSource (detector, bounds);
     }
 
+    double beats() const
+    {
+        return tempoBeats + static_cast<double> (frame - tempoFrame) * bpm / 60.0 / rate;
+    }
+
+    void setTempo (double tempo)
+    {
+        tempoBeats = beats();
+        tempoFrame = frame;
+        bpm = tempo;
+    }
+
     void process (float* left, float* right, int count)
     {
-        const auto beats = static_cast<double> (frame) * 2.0 / rate;
-        const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
-        cutter.process (left, right, count, { 120.0, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+        const auto at = beats();
+        const auto bar = static_cast<std::int64_t> (std::floor (at / beatsPerBar));
+        cutter.process (left, right, count, { bpm, beatsPerBar }, { bar, at - beatsPerBar * static_cast<double> (bar) });
         frame += count;
     }
 
@@ -848,3 +865,46 @@ TEST_CASE ("A restart in the middle of a stop fades the stop out under what foll
 
 // The per-cut motion sits in Cut's padding, so every block plan stays the same size.
 static_assert (sizeof (Cut) == 4 * sizeof (double));
+
+TEST_CASE ("At any tempo, Tape plays every frame of the track between its stops", "[tape][cutter][tempo]")
+{
+    // X 0.5 and Y 0: the first stop is beats 2 to 4 of bar 3, so bars 0 to 2 and the
+    // first half of bar 3 are the track, through three bar lines. At most whole-number
+    // tempos a bar isn't a whole number of samples, and the block's cuts ran out a
+    // frame before the next bar's block began: that frame was silence.
+    for (const auto rate : { 44100.0, 48000.0, 96000.0 })
+        for (const auto meter : { 4.0, 3.0 })
+        {
+            int wrong = 0, tempos = 0;
+            float worst = 0.f;
+            for (int bpm = 80; bpm <= 180; bpm += meter == 4.0 ? 1 : 7)
+            {
+                TapeCutter tape (stops (2.0, 0.0), rate, bpm, meter);
+                const auto end = static_cast<std::int64_t> ((3.0 * meter + meter - 2.0) * 60.0 / bpm * rate) - 2;
+                std::array<float, 512> left {}, right {}, in {};
+                int here = 0;
+                while (tape.frame < end)
+                {
+                    const auto count = static_cast<int> (std::min<std::int64_t> (512, end - tape.frame));
+                    for (int i = 0; i < count; ++i)
+                    {
+                        const auto t = static_cast<double> (tape.frame + i) / rate;
+                        in[static_cast<std::size_t> (i)] = left[static_cast<std::size_t> (i)] = right[static_cast<std::size_t> (i)]
+                            = static_cast<float> (.5 * std::sin (2.0 * 3.141592653589793 * 97.0 * t) + .2);
+                    }
+                    tape.process (left.data(), right.data(), count);
+                    for (std::size_t i = 0; i < static_cast<std::size_t> (count); ++i)
+                        if (left[i] != in[i] || right[i] != in[i])
+                        {
+                            ++here;
+                            worst = std::max (worst, std::abs (left[i] - in[i]));
+                        }
+                }
+                REQUIRE (tape.cutter.error() == Cutter::Error::none);
+                wrong += here;
+                tempos += here > 0 ? 1 : 0;
+            }
+            CAPTURE (rate, meter, wrong, tempos, worst);
+            CHECK (wrong == 0);
+        }
+}

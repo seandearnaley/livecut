@@ -53,10 +53,11 @@ struct PadSession
     juce::MidiBuffer midi;
     int frame = 0;
     std::vector<float> output, input;
-    double rate = 48000.0; // at 120 bpm in 4/4
+    double rate = 48000.0; // in 4/4
+    double bpm = 120.0;
 
-    explicit PadSession (bool spectral = false, double sampleRate = 48000.0)
-        : rate (sampleRate)
+    explicit PadSession (bool spectral = false, double sampleRate = 48000.0, double tempo = 120.0)
+        : rate (sampleRate), bpm (tempo)
     {
         if (spectral)
         {
@@ -64,6 +65,7 @@ struct PadSession
             processor.setNonRealtime (true);
         }
         playFromBarOne (head);
+        head.info.setBpm (bpm);
         processor.setPlayHead (&head);
         processor.prepareToPlay (rate, 4096);
     }
@@ -73,10 +75,11 @@ struct PadSession
         while (count > 0)
         {
             const int size = std::min (count, bufferSize);
-            const auto beat = rate / 2.0, bar = 2.0 * rate;
+            const auto beat = rate * 60.0 / bpm;
+            const auto bars = std::floor (frame / beat / 4.0);
             head.info.setPpqPosition (frame / beat);
-            head.info.setPpqPositionOfLastBarStart (std::floor (frame / bar) * 4.0);
-            head.info.setBarCount (static_cast<int> (frame / static_cast<int> (bar)));
+            head.info.setPpqPositionOfLastBarStart (bars * 4.0);
+            head.info.setBarCount (static_cast<int> (bars));
             juce::AudioBuffer<float> buffer (2, size);
             for (int i = 0; i < size; ++i)
                 for (int channel = 0; channel < 2; ++channel)
@@ -1297,4 +1300,24 @@ TEST_CASE ("Tape never allocates, stops and switches included", "[pad][processor
     }
     CHECK (stopped);
     CHECK (allocations == 0);
+}
+
+TEST_CASE ("At 93, 124 and 140 bpm, engaged Tape is the track until its first stop", "[pad][processor][tape][tempo]")
+{
+    // A bar of fractional samples used to leave one silent frame at some bar lines.
+    const auto rate = GENERATE (44100.0, 48000.0, 96000.0);
+    const auto bpm = GENERATE (93.0, 124.0, 140.0);
+    CAPTURE (rate, bpm);
+    const auto beat = rate * 60.0 / bpm;
+    const auto stopStart = static_cast<int> (14.0 * beat); // X 0.5, Y 0: beats 2 to 4 of bar 3
+    PadSession session (false, rate, bpm);
+    set (session.processor, livecut::ids::padProgram, tapeProgram);
+    set (session.processor, livecut::ids::padY, 0);
+    session.render (777);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (stopStart + static_cast<int> (beat) - session.frame);
+    REQUIRE (session.processor.getCutter ().isCutting ());
+    CHECK (session.dryBetween (0, stopStart - 2));
+    CHECK_FALSE (session.dryBetween (stopStart, stopStart + static_cast<int> (beat)));
+    CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
 }
