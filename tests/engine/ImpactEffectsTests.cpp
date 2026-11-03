@@ -2097,20 +2097,51 @@ TEST_CASE ("A tail's level comes from its roll", "[impact]")
     CHECK (*std::max_element (silence.amplitude.begin(), silence.amplitude.end()) == 0.0);
     CHECK (std::all_of (silence.output.begin(), silence.output.end(), [] (float sample) { return sample == 0.0f; }));
 
-    // A full-scale tone on the tail's own note strikes it no harder than its
-    // RMS allows, the roll's own peak: a resonator would ring it about 20 dB
-    // louder than noise. (The resonant low-pass lifts the roll itself.)
+    // A full-scale tone on the tail's own note through a resonant cutoff
+    // strikes it from the roll as cut, not from what the resonance made of it:
+    // a resonator would ring it about 20 dB louder than noise.
     const auto tone = rollThenSilence (tailParameters (1000.0f), rate, 0.2, Source::note);
     const auto tonePeak = *std::max_element (tone.amplitude.begin(), tone.amplitude.end());
     CHECK_THAT (tonePeak, WithinRel (std::numbers::sqrt2 * tone.rollRms, 1.0e-6));
-    float rollPeak = 0.0f, loudest = 0.0f;
-    for (auto i = static_cast<std::size_t> (tone.strike / 3); i < static_cast<std::size_t> (tone.strike); ++i)
-        rollPeak = std::max (rollPeak, std::abs (tone.output[i]));
-    for (auto i = static_cast<std::size_t> (tone.strike + static_cast<int> (0.05 * rate)); i < tone.output.size(); ++i)
-        loudest = std::max (loudest, std::abs (tone.output[i]));
-    CAPTURE (tonePeak, rollPeak, loudest, tone.rollRms);
-    CHECK (tonePeak <= 1.01 * rollPeak);
-    CHECK (loudest <= 1.0001 * tonePeak);
+    CHECK_THAT (tone.rollRms, WithinRel (std::sqrt (0.5), 1.0e-3)); // the input's
+}
+
+TEST_CASE ("A tail is heard below the roll's peak, even a square's", "[impact]")
+{
+    // A square roll's RMS is its peak, so it strikes the tail at sqrt 2 times
+    // its peak. What keeps the heard tail below the roll's peak is that it is
+    // born under the duck, which the strike's cut starts: duck times decay
+    // peaks at 0.59 of the strike at a 1.2 s decay, 0.65 at 2 s.
+    constexpr double level = 0.8;
+    const auto square = [] (int i) { return static_cast<float> (std::sin (2.0 * pi * 110.0 * i / rate) >= 0.0 ? level : -level); };
+    auto with = tailParameters (18000.0f, 1.0f, 2000.0f), without = with; // open, so the square passes whole
+    with.filter.q = without.filter.q = 0.707f;
+    without.filter.tailLevel = 0.0f;
+    ImpactEffects tailed, plain;
+    for (auto* e : { &tailed, &plain })
+        e->prepare (rate);
+    tailed.setParameters (with);
+    plain.setParameters (without);
+    constexpr int length = 2400;
+    double struck = 0.0, heard = 0.0;
+    for (int i = 0; i < 3 * length + static_cast<int> (2.0 * rate); ++i)
+    {
+        if (i % length == 0)
+        {
+            const auto id = i == length || i == 2 * length ? rollCut (static_cast<std::size_t> (i / length - 1), 2) : singleCut();
+            tailed.startCut (id);
+            plain.startCut (id);
+        }
+        auto l1 = square (i), r1 = l1, l2 = l1, r2 = l1;
+        tailed.process (l1, r1);
+        plain.process (l2, r2);
+        struck = std::max (struck, tailed.diagnostics().tailAmplitude);
+        heard = std::max (heard, static_cast<double> (std::abs (l1 - l2)));
+    }
+    CAPTURE (struck, heard);
+    REQUIRE (struck > 1.4 * level); // struck above the roll's peak,
+    CHECK (heard < 0.66 * struck); // heard only after the duck,
+    CHECK (heard < level); // and so below the roll's peak.
 }
 
 TEST_CASE ("A tail ducks under every cut", "[impact]")
