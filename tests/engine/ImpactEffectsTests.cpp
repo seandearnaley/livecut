@@ -1918,7 +1918,7 @@ enum class Source { pink, silence, note };
 struct RollThenSilence
 {
     int strike = 0;
-    double rollRms = 0.0; // of the output over the roll, which is the filter's own
+    double rollRms = 0.0; // the smaller of the low-pass's before the makeup and the input's, over the roll
     std::vector<float> output;
     std::vector<double> amplitude, duck, hz;
 };
@@ -1933,7 +1933,7 @@ RollThenSilence rollThenSilence (const ImpactParameters& p, double sampleRate, d
     effects.setParameters (p);
     Pink pink;
     const auto note = detail::tailNoteHz (p.filter.cutoffHz);
-    double energy = 0.0;
+    double energy = 0.0, inputEnergy = 0.0;
     const auto total = r.strike + static_cast<int> (seconds * sampleRate);
     for (int i = 0; i < total; ++i)
     {
@@ -1948,14 +1948,18 @@ RollThenSilence rollThenSilence (const ImpactParameters& p, double sampleRate, d
         auto left = input, right = input;
         effects.process (left, right);
         if (i >= length && i < r.strike)
-            energy += left * static_cast<double> (left);
+        {
+            const auto beforeMakeup = left / effects.diagnostics().levelHoldGain; // no tail yet, at full wet
+            energy += beforeMakeup * beforeMakeup;
+            inputEnergy += static_cast<double> (input) * input;
+        }
         const auto& d = effects.diagnostics();
         r.output.push_back (left);
         r.amplitude.push_back (d.tailAmplitude);
         r.duck.push_back (d.tailDuck);
         r.hz.push_back (d.tailHz);
     }
-    r.rollRms = std::sqrt (energy / (2 * length));
+    r.rollRms = std::sqrt (std::min (energy, inputEnergy) / (2 * length));
     return r;
 }
 } // namespace
@@ -2384,4 +2388,45 @@ TEST_CASE ("A tail resets cleanly and allocates no memory", "[impact]")
     }
     CHECK (struck);
     CHECK (allocations == 0);
+}
+
+TEST_CASE ("A tail's strike is the roll before the makeup, and never above the roll as cut", "[impact]")
+{
+    // A = tailLevel * sqrt 2 * the smaller of two RMS over the roll: the
+    // low-pass's output before the makeup, and the filter's input, the roll as
+    // cut. Measured after the makeup, a lifting makeup raised the tail 5 dB;
+    // measured after the resonance alone, a tone on the cutoff raised it by q.
+    struct Case { const char* name; float cutoff; float q; bool tone; bool inputSmaller; };
+    for (const auto& c : { Case { "a tone on a resonant cutoff", 1000.0f, 3.0f, true, true },
+                           Case { "white noise through a resonant, dark sweep", 5000.0f, 3.0f, false, false } })
+    {
+        CAPTURE (c.name);
+        auto p = tailParameters (c.cutoff);
+        p.filter.q = c.q;
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (p);
+        Noise noise;
+        constexpr int length = 2400;
+        double filtered = 0.0, input = 0.0, hold = 1.0, peak = 0.0;
+        for (int i = 0; i < 4 * length + 400; ++i)
+        {
+            if (i % length == 0 && i <= 3 * length)
+                effects.startCut (i == length || i == 2 * length ? rollCut (static_cast<std::size_t> (i / length - 1), 2) : singleCut());
+            auto in = c.tone ? static_cast<float> (0.5 * std::sin (2.0 * pi * c.cutoff * i / rate)) : noise.next();
+            auto left = in, right = in;
+            effects.process (left, right);
+            if (i >= length && i < 3 * length)
+            {
+                hold = effects.diagnostics().levelHoldGain;
+                filtered += std::pow (left / hold, 2.0); // no tail yet, at full wet
+                input += static_cast<double> (in) * in;
+            }
+            peak = std::max (peak, effects.diagnostics().tailAmplitude);
+        }
+        CAPTURE (filtered, input, hold);
+        REQUIRE (hold < 0.9); // the makeup is cutting the resonance back
+        CHECK ((input < filtered) == c.inputSmaller);
+        CHECK_THAT (peak, WithinRel (std::numbers::sqrt2 * std::sqrt (std::min (filtered, input) / (2 * length)), 1.0e-5));
+    }
 }

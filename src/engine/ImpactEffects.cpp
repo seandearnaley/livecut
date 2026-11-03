@@ -356,10 +356,13 @@ void ImpactEffects::startTail (const CutIdentity& identity)
 {
     const auto& p = parameters.filter;
     // The cut after a roll's last strikes the tail, at tailLevel times the
-    // roll's RMS, so a roll of silence strikes nothing.
+    // roll's RMS, so a roll of silence strikes nothing. The RMS is the
+    // low-pass's before the makeup, but never above the roll's as cut, so
+    // neither the makeup nor the resonance can make a tail louder than its roll.
     if (tail.rollEnding && state.filterActive && p.tailLevel > 0.0f && tail.rollSamples > 0)
     {
-        const auto peak = p.tailLevel * std::numbers::sqrt2 * std::sqrt (tail.rollEnergy / static_cast<double> (tail.rollSamples));
+        const auto energy = std::min (tail.rollEnergy, tail.rollInputEnergy);
+        const auto peak = p.tailLevel * std::numbers::sqrt2 * std::sqrt (energy / static_cast<double> (tail.rollSamples));
         if (peak > 0.0)
         {
             // A silent tail starts at phase 0, so a strike sounds the same
@@ -377,7 +380,7 @@ void ImpactEffects::startTail (const CutIdentity& identity)
     tail.rollEnding = identity.cutCount >= 2 && identity.cutIndex + 1 == identity.cutCount;
     if (identity.cutIndex == 0)
     {
-        tail.rollEnergy = 0.0;
+        tail.rollEnergy = tail.rollInputEnergy = 0.0;
         tail.rollSamples = 0;
     }
     // Every cut ducks the tail, so the hits stay clean and it sings between them.
@@ -554,9 +557,10 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
     state.levelHoldGain = hold;
     if (sweep)
     {
-        // The tail joins the wet. The roll it measures is the sweep's own output.
+        // The tail joins the wet, and measures the roll.
         const auto heardLeft = hold * bandLeft, heardRight = hold * bandRight;
-        tail.rollEnergy += 0.5 * (heardLeft * heardLeft + heardRight * heardRight);
+        tail.rollEnergy += 0.5 * (bandLeft * bandLeft + bandRight * bandRight);
+        tail.rollInputEnergy += 0.5 * (left * left + right * right);
         ++tail.rollSamples;
         const auto ring = nextTail();
         left += mix * (heardLeft + ring - left);

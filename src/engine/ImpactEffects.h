@@ -148,7 +148,9 @@ private:
     // every cut. Plain values only, so ImpactEffects stays trivially copyable.
     struct Tail
     {
-        double rollEnergy = 0.0; // the sweep's output, over the current block
+        // Over the current block: the low-pass's output before the makeup,
+        // and the filter's input, the roll as cut.
+        double rollEnergy = 0.0, rollInputEnergy = 0.0;
         std::uint64_t rollSamples = 0;
         bool rollEnding = false; // the current cut is a roll's last
         double amplitude = 0.0, peak = 0.0, attackStep = 0.0, decay = 1.0;
