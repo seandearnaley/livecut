@@ -23,7 +23,8 @@ struct ImpactParameters
 {
     struct Filter
     {
-        enum class Type { lowPass, bandPass, highPass };
+        // band is engine-only: a high-pass at bandLowHz into a low-pass at bandHighHz.
+        enum class Type { lowPass, bandPass, highPass, band };
         bool enabled = false;
         Type type = Type::lowPass;
         float chance = 1.0f;
@@ -31,6 +32,8 @@ struct ImpactParameters
         float q = 0.707f; // [0.5, 8]
         float envelopeOctaves = 0.0f; // [-6, 6]
         float repeatOctaves = 0.0f; // [-4, 4]
+        float bandLowHz = 30.0f; // [30, 18000], band only
+        float bandHighHz = 18000.0f; // [30, 18000], band only
         float mix = 1.0f;
     } filter;
 
@@ -60,6 +63,21 @@ struct ImpactParameters
     float decayMs = 80.0f; // [5, 1000], decay time to -60 dB
 };
 
+namespace detail
+{
+// The pink-noise power a band keeps, with its edges widthOctaves apart and
+// resonance q, from the analogue high-pass/low-pass pair the band's SVFs
+// approximate. In octaves: a flat band that wide keeps the same power. It is
+// scale-invariant, so it depends only on the width and q. The first
+// ImpactEffects::prepare() tabulates it; this interpolates that table.
+inline constexpr double bandOpenOctaves = 9.23, bandOpenQ = 0.707; // 30 Hz-18 kHz, flat
+inline constexpr double bandPowerStep = 1.0 / 16.0, bandPowerMargin = 6.0; // octaves
+// For tests: the band's makeup reads the table directly.
+double bandPinkPower (double widthOctaves, double q);
+// For tests: the same integral, computed directly at any step.
+double integrateBandPinkPower (double widthOctaves, double q, double stepOctaves);
+} // namespace detail
+
 // JUCE-free, allocation-free stereo processing. Production rates are 8–384 kHz;
 // the engine also accepts 1 kHz for the existing deterministic timing fixtures.
 // Order: TPT state-variable filter, first-order ADAA drive, linked transient dynamics.
@@ -76,6 +94,11 @@ public:
         bool filterActive = false;
         bool driveActive = false;
         bool transientActive = false;
+        // The band's effective edges and linear level-hold gain on its latest
+        // sample; 0 Hz and a gain of 1 after a reset, a silent wet mix or a
+        // switch into band, until the band next runs.
+        double bandLowHz = 0.0, bandHighHz = 0.0;
+        double levelHoldGain = 1.0;
     };
 
     void prepare (double sampleRate);
@@ -103,11 +126,22 @@ private:
     };
 
     double nextEnvelope();
-    void processFilter (double& left, double& right, double envelope);
+    void adoptFilter();
+    void resetBand();
+    void processFilter (double& left, double& right, double envelope, double repeatProgress);
+    void processBand (double& left, double& right, double envelope, double repeatProgress, double mix);
     void processDrive (double& left, double& right, double envelope);
     void processTransient (double& left, double& right);
 
+    // The filter runs parameters.filter. A band switched off, or a type change
+    // into or out of a band, while it sounds holds it: it adopts the requested
+    // one only once its wet has ramped out.
     ImpactParameters parameters;
+    ImpactParameters::Filter requestedFilter;
+    // While held, the next cut detaches the filter from the shared envelope:
+    // it decays on at its held rate from where it was, and keeps its repeat.
+    bool filterHeld = false, filterDetached = false;
+    double filterEnvelope = 0.0, filterRepeatProgress = 0.0, heldDecayMultiplier = 0.0;
     Diagnostics state;
     double sampleRate = 48000.0;
     std::uint32_t rampSamples = 96;
@@ -117,6 +151,13 @@ private:
     std::uint64_t attackSamples = 0, attackPosition = 0;
     std::array<Ramp, 3> wet;
     std::array<FilterState, 2> filterState;
+    // The band's high-pass runs on filterState and its low-pass on bandState.
+    // Its edges (log2 Hz) and q glide toward targets latched by setParameters.
+    std::array<FilterState, 2> bandState;
+    double bandLowTarget = 0.0, bandHighTarget = 0.0;
+    double bandLow = 0.0, bandHigh = 0.0, bandQ = 0.0;
+    bool bandPrimed = false;
+    double smoothingPole = 0.0;
     std::array<DriveState, 2> driveState;
     double fastEnvelope = 0.0, slowEnvelope = 0.0;
     double transientAttack = 0.0, transientRelease = 0.0;

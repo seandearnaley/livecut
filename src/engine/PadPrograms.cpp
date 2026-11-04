@@ -19,7 +19,8 @@ double lerp (double a, double b, double t)
 
 bool isAvailable (PadProgram program)
 {
-    return program == PadProgram::cut || program == PadProgram::bounce || program == PadProgram::glitch;
+    return program == PadProgram::cut || program == PadProgram::bounce || program == PadProgram::glitch
+        || program == PadProgram::suction;
 }
 
 PadCaptions padCaptions (PadProgram program)
@@ -29,7 +30,7 @@ PadCaptions padCaptions (PadProgram program)
         case PadProgram::cut: return { "Density", "Re-edit" };
         case PadProgram::bounce: return { "Bounce", "Ratchet" };
         case PadProgram::glitch: return { "Rate", "Pitch" };
-        case PadProgram::suction:
+        case PadProgram::suction: return { "Band", "Squeeze" };
         case PadProgram::filter:
         case PadProgram::tape:
         case PadProgram::loops:
@@ -105,6 +106,33 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             break;
         }
         case PadProgram::suction:
+        {
+            // Gentle cuts underneath give the band its pulse.
+            mapping.procedure = Procedure::cutProc11;
+            mapping.seed = 404;
+            mapping.zones.x = padZone (x, 1, previous.x);
+            mapping.unitsPerBar = 16;
+            mapping.cut.stutterChance = .25;
+            mapping.cut.stutterArea = .5;
+            mapping.cut.maxRepeats = 1;
+            mapping.cut.minRepeats = 0;
+
+            // Both edges close in on the centre X picks; each cut opens them and they suck closed.
+            const auto centre = 120.0 * std::pow (5000.0 / 120.0, static_cast<double> (x));
+            const auto squeeze = .85 * y;
+            auto& filter = mapping.impact.filter;
+            filter.enabled = true;
+            filter.type = ImpactParameters::Filter::Type::band;
+            filter.chance = 1.f;
+            filter.mix = 1.f;
+            filter.bandLowHz = static_cast<float> (std::pow (30.0, 1.0 - squeeze) * std::pow (centre, squeeze));
+            filter.bandHighHz = static_cast<float> (std::pow (18000.0, 1.0 - squeeze) * std::pow (centre, squeeze));
+            filter.q = static_cast<float> (.707 + 1.8 * y);
+            filter.envelopeOctaves = 1.5f;
+            mapping.impact.attackMs = 1.f;
+            mapping.impact.decayMs = 180.f;
+            break;
+        }
         case PadProgram::filter:
         case PadProgram::tape:
         case PadProgram::loops:

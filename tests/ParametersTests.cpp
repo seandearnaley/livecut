@@ -772,3 +772,42 @@ TEST_CASE ("padSettings passes Straight to the cut parameters, and Classic never
         CHECK (padSettings (user, mapping).cut.straight == on);
     }
 }
+
+TEST_CASE ("padSettings carries the program's Impact", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    setValue (state, ids::impactFilterEnabled, 1);
+    setValue (state, ids::impactDriveEnabled, 1);
+    setValue (state, ids::impactTransientEnabled, 1);
+    setValue (state, ids::impactDecayMs, 500);
+    const auto user = reader.read();
+    REQUIRE (user.impact.filter.enabled);
+    REQUIRE (user.impact.drive.enabled);
+    REQUIRE (user.impact.transient.enabled);
+
+    // Suction's band reaches the engine.
+    const auto suction = engine::mapPad (engine::PadProgram::suction, .25f, .75f, {});
+    const auto& filter = padSettings (user, suction).impact.filter;
+    CHECK (filter.enabled);
+    CHECK (filter.type == engine::ImpactParameters::Filter::Type::band);
+    CHECK_THAT (filter.bandLowHz, WithinAbs (suction.impact.filter.bandLowHz, 0.0));
+    CHECK_THAT (filter.bandHighHz, WithinAbs (suction.impact.filter.bandHighHz, 0.0));
+    CHECK_THAT (filter.q, WithinAbs (suction.impact.filter.q, 0.0));
+    CHECK_THAT (filter.envelopeOctaves, WithinAbs (1.5, 0.0));
+    CHECK_THAT (padSettings (user, suction).impact.decayMs, WithinAbs (180.0, 0.0));
+    CHECK_FALSE (padSettings (user, suction).impact.drive.enabled);
+    CHECK_FALSE (padSettings (user, suction).impact.transient.enabled);
+
+    // Nothing from the Classic Impact page leaks onto the pad.
+    for (const auto program : { engine::PadProgram::cut, engine::PadProgram::bounce, engine::PadProgram::glitch })
+    {
+        INFO (static_cast<int> (program));
+        const auto impact = padSettings (user, engine::mapPad (program, .5f, .5f, {})).impact;
+        CHECK_FALSE (impact.filter.enabled);
+        CHECK_FALSE (impact.drive.enabled);
+        CHECK_FALSE (impact.transient.enabled);
+        CHECK_THAT (impact.decayMs, WithinAbs (engine::ImpactParameters{}.decayMs, 0.0));
+    }
+}

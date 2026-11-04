@@ -802,6 +802,54 @@ TEST_CASE ("Going idle mid-phrase stops cutting on that sample with a discontinu
     cutter.endRenderContext (1, &events);
 }
 
+// The rack used to freeze on idle and ring on with stale state at the next engage.
+TEST_CASE ("Going idle resets the effect rack", "[cutter][pad]")
+{
+    ImpactParameters impact;
+    impact.filter.enabled = true;
+    impact.filter.type = ImpactParameters::Filter::Type::band;
+    impact.filter.bandLowHz = 200.0f;
+    impact.filter.bandHighHz = 2000.0f;
+    impact.filter.q = 2.0f;
+    impact.filter.envelopeOctaves = 1.5f;
+    impact.decayMs = 1000.0f;
+    // The default tuning: a fresh resonator would otherwise crossfade from it on its first block.
+    ResonatorParameters resonator;
+    resonator.enabled = true;
+
+    // Both cutters hear the same input in the same blocks; only the first was engaged before.
+    Cutter used, fresh;
+    Host usedHost, freshHost;
+    PadEvents usedEvents, freshEvents;
+    for (auto* cutter : { &used, &fresh })
+    {
+        cutter->prepare (sampleRate);
+        cutter->setImpact (impact);
+        cutter->setResonator (resonator);
+    }
+    fresh.setIdle (true);
+    runPadSamples (used, usedHost, usedEvents, 5000);
+    runPadSamples (fresh, freshHost, freshEvents, 5000);
+    REQUIRE (used.isCutting());
+    REQUIRE (used.impact().diagnostics().envelope > 0.0);
+
+    used.setIdle (true);
+    runPadSamples (used, usedHost, usedEvents, 1);
+    runPadSamples (fresh, freshHost, freshEvents, 1);
+    CHECK_THAT (used.impact().diagnostics().envelope, WithinAbs (0.0, 0.0));
+
+    runPadSamples (used, usedHost, usedEvents, 24000 - 5001);
+    runPadSamples (fresh, freshHost, freshEvents, 24000 - 5001);
+    used.setIdle (false);
+    fresh.setIdle (false);
+    Buffer usedOutput (24000), freshOutput (24000);
+    run (used, usedHost, usedOutput);
+    run (fresh, freshHost, freshOutput);
+
+    REQUIRE (used.isCutting());
+    CHECK (usedOutput == freshOutput);
+}
+
 TEST_CASE ("A seek clears a pending restart", "[cutter][pad]")
 {
     Cutter cutter;

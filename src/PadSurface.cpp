@@ -13,6 +13,7 @@ Settings padSettings (const Settings& user, const engine::PadMapping& mapping)
     settings.cut = mapping.cut;
     settings.cut.straight = user.padStraight;
     settings.crusher = mapping.crusher;
+    settings.impact = mapping.impact;
     settings.wet = user.wet;
     settings.outputTrimDb = user.outputTrimDb;
     settings.requestedMode = user.requestedMode;

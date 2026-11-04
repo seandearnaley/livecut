@@ -85,7 +85,7 @@ TEST_CASE ("A quick tap cuts until the next beat, then fades over 5 ms", "[padga
 TEST_CASE ("Selecting an unavailable program leaves the active program alone", "[padgate]")
 {
     Driver d;
-    d.input.program = PadProgram::suction;
+    d.input.program = PadProgram::filter;
     auto step = d.next();
     checkStep (step, 0.f, true);
     CHECK_FALSE (step.programChanged);
@@ -93,7 +93,7 @@ TEST_CASE ("Selecting an unavailable program leaves the active program alone", "
     d.input.program = PadProgram::cut;
     d.input.touch = true;
     checkStep (d.next(), 1.f, false);
-    d.input.program = PadProgram::suction;
+    d.input.program = PadProgram::filter;
     while (d.sample < beat + fade)
     {
         const int k = d.sample;
@@ -231,7 +231,7 @@ TEST_CASE ("Hold only latches a touch on an available program", "[padgate]")
 {
     Driver d;
     d.input.hold = true;
-    d.input.program = PadProgram::suction;
+    d.input.program = PadProgram::filter;
     d.input.touch = true;
     d.until (2400);
     d.input.touch = false;
@@ -294,7 +294,7 @@ TEST_CASE ("A program switch lands on the next beat while engaged, and immediate
 TEST_CASE ("Programs not yet built never engage", "[padgate]")
 {
     Driver d;
-    d.input.program = GENERATE (PadProgram::suction, PadProgram::filter, PadProgram::tape,
+    d.input.program = GENERATE (PadProgram::filter, PadProgram::tape,
                                PadProgram::loops, PadProgram::rush);
     d.input.touch = true;
     d.input.hold = true;
@@ -361,7 +361,7 @@ TEST_CASE ("Pending programs follow the current selection and bar quantize", "[p
     CHECK_FALSE (d.gate.pendingProgram().has_value());
     d.input.program = PadProgram::bounce;
     d.next();
-    d.input.program = PadProgram::suction;
+    d.input.program = PadProgram::filter;
     d.next();
     CHECK_FALSE (d.gate.pendingProgram().has_value());
     d.input.program = PadProgram::glitch;

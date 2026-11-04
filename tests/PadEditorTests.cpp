@@ -221,9 +221,10 @@ TEST_CASE ("Program buttons select programs, and later programs are disabled", "
         buttons.push_back (button);
         CHECK (button->getButtonText() == names[i]);
         CHECK (button->getTitle().isNotEmpty());
-        if (i < 3)
+        if (i < 4)
         {
             CHECK (button->isEnabled());
+            CHECK (button->getTooltip().isNotEmpty());
             CHECK (button->getTooltip() != "Coming in a later update");
         }
         else
@@ -242,6 +243,12 @@ TEST_CASE ("Program buttons select programs, and later programs are disabled", "
 
     buttons[2]->onClick();
     CHECK (index (processor, livecut::ids::padProgram) == 2);
+
+    buttons[3]->onClick(); // Suction
+    CHECK (index (processor, livecut::ids::padProgram) == 3);
+    editor.refreshDisplay();
+    CHECK (buttons[3]->getToggleState());
+    CHECK_FALSE (buttons[2]->getToggleState());
 
     set (processor, livecut::ids::padProgram, 0); // the host moving the parameter lights the matching button
     editor.refreshDisplay();
@@ -363,6 +370,11 @@ TEST_CASE ("Axis captions follow the program", "[pad][editor]")
     CHECK (labelTexts (pad).contains ("Rate"));
     CHECK (labelTexts (pad).contains ("Pitch"));
     CHECK_FALSE (labelTexts (pad).contains ("Bounce"));
+
+    display.padActiveProgram.store (3);
+    editor.refreshDisplay();
+    CHECK (labelTexts (pad).contains ("Band"));
+    CHECK (labelTexts (pad).contains ("Squeeze"));
 
     display.padActiveProgram.store (0);
     editor.refreshDisplay();
@@ -521,9 +533,9 @@ TEST_CASE ("The ruler headline names the program and any pending switch", "[pad]
     CHECK (ruler->headlineText() == utf8 ("CUT → GLITCH ON THE BAR"));
 
     display.padPendingProgram.store (-1);
-    set (processor, livecut::ids::padProgram, 3);
+    set (processor, livecut::ids::padProgram, 4);
     editor.refreshDisplay();
-    CHECK (ruler->headlineText() == "SUCTION ISN'T AVAILABLE YET");
+    CHECK (ruler->headlineText() == "FILTER ISN'T AVAILABLE YET");
 
     // Idle, the chosen program is the one that will play.
     display.padEngaged.store (false);

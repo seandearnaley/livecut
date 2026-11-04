@@ -3,6 +3,7 @@
 #pragma once
 
 #include "engine/Cutter.h"
+#include "engine/ImpactEffects.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -27,6 +28,7 @@ struct PadMapping
     std::uint32_t seed;
     CutParameters cut;
     CrusherParameters crusher;
+    ImpactParameters impact; // off unless the program shapes its cuts
     PadZones zones;
     const char* xCaption;
     const char* yCaption;
