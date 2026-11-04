@@ -47,6 +47,8 @@ public:
     std::optional<PadProgram> pendingProgram() const { return pending; }
     // Remains engaged through an armed release and all nonzero fade samples.
     bool engaged() const { return state != State::closed; }
+    // Touched or latched: engaged, and neither releasing nor fading.
+    bool open() const { return state == State::open; }
 
 private:
     enum class State { closed, open, armed, fading };

@@ -113,8 +113,12 @@ void LivecutAudioProcessor::prepareToPlay (double sampleRate, int)
             if (configurationGeneration != operation)
                 return;
             padGate.prepare (sampleRate);
+            classicRelease = false;
+            classicEntryGain = 1.0f;
+            classicEntryStep = 1.0f / static_cast<float> (std::lround (.005 * sampleRate));
             currentMapping = livecut::engine::mapPad (padGate.activeProgram (), settings.padX, settings.padY, {});
             const auto effective = effectiveSettings (settings);
+            renderSettings = effective; // a first context never counts as a surface switch
             preparedHold.request (effective.hold);
             prepared->cutter.setIdle (settings.surface == livecut::Surface::pad);
             padGain = settings.surface == livecut::Surface::pad ? 0.0f : 1.0f;
@@ -362,6 +366,8 @@ void LivecutAudioProcessor::tryApplyMode ()
         capture.rolling ().interrupt ();
         wetHold.interrupt ();
         padGate.reset ();
+        classicRelease = false;
+        classicEntryGain = 1.0f;
         stream->cutter.setIdle (requested.surface == livecut::Surface::pad);
         padGain = requested.surface == livecut::Surface::pad ? 0.0f : 1.0f;
         const auto effective = effectiveSettings (requested);
@@ -540,6 +546,7 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
                     // Closed and idle; a latched Hold reopens the gate on the first sample.
                     padGate.resync ();
                     padGain = 0.0f;
+                    classicRelease = false;
                     resources.cutter.setIdle (true);
                 }
                 else if (fromClassic)
@@ -547,17 +554,24 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
                     // Classic was mid-cut: let go like a lifted finger rather than cut to the input.
                     padGate.arm ();
                     padGain = 1.0f;
+                    classicRelease = true;
                 }
                 const auto mapping = livecut::engine::mapPad (padGate.activeProgram (), context.settings.padX,
                                                              context.settings.padY, currentMapping.zones);
-                if (padGate.engaged () && !livecut::engine::sameDiscreteState (mapping, currentMapping))
+                if (padGate.engaged () && !classicRelease && !livecut::engine::sameDiscreteState (mapping, currentMapping))
                     resources.cutter.restartAtNextUnit ();
                 currentMapping = mapping;
             }
             else
             {
+                // From the Pad surface, Classic's cuts fade in over the input rather than cut to it.
+                if (newEpoch || !context.running)
+                    classicEntryGain = 1.0f;
+                else if (renderSettings.surface == livecut::Surface::pad)
+                    classicEntryGain = resources.cutter.isCutting () ? padGain : 0.0f;
                 resources.cutter.setIdle (false);
                 padGain = 1.0f;
+                classicRelease = false;
             }
             processingBeatsPerSample = context.timing.bpm / 60.0 / processingSampleRate;
             processingBeatsPerBar = context.timing.beatsPerBar;
@@ -597,6 +611,7 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
                 {
                     padGate.reset ();
                     padGain = 0.0f;
+                    classicRelease = false;
                     resources.cutter.setIdle (true);
                 }
                 else
@@ -606,11 +621,19 @@ void LivecutAudioProcessor::process (juce::AudioBuffer<float> &buffer, bool bypa
                     const auto step = padGate.process ({false, settings.padTouch, settings.padHold,
                                                        settings.padProgram, settings.padQuantize},
                                                       position.beatsIntoBar, processingBeatsPerBar, processingBeatsPerSample);
+                    if (classicRelease && (step.idle || padGate.open ()))
+                    {
+                        // Faded to the input, or touched: from here the pad's program plays.
+                        classicRelease = false;
+                        applyRenderSettings (settings);
+                    }
                     if (step.programChanged)
                     {
                         currentMapping = livecut::engine::mapPad (padGate.activeProgram (), settings.padX, settings.padY, {-1, -1});
                         applyRenderSettings (settings);
-                        resources.cutter.restartAtNextUnit ();
+                        // Classic's releasing cuts are not the program's to restart.
+                        if (!classicRelease)
+                            resources.cutter.restartAtNextUnit ();
                     }
                     resources.cutter.setIdle (step.idle);
                     padGain = step.gain;
@@ -745,6 +768,13 @@ void LivecutAudioProcessor::processOutput (int, float dryLeft, float dryRight, f
         left = dryLeft + padGain * (left - dryLeft);
         right = dryRight + padGain * (right - dryRight);
     }
+    else if (classicEntryGain < 1.0f)
+    {
+        left = dryLeft + classicEntryGain * (left - dryLeft);
+        right = dryRight + classicEntryGain * (right - dryRight);
+        if (stream->cutter.isCutting ())
+            classicEntryGain = std::min (1.0f, classicEntryGain + classicEntryStep);
+    }
     if (collectingPacket)
         return; // collect inner wet; consumers run at its delayed boundary
     wetHold.process (left, right, processingBeatsPerSample);
@@ -871,6 +901,12 @@ livecut::Settings LivecutAudioProcessor::effectiveSettings (const livecut::Setti
 {
     if (user.surface == livecut::Surface::classic)
         return user;
+    if (classicRelease)
+    {
+        auto settings = user;
+        settings.hold = false; // the Pad surface never holds
+        return settings;
+    }
     return livecut::padSettings (user, currentMapping);
 }
 
