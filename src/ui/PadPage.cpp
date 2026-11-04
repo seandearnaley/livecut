@@ -35,7 +35,7 @@ constexpr std::array<ProgramInfo, engine::padProgramCount> programInfo {
     ProgramInfo { "triplets", "Left to right: more triplet bounce, with halftime bars at the far right. Up: ratchets climb faster and higher." },
     ProgramInfo { "repeats", "Left to right: faster repeats that get crunchier as they speed up. Up: each repeat steps from falling to rising pitch." },
     ProgramInfo { "squeeze", "Left to right: the band slides from lows to highs. Up: it squeezes narrower and sings, breathing with every cut." },
-    ProgramInfo { "resonance", "" },
+    ProgramInfo { "resonance", "Left to right: the filter opens from dark to bright. Up: it rings, and every roll ends on a tuned note that ducks under the hits." },
     ProgramInfo { "stops", "" },
     ProgramInfo { "nested loops", "" },
     ProgramInfo { "rolls", "" },

@@ -174,19 +174,66 @@ ImpactParameters suction (double x, double y = 1.0)
     return mapPad (PadProgram::suction, static_cast<float> (x), static_cast<float> (y), {}).impact;
 }
 
-// The band's steady-state sine gain with the level hold divided back out,
-// sample by sample, using the hold gain the diagnostics report.
-double preHoldGain (const ImpactParameters& parameters, double frequency)
+ImpactParameters sweepParameters (float cutoffHz, float q = 0.707f)
+{
+    ImpactParameters p;
+    p.filter.enabled = true;
+    p.filter.type = ImpactParameters::Filter::Type::sweep;
+    p.filter.cutoffHz = cutoffHz;
+    p.filter.q = q;
+    return p;
+}
+
+// Filter's sweep from the pad's own mapping, so a retuned curve retunes these
+// tests too. y 1 is its most resonant, with its loudest, longest tail.
+ImpactParameters filterProgram (double x, double y = 1.0)
+{
+    return mapPad (PadProgram::filter, static_cast<float> (x), static_cast<float> (y), {}).impact;
+}
+
+// Pink noise through `first`, then `second` from 500 ms, against the open
+// band's output, in dB. The level 500 ms after the change is measured, so the
+// synthetic noise's energy outside 30 Hz-18 kHz, which every band removes,
+// cancels.
+double pinkLevel (const ImpactParameters& first, const ImpactParameters& second)
 {
     ImpactEffects effects;
     effects.prepare (rate);
+    effects.setParameters (first);
+    effects.startCut ({});
+    Pink pinkLeft, pinkRight;
+    pinkRight.white.state = 0x89abcdefu;
+    const auto half = static_cast<int> (0.5 * rate);
+    double inputEnergy = 0.0, outputEnergy = 0.0;
+    for (int i = 0; i < 6 * half; ++i)
+    {
+        if (i == half)
+            effects.setParameters (second);
+        auto left = pinkLeft.next(), right = pinkRight.next();
+        const auto inLeft = static_cast<double> (left), inRight = static_cast<double> (right);
+        effects.process (left, right);
+        if (i >= 2 * half)
+        {
+            inputEnergy += inLeft * inLeft + inRight * inRight;
+            outputEnergy += left * static_cast<double> (left) + right * static_cast<double> (right);
+        }
+    }
+    return decibels (std::sqrt (outputEnergy / inputEnergy));
+}
+
+// The band's steady-state sine gain with the level hold divided back out,
+// sample by sample, using the hold gain the diagnostics report.
+double preHoldGain (const ImpactParameters& parameters, double frequency, double sampleRate = rate)
+{
+    ImpactEffects effects;
+    effects.prepare (sampleRate);
     effects.setParameters (parameters);
     effects.startCut ({});
-    const auto count = static_cast<int> (rate);
+    const auto count = static_cast<int> (sampleRate);
     double inputEnergy = 0.0, outputEnergy = 0.0;
     for (int i = 0; i < 2 * count; ++i)
     {
-        const auto input = static_cast<float> (0.05 * std::sin (2.0 * pi * frequency * i / rate));
+        const auto input = static_cast<float> (0.05 * std::sin (2.0 * pi * frequency * i / sampleRate));
         auto left = input, right = input;
         effects.process (left, right);
         const auto filtered = left / effects.diagnostics().levelHoldGain;
@@ -781,6 +828,46 @@ TEST_CASE ("Classic filter types are bit-identical", "[impact]")
     CHECK (render (ImpactParameters::Filter::Type::highPass) == UINT64_C (0x7217203d7ef5f2b1));
 }
 
+TEST_CASE ("A band is bit-identical", "[impact]")
+{
+    // Measured on Suction's band before the sweep type existed: breathing at
+    // its 16ths, a jump the glide smooths, a repeat shift, and a switch to a
+    // Classic low-pass and back that the hold fades across.
+    const auto render = [] (double x, double y)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        auto shifted = suction (0.2, 0.9);
+        shifted.filter.repeatOctaves = 0.5f;
+        auto lowPass = shifted;
+        lowPass.filter.type = ImpactParameters::Filter::Type::lowPass;
+        lowPass.filter.cutoffHz = 1500.0f;
+        effects.setParameters (suction (x, y));
+        Pink pinkLeft, pinkRight;
+        pinkRight.white.state = 0x89abcdefu;
+        Fnv1a hash;
+        for (int i = 0; i < 48000; ++i)
+        {
+            if (i == 20000)
+                effects.setParameters (shifted);
+            if (i == 30000)
+                effects.setParameters (lowPass);
+            if (i == 39000)
+                effects.setParameters (suction (x, y));
+            if (i % 6000 == 0)
+                effects.startCut ({ 404, 0, 0.0, 0.0, static_cast<std::size_t> ((i / 6000) % 8), 8 });
+            auto left = pinkLeft.next(), right = pinkRight.next();
+            effects.process (left, right);
+            hash.add (left);
+            hash.add (right);
+        }
+        return hash.value;
+    };
+    CHECK (render (0.0, 1.0) == UINT64_C (0x676bb7f655b3a29c));
+    CHECK (render (0.5, 0.5) == UINT64_C (0x3a39408185122e38));
+    CHECK (render (1.0, 0.25) == UINT64_C (0x977e746dd9b18ecb));
+}
+
 TEST_CASE ("Disabling a Classic filter at a cut is unchanged", "[impact]")
 {
     // Measured on the ImpactEffects of 069eecb, before a disabled band held its
@@ -1361,6 +1448,7 @@ struct TypeSwitch
 {
     double largestError = 0.0; // against the unswitched twin times the ramp
     bool sameShape = true;
+    bool sameHighEdge = true; // a sweep's shape is its high edge; its low edge is always 30 Hz
     float switchedStep = 0.0f, fromStep = 0.0f, toStep = 0.0f;
 };
 
@@ -1430,7 +1518,10 @@ TypeSwitch switchType (const ImpactParameters& from, const ImpactParameters& to)
         const auto ramp = 1.0 - (k + 1) / 96.0;
         result.largestError = std::max (result.largestError, std::abs (l1 - (input + ramp * (static_cast<double> (l2) - input))));
         if (k < 95)
+        {
             result.sameShape = result.sameShape && switched.diagnostics().bandLowHz == unchanged.diagnostics().bandLowHz;
+            result.sameHighEdge = result.sameHighEdge && switched.diagnostics().bandHighHz == unchanged.diagnostics().bandHighHz;
+        }
     }
     return result;
 }
@@ -1563,4 +1654,808 @@ TEST_CASE ("An open band's breathing doesn't dip the level at high rates", "[imp
     }
     CAPTURE (deepest);
     CHECK (deepest > -0.15);
+}
+
+TEST_CASE ("A sweep's edges are where it says", "[impact]")
+{
+    for (const auto sampleRate : { 44100.0, 48000.0, 96000.0 })
+        for (const auto cutoff : { 200.0, 2000.0, 8000.0 })
+        {
+            CAPTURE (sampleRate, cutoff);
+            const auto p = sweepParameters (static_cast<float> (cutoff));
+            CHECK_THAT (decibels (preHoldGain (p, cutoff, sampleRate)), WithinAbs (-3.0, 1.0));
+            CHECK_THAT (decibels (preHoldGain (p, 30.0, sampleRate)), WithinAbs (-3.0, 1.0)); // the fixed high-pass
+            if (4.0 * cutoff < 0.45 * sampleRate)
+                CHECK (decibels (preHoldGain (p, 4.0 * cutoff, sampleRate)) < -20.0);
+        }
+}
+
+// The analogue two-pole low-pass's resonant peak: q / sqrt (1 - 1 / 4q^2) above
+// q 1/sqrt 2, where it has one, else 1.
+double lowPassPeak (double q)
+{
+    return q > 1.0 / std::numbers::sqrt2 ? q / std::sqrt (1.0 - 1.0 / (4.0 * q * q)) : 1.0;
+}
+
+TEST_CASE ("A sweep never lifts, and folds its resonant peak into its makeup", "[impact]")
+{
+    // The makeup is min (1, sqrt (P_open / P_s (w, q)), 2 / peak (q)): it only
+    // ever takes back what the resonance adds, and a tone on the peak gains at
+    // most 6 dB. Lifting a dark sweep to pink noise's level raised bass-heavy
+    // material 5 dB, and a bass note on a resonant cutoff 8 dB.
+    ImpactEffects effects;
+    effects.prepare (rate);
+    const auto open = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, detail::bandPowerStep);
+    for (const auto cutoff : { 200.0f, 1000.0f, 5000.0f, 18000.0f })
+        for (const auto q : { 0.5f, 0.707f, 1.0f, 1.5f, 2.5f, 3.0f, 5.0f, 8.0f })
+        {
+            CAPTURE (cutoff, q);
+            effects.reset();
+            effects.setParameters (sweepParameters (cutoff, q));
+            effects.startCut ({});
+            settle (effects, 200);
+            const auto hold = effects.diagnostics().levelHoldGain;
+            const auto width = std::log2 (std::min (static_cast<double> (cutoff), 18000.0) / 30.0);
+            const auto expected = std::min ({ 1.0, std::sqrt (open / detail::sweepPinkPower (width, q)), 2.0 / lowPassPeak (q) });
+            CHECK_THAT (hold, WithinRel (expected, 1.0e-12));
+            CHECK (hold * lowPassPeak (q) <= 2.0 * (1.0 + 1.0e-12));
+        }
+
+    // A full-scale tone on the cutoff gains at most 6 dB at any q; one in the
+    // passband of an unresonant sweep isn't lifted at all.
+    const auto peakOut = [] (float cutoff, float q, double frequency)
+    {
+        ImpactEffects e;
+        e.prepare (rate);
+        e.setParameters (sweepParameters (cutoff, q));
+        e.startCut ({});
+        double largest = 0.0;
+        for (int i = 0; i < 48000; ++i)
+        {
+            auto left = static_cast<float> (std::sin (2.0 * pi * frequency * i / rate)), right = left;
+            e.process (left, right);
+            if (i >= 24000)
+                largest = std::max (largest, static_cast<double> (std::abs (left)));
+        }
+        return largest;
+    };
+    for (const auto cutoff : { 200.0f, 2000.0f })
+    {
+        for (const auto q : { 1.5f, 3.0f, 5.0f, 8.0f })
+        {
+            CAPTURE (cutoff, q);
+            CHECK (decibels (peakOut (cutoff, q, cutoff)) <= 6.05);
+        }
+        CAPTURE (cutoff);
+        CHECK (decibels (peakOut (cutoff, 0.707f, 0.25 * cutoff)) <= 0.05);
+    }
+}
+
+TEST_CASE ("A sweep's level on pink noise is its makeup times what it passes", "[impact]")
+{
+    // Pink noise through Filter's own path, against the open band: the level
+    // is the makeup times the pink power the sweep keeps, so a dark sweep is
+    // quieter on broadband material, as any low-pass is, and the resonant top
+    // is held. It is never above the open filter's.
+    const auto open = bandParameters (30.0f, 18000.0f);
+    const auto openSweep = sweepParameters (18000.0f);
+    const auto reference = pinkLevel (open, open);
+    const auto openPower = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, detail::bandPowerStep);
+    for (const auto x : { 0.0, 0.5, 1.0 })
+    {
+        for (int step = 0; step <= 10; ++step)
+        {
+            const auto y = step / 10.0;
+            const auto p = filterProgram (x, y);
+            const auto q = static_cast<double> (p.filter.q);
+            const auto width = std::log2 (std::min (static_cast<double> (p.filter.cutoffHz), 18000.0) / 30.0);
+            const auto kept = detail::sweepPinkPower (width, q) / openPower;
+            const auto makeup = std::min ({ 1.0, std::sqrt (1.0 / kept), 2.0 / lowPassPeak (q) });
+            const auto predicted = 10.0 * std::log10 (makeup * makeup * kept);
+            const auto steady = pinkLevel (p, p) - reference;
+            const auto sweeping = pinkLevel (openSweep, p) - reference; // 500 ms after a jump from open
+            CAPTURE (x, y, q, makeup, predicted, steady, sweeping);
+            // Measured within 0.08 dB below 18 kHz. At 18 kHz, near Nyquist, the
+            // bilinear SVF's resonance adds less than the analogue prototype's,
+            // up to 0.72 dB less at y 1, so the level dips that much instead.
+            const auto below = x < 1.0 ? 0.15 : 0.85;
+            CHECK (steady >= predicted - below);
+            CHECK (steady <= predicted + 0.15);
+            CHECK_THAT (sweeping, WithinAbs (steady, 0.01));
+            CHECK (steady <= 0.05);
+        }
+    }
+}
+
+TEST_CASE ("A sweep's pink power table matches its integral", "[impact]")
+{
+    ImpactEffects effects;
+    effects.prepare (rate); // builds the tables
+    const auto powerDecibels = [] (double ratio) { return 10.0 * std::log10 (ratio); };
+
+    // Open, the sweep's table gives the open band's power.
+    const auto open = detail::integrateBandPinkPower (detail::bandOpenOctaves, detail::bandOpenQ, 1.0 / 1024.0);
+    CHECK_THAT (powerDecibels (detail::sweepPinkPower (detail::bandOpenOctaves, detail::bandOpenQ) / open), WithinAbs (0.0, 0.05));
+
+    for (const auto q : { 0.5, 0.707, 1.3, 2.507, 5.0, 8.0 })
+        for (const auto width : { 1.0 / 12.0, 0.1, 0.37, 1.385, 2.737, 4.385, 9.23, 12.49 })
+        {
+            CAPTURE (q, width);
+            const auto direct = detail::integrateSweepPinkPower (width, q, 1.0 / 1024.0);
+            CHECK_THAT (powerDecibels (detail::sweepPinkPower (width, q) / direct), WithinAbs (0.0, 0.05));
+        }
+
+    // Wider keeps more, up to a moderate q.
+    for (const auto q : { 0.5, 0.707, 1.0, 1.4 })
+    {
+        CAPTURE (q);
+        auto previous = 0.0;
+        bool increasing = true;
+        for (auto width = 1.0 / 12.0; width <= 12.5; width += 1.0 / 64.0)
+        {
+            const auto power = detail::sweepPinkPower (width, q);
+            increasing = increasing && power > previous;
+            previous = power;
+        }
+        CHECK (increasing);
+    }
+}
+
+TEST_CASE ("A sweep glides when its cutoff jumps", "[impact]")
+{
+    // A loud tone both cutoffs pass, so only the shape and its makeup move.
+    // Unsmoothed, the makeup alone would step by 0.8 times its change, many
+    // times the tone's own slew.
+    const auto largestStep = [] (float from, float to)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (sweepParameters (from, 2.0f));
+        effects.startCut ({});
+        const auto change = static_cast<int> (0.5 * rate);
+        float previous = 0.0f, largest = 0.0f;
+        for (int i = 0; i < 2 * change; ++i)
+        {
+            if (i == change)
+                effects.setParameters (sweepParameters (to, 2.0f));
+            const auto input = static_cast<float> (0.8 * std::sin (2.0 * pi * 100.0 * i / rate));
+            auto left = input, right = input;
+            effects.process (left, right);
+            if (i >= change)
+                largest = std::max (largest, std::abs (left - previous));
+            previous = left;
+        }
+        return largest;
+    };
+    const auto still = std::max (largestStep (2000.0f, 2000.0f), largestStep (300.0f, 300.0f));
+    CHECK (largestStep (2000.0f, 300.0f) <= 1.05f * still); // measured 0.97
+    CHECK (largestStep (300.0f, 2000.0f) <= 1.05f * still); // measured 1.00
+}
+
+TEST_CASE ("A sweep's high-pass stays at 30 Hz", "[impact]")
+{
+    // The envelope and the repeats move only the low-pass edge.
+    auto p = sweepParameters (1000.0f, 2.0f);
+    p.filter.envelopeOctaves = 2.0f;
+    p.filter.repeatOctaves = -2.0f;
+    p.attackMs = 0.0f;
+    p.decayMs = 100.0f;
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (p);
+    bool lowFixed = true;
+    double largestError = 0.0;
+    for (int i = 0; i < 24000; ++i)
+    {
+        if (i % 3000 == 0)
+            effects.startCut ({ 505, 0, 0.0, 0.0, static_cast<std::size_t> ((i / 3000) % 4), 4 });
+        auto left = static_cast<float> (0.3 * std::sin (0.05 * i)), right = left;
+        effects.process (left, right);
+        const auto& d = effects.diagnostics();
+        lowFixed = lowFixed && d.bandLowHz == 30.0;
+        const auto expected = std::clamp (1000.0 * std::exp2 (2.0 * d.envelope - 2.0 * d.repeatProgress),
+                                          30.0 * std::exp2 (1.0 / 12.0), 0.45 * rate);
+        largestError = std::max (largestError, std::abs (d.bandHighHz / expected - 1.0));
+    }
+    CHECK (lowFixed);
+    CHECK (largestError < 1.0e-12);
+}
+
+TEST_CASE ("A sweep switched off keeps its shape while it fades", "[impact]")
+{
+    // Pad to Cut: Cut's Impact is off.
+    const auto sweep = filterProgram (0.5);
+    auto off = sweep;
+    off.filter = ImpactParameters::Filter {};
+    const auto result = switchType (sweep, off);
+    CAPTURE (result.largestError, result.switchedStep, result.fromStep, result.toStep);
+    CHECK (result.largestError < 1.0e-6);
+    CHECK (result.sameHighEdge);
+    CHECK (result.switchedStep <= 1.1f * std::max (result.fromStep, result.toStep)); // measured 1.0
+}
+
+TEST_CASE ("A sweep switched to or from a band or a low-pass keeps its shape while it fades", "[impact]")
+{
+    const auto sweep = filterProgram (0.5);
+    const auto band = suction (0.5);
+    const auto lowPass = suctionLowPass();
+    struct Case { const ImpactParameters* from; const ImpactParameters* to; bool smoothedAfter; };
+    for (const auto& c : { Case { &sweep, &band, true }, Case { &band, &sweep, true },
+                           Case { &sweep, &lowPass, false }, Case { &lowPass, &sweep, true } })
+    {
+        CAPTURE (static_cast<int> (c.from->filter.type), static_cast<int> (c.to->filter.type));
+        const auto result = switchType (*c.from, *c.to);
+        CAPTURE (result.largestError, result.switchedStep, result.fromStep, result.toStep);
+        CHECK (result.largestError < 1.0e-6);
+        CHECK (result.sameShape);
+        CHECK (result.sameHighEdge);
+        CHECK (result.switchedStep <= 1.35f * std::max (result.fromStep, result.toStep)); // measured at most 1.22
+        checkTakesOver (*c.from, *c.to, c.smoothedAfter);
+    }
+}
+
+namespace
+{
+// A sweep with a tail, as at the top of Filter's pad unless told otherwise.
+ImpactParameters tailParameters (float cutoffHz, float level = 1.0f, float decayMs = 1200.0f)
+{
+    auto p = sweepParameters (cutoffHz, 2.0f);
+    p.filter.tailLevel = level;
+    p.filter.tailDecayMs = decayMs;
+    return p;
+}
+
+CutIdentity singleCut() { return { 505, 0, 0.0, 0.0, 0, 1 }; }
+CutIdentity rollCut (std::size_t index, std::size_t count) { return { 505, 0, 0.0, 0.0, index, count }; }
+int rampSamplesAt (double sampleRate) { return static_cast<int> (std::ceil (0.002 * sampleRate)); }
+
+enum class Source { pink, silence, note };
+
+// A single cut brings the wet in, a two-cut roll plays the source, and then a
+// single cut strikes the tail, with silence from the strike on. Cuts are 50 ms.
+struct RollThenSilence
+{
+    int strike = 0;
+    double rollRms = 0.0; // the smaller of the low-pass's before the makeup and the input's, over the roll
+    std::vector<float> output;
+    std::vector<double> amplitude, duck, hz;
+};
+
+RollThenSilence rollThenSilence (const ImpactParameters& p, double sampleRate, double seconds, Source source = Source::pink)
+{
+    RollThenSilence r;
+    const auto length = static_cast<int> (0.05 * sampleRate);
+    r.strike = 3 * length;
+    ImpactEffects effects;
+    effects.prepare (sampleRate);
+    effects.setParameters (p);
+    Pink pink;
+    const auto note = detail::tailNoteHz (p.filter.cutoffHz);
+    double energy = 0.0, inputEnergy = 0.0;
+    const auto total = r.strike + static_cast<int> (seconds * sampleRate);
+    for (int i = 0; i < total; ++i)
+    {
+        if (i == 0 || i == r.strike)
+            effects.startCut (singleCut());
+        if (i == length || i == 2 * length)
+            effects.startCut (rollCut (static_cast<std::size_t> (i / length - 1), 2));
+        auto input = source == Source::pink ? pink.next()
+            : source == Source::note ? static_cast<float> (std::sin (2.0 * pi * note * i / sampleRate)) : 0.0f;
+        if (i >= r.strike)
+            input = 0.0f;
+        auto left = input, right = input;
+        effects.process (left, right);
+        if (i >= length && i < r.strike)
+        {
+            const auto beforeMakeup = left / effects.diagnostics().levelHoldGain; // no tail yet, at full wet
+            energy += beforeMakeup * beforeMakeup;
+            inputEnergy += static_cast<double> (input) * input;
+        }
+        const auto& d = effects.diagnostics();
+        r.output.push_back (left);
+        r.amplitude.push_back (d.tailAmplitude);
+        r.duck.push_back (d.tailDuck);
+        r.hz.push_back (d.tailHz);
+    }
+    r.rollRms = std::sqrt (std::min (energy, inputEnergy) / (2 * length));
+    return r;
+}
+} // namespace
+
+TEST_CASE ("A tail strikes on the cut after a roll", "[impact]")
+{
+    // Cuts every 2000 samples: a single, a three-cut roll, then singles. The
+    // cut after the roll's last, at 8000, strikes.
+    enum class Variant { plain, silent, held, cutShort };
+    const auto firstStrike = [] (Variant variant, bool& decayingAfter)
+    {
+        auto p = tailParameters (1000.0f);
+        if (variant == Variant::silent)
+            p.filter.tailLevel = 0.0f;
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (p);
+        Pink pink;
+        int first = -1;
+        double previous = 0.0;
+        decayingAfter = true;
+        for (int i = 0; i < 16000; ++i)
+        {
+            if (i % 2000 == 0)
+            {
+                const auto k = static_cast<std::size_t> (i / 2000);
+                if (variant == Variant::held && k == 4)
+                {
+                    auto off = p;
+                    off.filter = ImpactParameters::Filter {};
+                    effects.setParameters (off);
+                }
+                const auto inRoll = k >= 1 && k <= 3 && ! (variant == Variant::cutShort && k == 3);
+                effects.startCut (inRoll ? rollCut (k - 1, 3) : singleCut());
+            }
+            auto left = pink.next(), right = left;
+            effects.process (left, right);
+            const auto amplitude = effects.diagnostics().tailAmplitude;
+            if (first < 0 && amplitude > 0.0)
+                first = i;
+            if (i >= 8000 + rampSamplesAt (rate))
+                decayingAfter = decayingAfter && amplitude < previous;
+            previous = amplitude;
+        }
+        return first;
+    };
+    bool decaying = false;
+    CHECK (firstStrike (Variant::plain, decaying) == 8000); // never on the roll's own cuts
+    CHECK (decaying); // and singles after it strike nothing
+    CHECK (firstStrike (Variant::silent, decaying) == -1);
+    CHECK (firstStrike (Variant::held, decaying) == -1);
+    CHECK (firstStrike (Variant::cutShort, decaying) == -1); // a roll that never reached its last cut
+}
+
+TEST_CASE ("A tail is tuned to the cutoff's note", "[impact]")
+{
+    const auto semitones = [] (int n) { return 440.0 * std::exp2 (n / 12.0); };
+    CHECK_THAT (detail::tailNoteHz (200.0), WithinRel (semitones (-2), 1.0e-12)); // G3, an octave up to G4
+    CHECK_THAT (detail::tailNoteHz (440.0), WithinRel (440.0, 1.0e-12));
+    CHECK_THAT (detail::tailNoteHz (1000.0), WithinRel (semitones (14), 1.0e-12)); // B5
+    CHECK_THAT (detail::tailNoteHz (5000.0), WithinRel (semitones (6), 1.0e-12)); // D#8 to D#5
+    CHECK_THAT (detail::tailNoteHz (18000.0), WithinRel (semitones (4), 1.0e-12)); // C#5
+    for (int step = 0; step <= 100; ++step)
+    {
+        const auto cutoff = 200.0 * std::pow (90.0, step / 100.0);
+        const auto note = detail::tailNoteHz (cutoff);
+        CAPTURE (cutoff, note);
+        CHECK (note >= semitones (-9) * (1.0 - 1.0e-12));
+        CHECK (note < semitones (15));
+        const auto apart = 12.0 * std::log2 (note / cutoff); // whole octaves and under half a semitone
+        CHECK (std::abs (apart - 12.0 * std::round (apart / 12.0)) <= 0.5 + 1.0e-9);
+    }
+
+    for (const auto sampleRate : { 44100.0, 48000.0, 96000.0 })
+        for (const auto cutoff : { 200.0f, 1000.0f })
+        {
+            CAPTURE (sampleRate, cutoff);
+            const auto r = rollThenSilence (tailParameters (cutoff), sampleRate, 0.3);
+            const auto note = detail::tailNoteHz (cutoff);
+            // Zero crossings from 50 ms after the strike, when the filter's own
+            // ringing is gone, for 200 ms, interpolated within their samples.
+            const auto from = r.strike + static_cast<int> (0.05 * sampleRate);
+            const auto to = from + static_cast<int> (0.2 * sampleRate);
+            double firstCrossing = -1.0, lastCrossing = -1.0;
+            int crossings = 0;
+            for (int i = from + 1; i < to; ++i)
+            {
+                const auto a = static_cast<double> (r.output[static_cast<std::size_t> (i - 1)]);
+                const auto b = static_cast<double> (r.output[static_cast<std::size_t> (i)]);
+                if ((a < 0.0) != (b < 0.0))
+                {
+                    const auto t = i - 1 + a / (a - b);
+                    if (firstCrossing < 0.0)
+                        firstCrossing = t;
+                    lastCrossing = t;
+                    ++crossings;
+                }
+            }
+            REQUIRE (crossings > 10);
+            const auto measured = (crossings - 1) / (2.0 * (lastCrossing - firstCrossing) / sampleRate);
+            CHECK_THAT (measured, WithinRel (note, 1.0e-4)); // measured within 3e-6
+        }
+}
+
+TEST_CASE ("A tail decays over its decay time", "[impact]")
+{
+    for (const auto sampleRate : { 44100.0, 96000.0 })
+        for (const auto decayMs : { 300.0f, 900.0f })
+        {
+            CAPTURE (sampleRate, decayMs);
+            const auto r = rollThenSilence (tailParameters (1000.0f, 0.5f, decayMs), sampleRate, 1.8 * decayMs / 1000.0);
+            const auto top = static_cast<std::size_t> (r.strike + rampSamplesAt (sampleRate) - 1); // the attack's end
+            const auto peak = r.amplitude[top];
+            REQUIRE (peak > 0.0);
+            auto fallen = top;
+            while (fallen < r.amplitude.size() && r.amplitude[fallen] > 1.0e-3 * peak)
+                ++fallen;
+            CHECK_THAT (static_cast<double> (fallen - top) / sampleRate, WithinRel (decayMs / 1000.0, 1.0e-3)); // within a sample
+            // Below 1e-6 it is silent, with no note.
+            CHECK (r.amplitude.back() == 0.0);
+            CHECK (r.hz.back() == 0.0);
+        }
+}
+
+TEST_CASE ("A tail's level comes from its roll", "[impact]")
+{
+    // Pink noise: the peak is tailLevel * sqrt 2 times the roll's RMS.
+    const auto pink = rollThenSilence (tailParameters (1000.0f), rate, 0.2);
+    const auto pinkPeak = *std::max_element (pink.amplitude.begin(), pink.amplitude.end());
+    CHECK_THAT (pinkPeak, WithinRel (std::numbers::sqrt2 * pink.rollRms, 1.0e-6));
+
+    // A roll of silence strikes nothing, and silence stays exactly silent.
+    const auto silence = rollThenSilence (tailParameters (1000.0f), rate, 0.2, Source::silence);
+    CHECK (*std::max_element (silence.amplitude.begin(), silence.amplitude.end()) == 0.0);
+    CHECK (std::all_of (silence.output.begin(), silence.output.end(), [] (float sample) { return sample == 0.0f; }));
+
+    // A full-scale tone on the tail's own note through a resonant cutoff
+    // strikes it from the roll as cut, not from what the resonance made of it:
+    // a resonator would ring it about 20 dB louder than noise.
+    const auto tone = rollThenSilence (tailParameters (1000.0f), rate, 0.2, Source::note);
+    const auto tonePeak = *std::max_element (tone.amplitude.begin(), tone.amplitude.end());
+    CHECK_THAT (tonePeak, WithinRel (std::numbers::sqrt2 * tone.rollRms, 1.0e-6));
+    CHECK_THAT (tone.rollRms, WithinRel (std::sqrt (0.5), 1.0e-3)); // the input's
+}
+
+TEST_CASE ("A tail is heard below the roll's peak, even a square's", "[impact]")
+{
+    // A square roll's RMS is its peak, so it strikes the tail at sqrt 2 times
+    // its peak. What keeps the heard tail below the roll's peak is that it is
+    // born under the duck, which the strike's cut starts: duck times decay
+    // peaks at 0.59 of the strike at a 1.2 s decay, 0.65 at 2 s.
+    constexpr double level = 0.8;
+    const auto square = [] (int i) { return static_cast<float> (std::sin (2.0 * pi * 110.0 * i / rate) >= 0.0 ? level : -level); };
+    auto with = tailParameters (18000.0f, 1.0f, 2000.0f), without = with; // open, so the square passes whole
+    with.filter.q = without.filter.q = 0.707f;
+    without.filter.tailLevel = 0.0f;
+    ImpactEffects tailed, plain;
+    for (auto* e : { &tailed, &plain })
+        e->prepare (rate);
+    tailed.setParameters (with);
+    plain.setParameters (without);
+    constexpr int length = 2400;
+    double struck = 0.0, heard = 0.0;
+    for (int i = 0; i < 3 * length + static_cast<int> (2.0 * rate); ++i)
+    {
+        if (i % length == 0)
+        {
+            const auto id = i == length || i == 2 * length ? rollCut (static_cast<std::size_t> (i / length - 1), 2) : singleCut();
+            tailed.startCut (id);
+            plain.startCut (id);
+        }
+        auto l1 = square (i), r1 = l1, l2 = l1, r2 = l1;
+        tailed.process (l1, r1);
+        plain.process (l2, r2);
+        struck = std::max (struck, tailed.diagnostics().tailAmplitude);
+        heard = std::max (heard, static_cast<double> (std::abs (l1 - l2)));
+    }
+    CAPTURE (struck, heard);
+    REQUIRE (struck > 1.4 * level); // struck above the roll's peak,
+    CHECK (heard < 0.66 * struck); // heard only after the duck,
+    CHECK (heard < level); // and so below the roll's peak.
+}
+
+TEST_CASE ("A tail ducks under every cut", "[impact]")
+{
+    const auto ramp = rampSamplesAt (rate);
+    const auto pole = std::exp (-1.0 / (0.04 * rate));
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (tailParameters (1000.0f));
+    Pink pink;
+    std::vector<double> duck;
+    for (int i = 0; i < 30000; ++i)
+    {
+        if (i % 3000 == 0)
+            effects.startCut (i == 3000 || i == 6000 ? rollCut (static_cast<std::size_t> (i / 3000 - 1), 2) : singleCut());
+        auto left = pink.next(), right = left;
+        effects.process (left, right);
+        duck.push_back (effects.diagnostics().tailDuck);
+    }
+    for (int cut = 3000; cut < 30000; cut += 3000)
+    {
+        CAPTURE (cut);
+        const auto low = static_cast<std::size_t> (cut + ramp - 1);
+        CHECK (duck[low] == 0.25);
+        double largestError = 0.0;
+        for (std::size_t t = 0; low + t < static_cast<std::size_t> (cut + 3000); ++t)
+            largestError = std::max (largestError, std::abs (duck[low + t] - (1.0 - 0.75 * std::pow (pole, static_cast<double> (t)))));
+        CHECK (largestError <= 1.0e-9);
+        for (int k = cut; k < cut + ramp - 1; ++k) // the 2 ms glide down
+            CHECK (duck[static_cast<std::size_t> (k)] > duck[static_cast<std::size_t> (k + 1)]);
+    }
+}
+
+TEST_CASE ("A tail never steps", "[impact]")
+{
+    // Through a strike, cuts every 3000 samples, and a re-strike at a new
+    // note while it rings. The tail is the output less a twin without one.
+    const auto ramp = rampSamplesAt (rate);
+    auto with = tailParameters (1000.0f), without = with;
+    without.filter.tailLevel = 0.0f;
+    auto withLower = with, withoutLower = without;
+    withLower.filter.cutoffHz = withoutLower.filter.cutoffHz = 300.0f;
+    ImpactEffects tailed, plain;
+    for (auto* e : { &tailed, &plain })
+        e->prepare (rate);
+    tailed.setParameters (with);
+    plain.setParameters (without);
+    Pink pink;
+    float previous = 0.0f, largest = 0.0f;
+    double loudest = 0.0, ringingAtRestrike = 0.0;
+    for (int i = 0; i < 48000; ++i)
+    {
+        if (i % 3000 == 0)
+        {
+            const auto k = i / 3000;
+            if (k == 8)
+            {
+                ringingAtRestrike = tailed.diagnostics().tailAmplitude;
+                tailed.setParameters (withLower);
+                plain.setParameters (withoutLower);
+            }
+            const auto id = k == 1 || k == 2 ? rollCut (static_cast<std::size_t> (k - 1), 2)
+                          : k == 6 || k == 7 ? rollCut (static_cast<std::size_t> (k - 6), 2) : singleCut();
+            tailed.startCut (id);
+            plain.startCut (id);
+        }
+        auto l1 = pink.next(), r1 = l1, l2 = l1, r2 = l1;
+        tailed.process (l1, r1);
+        plain.process (l2, r2);
+        const auto tail = l1 - l2;
+        if (i > 0)
+            largest = std::max (largest, std::abs (tail - previous));
+        previous = tail;
+        loudest = std::max (loudest, tailed.diagnostics().tailAmplitude);
+    }
+    REQUIRE (ringingAtRestrike > 0.0);
+    // The sine's slew, plus the strike's ramp (A / ramp) and the duck's (0.75 A / ramp).
+    const auto bound = 1.05 * loudest * (2.0 * pi * detail::tailNoteHz (1000.0) / rate + 1.75 / ramp);
+    CAPTURE (largest, bound, loudest);
+    CHECK (largest <= bound);
+}
+
+TEST_CASE ("A tail barely lifts the level", "[impact]")
+{
+    // Pink noise at 120 bpm: twelve 16ths, then a roll of eight 32nds, every
+    // bar, at the top of Filter's pad. Each bar's RMS against a twin without a
+    // tail.
+    auto with = filterProgram (0.5);
+    with.filter.tailLevel = 1.0f;
+    with.filter.tailDecayMs = 1200.0f;
+    auto without = with;
+    without.filter.tailLevel = 0.0f;
+    ImpactEffects tailed, plain;
+    for (auto* e : { &tailed, &plain })
+        e->prepare (rate);
+    tailed.setParameters (with);
+    plain.setParameters (without);
+    Pink pink;
+    double withEnergy = 0.0, withoutEnergy = 0.0;
+    std::vector<double> lifts;
+    for (int i = 0; i < 4 * 96000; ++i)
+    {
+        const auto inBar = i % 96000;
+        if (inBar < 72000 ? inBar % 6000 == 0 : (inBar - 72000) % 3000 == 0)
+        {
+            const auto id = inBar < 72000 ? singleCut() : rollCut (static_cast<std::size_t> ((inBar - 72000) / 3000), 8);
+            tailed.startCut (id);
+            plain.startCut (id);
+        }
+        auto l1 = pink.next(), r1 = l1, l2 = l1, r2 = l1;
+        tailed.process (l1, r1);
+        plain.process (l2, r2);
+        withEnergy += l1 * static_cast<double> (l1);
+        withoutEnergy += l2 * static_cast<double> (l2);
+        if (inBar == 95999)
+        {
+            lifts.push_back (10.0 * std::log10 (withEnergy / withoutEnergy));
+            withEnergy = withoutEnergy = 0.0;
+        }
+    }
+    for (std::size_t bar = 1; bar < lifts.size(); ++bar)
+    {
+        CAPTURE (bar, lifts[bar]);
+        CHECK (lifts[bar] > 0.0); // the tail is there,
+        CHECK (lifts[bar] <= 0.25); // and lifts the level by no more than 0.25 dB: measured 0.13 to 0.15
+    }
+}
+
+TEST_CASE ("A ringing tail fades whole at a switch", "[impact]")
+{
+    // Cuts every 6000 samples: a single, a two-cut roll, a single that strikes,
+    // and then the switch, at cut 4, to Cut's Impact (off), Suction's band and
+    // a Classic low-pass. The held sweep, tail included, runs on exactly as if
+    // nothing had changed while its wet ramps out: the tail doesn't duck.
+    constexpr int cut = 6000, window = 2400;
+    const auto sweep = tailParameters (1000.0f);
+    auto off = sweep;
+    off.filter = ImpactParameters::Filter {};
+    const auto band = suction (0.5);
+    const auto lowPass = suctionLowPass();
+    const auto identity = [] (int i)
+    {
+        const auto k = i / cut;
+        return k == 1 || k == 2 ? rollCut (static_cast<std::size_t> (k - 1), 2) : singleCut();
+    };
+    const auto signal = [] (int i)
+    {
+        return static_cast<float> (0.5 * std::sin (2.0 * pi * 700.0 * i / rate) + 0.3 * std::sin (2.0 * pi * 99.0 * i / rate));
+    };
+    const auto largestStep = [&] (const ImpactParameters& first, const ImpactParameters* second)
+    {
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (first);
+        float previous = 0.0f, largest = 0.0f;
+        for (int i = 0; i < 6 * cut; ++i)
+        {
+            if (i % cut == 0)
+            {
+                if (second != nullptr && i == 4 * cut)
+                    effects.setParameters (*second);
+                effects.startCut (identity (i));
+            }
+            auto left = signal (i), right = -0.5f * left;
+            effects.process (left, right);
+            if (i > 4 * cut - window && i < 5 * cut + window)
+                largest = std::max (largest, std::abs (left - previous));
+            previous = left;
+        }
+        return largest;
+    };
+    for (const auto* to : std::array<const ImpactParameters*, 3> { &off, &band, &lowPass })
+    {
+        CAPTURE (static_cast<int> (to->filter.type), to->filter.enabled);
+        ImpactEffects switched, unchanged;
+        for (auto* effects : { &switched, &unchanged })
+        {
+            effects->prepare (rate);
+            effects->setParameters (sweep);
+        }
+        int i = 0;
+        for (; i < 4 * cut; ++i)
+        {
+            if (i % cut == 0)
+            {
+                switched.startCut (identity (i));
+                unchanged.startCut (identity (i));
+            }
+            auto l1 = signal (i), r1 = -0.5f * l1, l2 = l1, r2 = r1;
+            switched.process (l1, r1);
+            unchanged.process (l2, r2);
+        }
+        REQUIRE (switched.diagnostics().tailAmplitude > 0.0);
+        switched.setParameters (*to);
+        switched.startCut (identity (i));
+        double largestError = 0.0;
+        bool sameTail = true;
+        for (int k = 0; k < 96; ++k, ++i)
+        {
+            const auto input = signal (i);
+            auto l1 = input, r1 = -0.5f * input, l2 = l1, r2 = r1;
+            switched.process (l1, r1);
+            unchanged.process (l2, r2);
+            const auto ramp = 1.0 - (k + 1) / 96.0;
+            largestError = std::max (largestError, std::abs (l1 - (input + ramp * (static_cast<double> (l2) - input))));
+            if (k < 95)
+                sameTail = sameTail && switched.diagnostics().tailDuck == unchanged.diagnostics().tailDuck
+                        && switched.diagnostics().tailAmplitude == unchanged.diagnostics().tailAmplitude;
+        }
+        const auto switchedStep = largestStep (sweep, to);
+        const auto fromStep = largestStep (sweep, nullptr);
+        const auto toStep = largestStep (*to, nullptr);
+        CAPTURE (largestError, switchedStep, fromStep, toStep);
+        CHECK (largestError < 1.0e-6);
+        CHECK (sameTail);
+        CHECK (switchedStep <= 1.05f * std::max (fromStep, toStep)); // measured 1.0
+    }
+}
+
+TEST_CASE ("A tail resets cleanly and allocates no memory", "[impact]")
+{
+    const auto p = tailParameters (1000.0f);
+    const auto strike = [] (ImpactEffects& effects, int& i)
+    {
+        Pink pink;
+        for (const auto& id : { singleCut(), rollCut (0, 2), rollCut (1, 2), singleCut() })
+        {
+            effects.startCut (id);
+            for (int k = 0; k < 2000; ++k, ++i)
+            {
+                auto left = pink.next(), right = left;
+                effects.process (left, right);
+            }
+        }
+        return effects.diagnostics().tailAmplitude > 0.0;
+    };
+    const auto cleared = [] (const ImpactEffects& effects)
+    {
+        const auto& d = effects.diagnostics();
+        return d.tailHz == 0.0 && d.tailAmplitude == 0.0 && d.tailDuck == 1.0;
+    };
+    ImpactEffects effects;
+    effects.prepare (rate);
+    effects.setParameters (p);
+    int i = 0;
+    REQUIRE (strike (effects, i));
+    effects.reset();
+    CHECK (cleared (effects));
+
+    // A cut whose filter is off ramps the wet to 0, which clears it.
+    effects.setParameters (p);
+    REQUIRE (strike (effects, i));
+    auto silenced = p;
+    silenced.filter.chance = 0.0f;
+    effects.setParameters (silenced);
+    effects.startCut (singleCut());
+    settle (effects, 96);
+    CHECK (cleared (effects));
+
+    // Switched to a band, it fades at the next cut, and is cleared.
+    effects.setParameters (p);
+    REQUIRE (strike (effects, i));
+    effects.setParameters (suction (0.5));
+    effects.startCut (singleCut());
+    settle (effects, 96);
+    CHECK (cleared (effects));
+
+    // Processing, strikes included, never allocates.
+    effects.setParameters (p);
+    std::size_t allocations = 0;
+    bool struck = false;
+    {
+        livecut::engine::testing::AllocationCounter counter;
+        struck = strike (effects, i);
+        allocations = counter.count();
+    }
+    CHECK (struck);
+    CHECK (allocations == 0);
+}
+
+TEST_CASE ("A tail's strike is the roll before the makeup, and never above the roll as cut", "[impact]")
+{
+    // A = tailLevel * sqrt 2 * the smaller of two RMS over the roll: the
+    // low-pass's output before the makeup, and the filter's input, the roll as
+    // cut. Measured after the makeup, a lifting makeup raised the tail 5 dB;
+    // measured after the resonance alone, a tone on the cutoff raised it by q.
+    struct Case { const char* name; float cutoff; float q; bool tone; bool inputSmaller; };
+    for (const auto& c : { Case { "a tone on a resonant cutoff", 1000.0f, 3.0f, true, true },
+                           Case { "white noise through a resonant, dark sweep", 5000.0f, 3.0f, false, false } })
+    {
+        CAPTURE (c.name);
+        auto p = tailParameters (c.cutoff);
+        p.filter.q = c.q;
+        ImpactEffects effects;
+        effects.prepare (rate);
+        effects.setParameters (p);
+        Noise noise;
+        constexpr int length = 2400;
+        double filtered = 0.0, input = 0.0, hold = 1.0, peak = 0.0;
+        for (int i = 0; i < 4 * length + 400; ++i)
+        {
+            if (i % length == 0 && i <= 3 * length)
+                effects.startCut (i == length || i == 2 * length ? rollCut (static_cast<std::size_t> (i / length - 1), 2) : singleCut());
+            auto in = c.tone ? static_cast<float> (0.5 * std::sin (2.0 * pi * c.cutoff * i / rate)) : noise.next();
+            auto left = in, right = in;
+            effects.process (left, right);
+            if (i >= length && i < 3 * length)
+            {
+                hold = effects.diagnostics().levelHoldGain;
+                filtered += std::pow (left / hold, 2.0); // no tail yet, at full wet
+                input += static_cast<double> (in) * in;
+            }
+            peak = std::max (peak, effects.diagnostics().tailAmplitude);
+        }
+        CAPTURE (filtered, input, hold);
+        REQUIRE (hold < 0.9); // the makeup is cutting the resonance back
+        CHECK ((input < filtered) == c.inputSmaller);
+        CHECK_THAT (peak, WithinRel (std::numbers::sqrt2 * std::sqrt (std::min (filtered, input) / (2 * length)), 1.0e-5));
+    }
 }

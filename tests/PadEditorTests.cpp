@@ -221,7 +221,7 @@ TEST_CASE ("Program buttons select programs, and later programs are disabled", "
         buttons.push_back (button);
         CHECK (button->getButtonText() == names[i]);
         CHECK (button->getTitle().isNotEmpty());
-        if (i < 4)
+        if (i < 5)
         {
             CHECK (button->isEnabled());
             CHECK (button->getTooltip().isNotEmpty());
@@ -249,6 +249,12 @@ TEST_CASE ("Program buttons select programs, and later programs are disabled", "
     editor.refreshDisplay();
     CHECK (buttons[3]->getToggleState());
     CHECK_FALSE (buttons[2]->getToggleState());
+
+    buttons[4]->onClick(); // Filter
+    CHECK (index (processor, livecut::ids::padProgram) == 4);
+    editor.refreshDisplay();
+    CHECK (buttons[4]->getToggleState());
+    CHECK_FALSE (buttons[3]->getToggleState());
 
     set (processor, livecut::ids::padProgram, 0); // the host moving the parameter lights the matching button
     editor.refreshDisplay();
@@ -375,6 +381,11 @@ TEST_CASE ("Axis captions follow the program", "[pad][editor]")
     editor.refreshDisplay();
     CHECK (labelTexts (pad).contains ("Band"));
     CHECK (labelTexts (pad).contains ("Squeeze"));
+
+    display.padActiveProgram.store (4);
+    editor.refreshDisplay();
+    CHECK (labelTexts (pad).contains ("Cutoff"));
+    CHECK (labelTexts (pad).contains ("Ring"));
 
     display.padActiveProgram.store (0);
     editor.refreshDisplay();
@@ -533,9 +544,9 @@ TEST_CASE ("The ruler headline names the program and any pending switch", "[pad]
     CHECK (ruler->headlineText() == utf8 ("CUT → GLITCH ON THE BAR"));
 
     display.padPendingProgram.store (-1);
-    set (processor, livecut::ids::padProgram, 4);
+    set (processor, livecut::ids::padProgram, 5);
     editor.refreshDisplay();
-    CHECK (ruler->headlineText() == "FILTER ISN'T AVAILABLE YET");
+    CHECK (ruler->headlineText() == "TAPE ISN'T AVAILABLE YET");
 
     // Idle, the chosen program is the one that will play.
     display.padEngaged.store (false);

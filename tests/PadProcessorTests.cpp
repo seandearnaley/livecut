@@ -6,6 +6,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -50,8 +51,10 @@ struct PadSession
     juce::MidiBuffer midi;
     int frame = 0;
     std::vector<float> output, input;
+    double rate = 48000.0; // at 120 bpm in 4/4
 
-    explicit PadSession (bool spectral = false)
+    explicit PadSession (bool spectral = false, double sampleRate = 48000.0)
+        : rate (sampleRate)
     {
         if (spectral)
         {
@@ -60,7 +63,7 @@ struct PadSession
         }
         playFromBarOne (head);
         processor.setPlayHead (&head);
-        processor.prepareToPlay (48000, 4096);
+        processor.prepareToPlay (rate, 4096);
     }
 
     void render (int count, int bufferSize = 512)
@@ -68,9 +71,10 @@ struct PadSession
         while (count > 0)
         {
             const int size = std::min (count, bufferSize);
-            head.info.setPpqPosition (frame / 24000.0);
-            head.info.setPpqPositionOfLastBarStart (std::floor (frame / 96000.0) * 4.0);
-            head.info.setBarCount (frame / 96000);
+            const auto beat = rate / 2.0, bar = 2.0 * rate;
+            head.info.setPpqPosition (frame / beat);
+            head.info.setPpqPositionOfLastBarStart (std::floor (frame / bar) * 4.0);
+            head.info.setBarCount (static_cast<int> (frame / static_cast<int> (bar)));
             juce::AudioBuffer<float> buffer (2, size);
             for (int i = 0; i < size; ++i)
                 for (int channel = 0; channel < 2; ++channel)
@@ -338,7 +342,7 @@ TEST_CASE ("Output is identical for every host buffer size", "[pad][processor]")
 TEST_CASE ("Programs not yet built stay dry and say so", "[pad][processor]")
 {
     PadSession session;
-    set (session.processor, livecut::ids::padProgram, 4); // Filter
+    set (session.processor, livecut::ids::padProgram, 5); // Tape
     set (session.processor, livecut::ids::padTouch, 1);
     session.render (96000);
     CHECK (session.dryFrom ());
@@ -646,4 +650,320 @@ TEST_CASE ("Pad preparation and mode Apply ignore legacy Audio Hold", "[pad][pro
     processor.applyRequestedMode ();
     CHECK (processor.activeMode () == livecut::ProcessingMode::studio);
     CHECK (processor.getDisplayState ().hold.load () == livecut::engine::WetHold::State::live);
+}
+
+namespace
+{
+constexpr int filterProgram = 4, suctionProgram = 3;
+constexpr int beatFrames = 24000, window = 2400;
+
+// Filter at the top of its pad, touched from the start, renders in 512-frame
+// blocks until a tail rings: the frame where it first does, and its note.
+struct FirstTail
+{
+    int frame = -1;
+    double hz = 0.0;
+};
+
+FirstTail firstFilterTail()
+{
+    PadSession session;
+    set (session.processor, livecut::ids::padProgram, filterProgram);
+    set (session.processor, livecut::ids::padY, 1);
+    set (session.processor, livecut::ids::padTouch, 1);
+    while (session.frame < 4 * 96000)
+    {
+        session.render (512);
+        const auto& impact = session.processor.getCutter ().impact ().diagnostics ();
+        if (impact.tailAmplitude > 0.0)
+            return { session.frame, impact.tailHz };
+    }
+    return {};
+}
+
+float largestStepBetween (const std::vector<float>& output, int from, int to)
+{
+    float largest = 0.f;
+    for (int k = 2 * from; k < 2 * to; ++k)
+        largest = std::max (largest, std::abs (output[static_cast<std::size_t> (k)] - output[static_cast<std::size_t> (k - 2)]));
+    return largest;
+}
+
+// The largest step within the window around the beat a switch lands on,
+// playing `from` at the top of its pad until `switched`, then `to`.
+float largestStepAtSwitch (int from, int to, int switched, bool tailRings = false)
+{
+    const auto beat = (switched / beatFrames + 1) * beatFrames;
+    PadSession session;
+    set (session.processor, livecut::ids::padProgram, static_cast<float> (from));
+    set (session.processor, livecut::ids::padY, 1);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (switched);
+    REQUIRE (session.processor.getCutter ().isCutting ());
+    set (session.processor, livecut::ids::padProgram, static_cast<float> (to));
+    session.render (beat - 64 - session.frame);
+    if (tailRings)
+        REQUIRE (session.processor.getCutter ().impact ().diagnostics ().tailAmplitude > 0.0);
+    session.render (beat + window - session.frame);
+    REQUIRE (session.processor.getDisplayState ().padActiveProgram.load () == to);
+    return largestStepBetween (session.output, beat - window, beat + window);
+}
+
+// Suction's bar was 3x. Filter's measure at most 1.9x, the restart's splice
+// ringing through the fading sweep, so 2.25x keeps it close.
+void checkSwitch (int from, int to, int switched, bool tailRings)
+{
+    const auto switchedStep = largestStepAtSwitch (from, to, switched, tailRings);
+    const auto fromThroughout = largestStepAtSwitch (from, from, switched);
+    const auto toThroughout = largestStepAtSwitch (to, to, switched);
+    CAPTURE (from, to, switched, switchedStep, fromThroughout, toThroughout);
+    CHECK (switchedStep <= 2.25f * std::max (fromThroughout, toThroughout));
+}
+} // namespace
+
+TEST_CASE ("Filter engages, releases and switches without a fault", "[pad][processor]")
+{
+    constexpr int beat = 24000, fade = 240;
+    PadSession session;
+    const auto& cutter = session.processor.getCutter ();
+    const auto& display = session.processor.getDisplayState ();
+    set (session.processor, livecut::ids::padProgram, filterProgram);
+    set (session.processor, livecut::ids::padY, .75f);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (beat);
+    REQUIRE (cutter.isCutting ());
+    CHECK (display.padActiveProgram.load () == filterProgram);
+    CHECK_FALSE (display.padUnavailable.load ());
+    CHECK (cutter.activeProcedure () == livecut::engine::Procedure::cutProc11);
+    CHECK (cutter.activeUnitsPerBar () == 16);
+    CHECK (cutter.impact ().diagnostics ().filterActive);
+    CHECK (cutter.impact ().diagnostics ().bandLowHz == 30.0); // the sweep's fixed high-pass
+    CHECK (cutter.impact ().diagnostics ().bandHighHz < 18000.0); // and its low-pass, at X 0.5
+    CHECK_FALSE (session.dryFrom ());
+
+    // Moving the pad moves the cutoff without restarting the cuts.
+    set (session.processor, livecut::ids::padX, 0);
+    set (session.processor, livecut::ids::padY, 0);
+    session.render (beat);
+    CHECK (cutter.isCutting ());
+    CHECK (cutter.impact ().diagnostics ().bandHighHz < 300.0);
+
+    // Switching to Cut lands on the beat, and the sweep switches off.
+    set (session.processor, livecut::ids::padProgram, 0);
+    session.render (3 * beat - session.frame + 1);
+    CHECK (display.padActiveProgram.load () == 0);
+    CHECK (cutter.isCutting ());
+    session.render (beat);
+    CHECK_FALSE (cutter.impact ().diagnostics ().filterActive);
+
+    // And back to Filter.
+    set (session.processor, livecut::ids::padProgram, filterProgram);
+    session.render (5 * beat - session.frame + 1);
+    CHECK (display.padActiveProgram.load () == filterProgram);
+    session.render (beat / 2);
+    CHECK (cutter.impact ().diagnostics ().filterActive);
+
+    // Releasing fades out on the next beat and returns to the input exactly.
+    set (session.processor, livecut::ids::padTouch, 0);
+    session.render (6 * beat + fade + 12000 - session.frame);
+    CHECK_FALSE (cutter.isCutting ());
+    CHECK (session.dryFrom (6 * beat + fade - 1));
+    CHECK (cutter.error () == livecut::engine::Cutter::Error::none);
+    CHECK (cutter.impact ().diagnostics ().tailAmplitude == 0.0); // the rack forgot its tail on idle
+}
+
+TEST_CASE ("Filter rings a tuned tail after a roll", "[pad][processor]")
+{
+    const auto tail = firstFilterTail ();
+    REQUIRE (tail.frame > 0);
+    // X 0.5 puts the cutoff at 1897 Hz, nearest A#6, and the tail an octave down on A#5.
+    CHECK_THAT (tail.hz, Catch::Matchers::WithinRel (440.0 * std::exp2 (13.0 / 12.0), 1.0e-12));
+}
+
+TEST_CASE ("Filter at the same spot in the same bar sounds the same", "[pad][processor]")
+{
+    // One session plays only from bar 3; the other played elsewhere on the pad
+    // first and let go. From bar 3 they are the same, tails included.
+    constexpr int engage = 2 * 96000 + 6000, end = engage + 4 * 96000;
+    PadSession fresh, played;
+    for (auto* session : { &fresh, &played })
+        set (session->processor, livecut::ids::padProgram, filterProgram);
+    set (played.processor, livecut::ids::padX, .9f);
+    set (played.processor, livecut::ids::padY, .4f);
+    set (played.processor, livecut::ids::padTouch, 1);
+    played.render (96000 + 30000);
+    set (played.processor, livecut::ids::padTouch, 0);
+    played.render (engage - played.frame);
+    fresh.render (engage);
+    REQUIRE_FALSE (played.processor.getCutter ().isCutting ());
+    for (auto* session : { &fresh, &played })
+    {
+        set (session->processor, livecut::ids::padX, .3f);
+        set (session->processor, livecut::ids::padY, 1);
+        set (session->processor, livecut::ids::padTouch, 1);
+    }
+    bool rang = false;
+    while (fresh.frame < end)
+    {
+        fresh.render (512);
+        played.render (512);
+        rang = rang || fresh.processor.getCutter ().impact ().diagnostics ().tailAmplitude > 0.0;
+    }
+    CHECK (rang);
+    CHECK_FALSE (fresh.dryBetween (engage, end));
+    CHECK (PadSession::sameBetween (fresh.output, played.output, engage, end));
+}
+
+// While a tail rings, the sweep keeps its shape, tail included, while its wet
+// ramps out at the first cut of the new program, so the switch adds no click
+// of its own. The bar is Suction's: 3x the larger reference, for the hard
+// splice of the restart ringing through the fading filter.
+TEST_CASE ("Switching Filter to Cut or Suction while a tail rings doesn't click", "[pad][processor]")
+{
+    const auto tail = firstFilterTail ();
+    REQUIRE (tail.frame > 0);
+    REQUIRE (tail.frame % beatFrames != 0);
+    checkSwitch (filterProgram, 0, tail.frame, true);
+    checkSwitch (filterProgram, suctionProgram, tail.frame, true);
+}
+
+TEST_CASE ("Switching Suction to Filter doesn't click", "[pad][processor]")
+{
+    checkSwitch (suctionProgram, filterProgram, 30000, false);
+}
+
+// A Pad to Classic switch with Classic's Impact filter on, while a tail rings:
+// at Classic's first block the sweep, tail included, keeps its shape while its
+// wet ramps out, and Classic's low-pass comes in at a later cut. The window
+// runs from the cut where the sweep starts to fade until it has cleared. It
+// used to start 2400 samples before the switch, where a Filter splice the
+// same in both runs set the bar at 0.98, 62 times Classic's own step. (The
+// outputs part before that cut: the switch hands the cutter all of Classic's
+// settings at once, so there is no exact twin to compare with.)
+TEST_CASE ("Switching Filter to Classic's filter while a tail rings doesn't click", "[pad][processor]")
+{
+    const auto tail = firstFilterTail ();
+    REQUIRE (tail.frame > 0);
+    const auto switched = tail.frame;
+    int fading = 0, cleared = 0;
+    const auto largestStep = [&] (int run)
+    {
+        PadSession session;
+        auto& processor = session.processor;
+        const auto& impact = processor.getCutter ().impact ().diagnostics ();
+        set (processor, livecut::ids::impactFilterEnabled, 1);
+        set (processor, livecut::ids::impactFilterCutoff, 800);
+        set (processor, livecut::ids::impactFilterQ, 2);
+        set (processor, livecut::ids::padProgram, filterProgram);
+        set (processor, livecut::ids::padY, 1);
+        if (run == 0)
+            useClassicSurface (processor);
+        else
+            set (processor, livecut::ids::padTouch, 1);
+        session.render (switched);
+        REQUIRE (processor.getCutter ().isCutting ());
+        if (run == 1)
+        {
+            REQUIRE (impact.tailAmplitude > 0.0);
+            useClassicSurface (processor);
+            while (impact.filterActive && session.frame < switched + 96000)
+                session.render (1);
+            REQUIRE_FALSE (impact.filterActive); // the cut where the sweep starts to fade
+            fading = session.frame - 1;
+            while (impact.bandLowHz != 0.0 && session.frame < switched + 96000)
+                session.render (16);
+            REQUIRE (impact.bandLowHz == 0.0); // the sweep faded and cleared,
+            CHECK (impact.tailAmplitude == 0.0); // its tail with it
+            cleared = session.frame;
+        }
+        session.render (cleared + window - session.frame);
+        return largestStepBetween (session.output, fading, cleared + window);
+    };
+    const auto filterToClassic = largestStep (1);
+    const auto filterThroughout = largestStep (2);
+    const auto classicThroughout = largestStep (0);
+    CAPTURE (switched, fading, cleared, filterToClassic, filterThroughout, classicThroughout);
+    CHECK (filterToClassic <= 1.25f * std::max (filterThroughout, classicThroughout)); // measured 0.89
+}
+
+TEST_CASE ("Filter's tails are identical for every host buffer size", "[pad][processor]")
+{
+    const auto tail = firstFilterTail ();
+    REQUIRE (tail.frame > 0);
+    const auto render = [&tail] (int size)
+    {
+        PadSession session;
+        set (session.processor, livecut::ids::padProgram, filterProgram);
+        set (session.processor, livecut::ids::padY, 1);
+        session.render (5000, size);
+        set (session.processor, livecut::ids::padTouch, 1);
+        session.render (tail.frame + 20000 - session.frame, size);
+        CHECK (session.processor.getCutter ().impact ().diagnostics ().tailAmplitude > 0.0);
+        set (session.processor, livecut::ids::padTouch, 0);
+        session.render (30000, size);
+        CHECK_FALSE (session.dryFrom ());
+        return session.output;
+    };
+    const auto expected = render (1);
+    for (const int size : { 37, 512, 4096 })
+    {
+        CAPTURE (size);
+        const auto actual = render (size);
+        CHECK (actual.size () == expected.size ());
+        CHECK (std::memcmp (actual.data (), expected.data (), expected.size () * sizeof (float)) == 0);
+    }
+}
+
+TEST_CASE ("Filter never allocates, tails included", "[pad][processor]")
+{
+    PadSession session;
+    juce::AudioBuffer<float> buffer (2, 512);
+    std::size_t allocations = 0;
+    bool rang = false;
+    set (session.processor, livecut::ids::padProgram, filterProgram);
+    set (session.processor, livecut::ids::padY, 1);
+    set (session.processor, livecut::ids::padTouch, 1);
+    for (int frame = 0; frame < 4 * 96000; frame += 512)
+    {
+        if (frame == 3 * 96000) // then to Suction while a tail may ring, and let go
+        {
+            set (session.processor, livecut::ids::padProgram, suctionProgram);
+            set (session.processor, livecut::ids::padTouch, 0);
+        }
+        session.head.info.setPpqPosition (frame / 24000.0);
+        session.head.info.setPpqPositionOfLastBarStart (std::floor (frame / 96000.0) * 4.0);
+        session.head.info.setBarCount (frame / 96000);
+        for (int i = 0; i < 512; ++i)
+            for (int channel = 0; channel < 2; ++channel)
+                buffer.setSample (channel, i, signal (frame + i, channel));
+        {
+            const livecut::engine::testing::AllocationCounter counter;
+            session.processor.processBlock (buffer, session.midi);
+            allocations += counter.count ();
+        }
+        rang = rang || session.processor.getCutter ().impact ().diagnostics ().tailAmplitude > 0.0;
+    }
+    CHECK (rang);
+    CHECK (allocations == 0);
+}
+
+TEST_CASE ("Filter rings in tune at 44.1, 48 and 96 kHz", "[pad][processor]")
+{
+    const auto rate = GENERATE (44100.0, 48000.0, 96000.0);
+    CAPTURE (rate);
+    PadSession session (false, rate);
+    const auto& cutter = session.processor.getCutter ();
+    set (session.processor, livecut::ids::padProgram, filterProgram);
+    set (session.processor, livecut::ids::padY, 1);
+    set (session.processor, livecut::ids::padTouch, 1);
+    double hz = 0.0;
+    while (hz == 0.0 && session.frame < static_cast<int> (8.0 * rate))
+    {
+        session.render (512);
+        hz = cutter.impact ().diagnostics ().tailHz;
+    }
+    CHECK_THAT (hz, Catch::Matchers::WithinRel (440.0 * std::exp2 (13.0 / 12.0), 1.0e-12)); // A#5
+    CHECK (cutter.isCutting ());
+    CHECK (cutter.error () == livecut::engine::Cutter::Error::none);
+    CHECK (std::all_of (session.output.begin (), session.output.end (), [] (float sample) { return std::isfinite (sample); }));
 }

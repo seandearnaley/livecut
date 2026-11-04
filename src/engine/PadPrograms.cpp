@@ -20,7 +20,7 @@ double lerp (double a, double b, double t)
 bool isAvailable (PadProgram program)
 {
     return program == PadProgram::cut || program == PadProgram::bounce || program == PadProgram::glitch
-        || program == PadProgram::suction;
+        || program == PadProgram::suction || program == PadProgram::filter;
 }
 
 PadCaptions padCaptions (PadProgram program)
@@ -31,7 +31,7 @@ PadCaptions padCaptions (PadProgram program)
         case PadProgram::bounce: return { "Bounce", "Ratchet" };
         case PadProgram::glitch: return { "Rate", "Pitch" };
         case PadProgram::suction: return { "Band", "Squeeze" };
-        case PadProgram::filter:
+        case PadProgram::filter: return { "Cutoff", "Ring" };
         case PadProgram::tape:
         case PadProgram::loops:
         case PadProgram::rush:
@@ -134,6 +134,32 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             break;
         }
         case PadProgram::filter:
+        {
+            // Rolls only: with no repeats, every multi-cut block is a stutter roll, and each strikes a tail.
+            mapping.procedure = Procedure::cutProc11;
+            mapping.seed = 505;
+            mapping.zones.x = padZone (x, 1, previous.x);
+            mapping.unitsPerBar = 16;
+            mapping.cut.stutterChance = .5;
+            mapping.cut.stutterArea = .5;
+            mapping.cut.maxRepeats = 0;
+            mapping.cut.minRepeats = 0;
+
+            // A low-pass from dark to open; up, it resonates and rings its rolls out. The resonance
+            // eases off in the treble, so the top never gets shrill, and in the bass, to 15% at
+            // 200 Hz, so a bass note on the cutoff never booms.
+            auto& filter = mapping.impact.filter;
+            filter.enabled = true;
+            filter.type = ImpactParameters::Filter::Type::sweep;
+            filter.chance = 1.f;
+            filter.mix = 1.f;
+            filter.cutoffHz = static_cast<float> (200.0 * std::pow (90.0, static_cast<double> (x)));
+            const auto bass = std::min (1.0, .15 + .85 * static_cast<double> (x) / .4);
+            filter.q = static_cast<float> (.707 + 2.3 * y * (1.0 - .5 * x) * bass);
+            filter.tailLevel = y;
+            filter.tailDecayMs = static_cast<float> (200.0 + 1000.0 * y);
+            break;
+        }
         case PadProgram::tape:
         case PadProgram::loops:
         case PadProgram::rush:

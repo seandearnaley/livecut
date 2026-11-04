@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <numbers>
+#include <optional>
 
 namespace livecut::engine
 {
@@ -18,6 +19,12 @@ constexpr double log1000 = 6.907755278982137;
 constexpr double semitone = 1.0594630943592953; // 2^(1/12)
 constexpr double makeupCeiling = 2.0; // +6 dB
 constexpr double makeupHighestHz = 18000.0;
+// A sweep's makeup never lifts, and a tone on its resonant peak gains at most
+// +6 dB: lifting a dark sweep to pink noise's level raised bass-heavy
+// material 5 dB, and a bass note on a resonant cutoff 8 dB.
+constexpr double sweepMakeupCeiling = 1.0, sweepPeakCeiling = 2.0;
+constexpr double tailDuckFloor = 0.25; // -12 dB
+constexpr double tailSilence = 1.0e-6; // -120 dBFS
 
 // The band's pink-noise power, tabulated over its width w (octaves) and log2 q.
 // The widest band the clamps allow is log2 (0.45 * 384 kHz / 30 Hz) = 12.49
@@ -33,9 +40,9 @@ constexpr std::size_t tableQs = 33; // q 0.5 to 8
 // low-pass at 2^width, both with this q. Each edge's tail falls 12 dB an
 // octave, so 6 octaves beyond the edges leave out under 1e-6 dB; 1/16-octave
 // trapezoids resolve q 8's resonance (about 0.18 octaves wide) to 0.002 dB.
-double integratePinkPower (double width, double q, double step, double margin)
+double integratePinkPower (double width, double lowQ, double highQ, double step, double margin)
 {
-    const auto damping = 1.0 / (q * q);
+    const auto lowDamping = 1.0 / (lowQ * lowQ), highDamping = 1.0 / (highQ * highQ);
     const auto scale = std::exp2 (-2.0 * width);
     const auto count = static_cast<int> (std::ceil ((width + 2.0 * margin) / step));
     auto sum = 0.0;
@@ -43,22 +50,25 @@ double integratePinkPower (double width, double q, double step, double margin)
     {
         const auto x = std::exp2 (2.0 * (i * step - margin)); // squared frequency at the low edge
         const auto y = x * scale; // and at the high edge
-        const auto highPass = x * x / ((1.0 - x) * (1.0 - x) + damping * x);
-        const auto lowPass = 1.0 / ((1.0 - y) * (1.0 - y) + damping * y);
+        const auto highPass = x * x / ((1.0 - x) * (1.0 - x) + lowDamping * x);
+        const auto lowPass = 1.0 / ((1.0 - y) * (1.0 - y) + highDamping * y);
         sum += (i == 0 || i == count ? 0.5 : 1.0) * highPass * lowPass;
     }
     return sum * step;
 }
 
+// The low edge's q is the high edge's for a band, and fixed for a sweep.
 struct PinkPowerTable
 {
-    PinkPowerTable()
+    explicit PinkPowerTable (std::optional<double> fixedLowQ)
     {
         for (std::size_t i = 0; i < tableWidths; ++i)
             for (std::size_t j = 0; j < tableQs; ++j)
+            {
+                const auto q = std::exp2 (tableLogQMin + static_cast<double> (j) * tableLogQStep);
                 logPower[i * tableQs + j] = std::log (integratePinkPower (tableWidthMin + static_cast<double> (i) * tableWidthStep,
-                                                                          std::exp2 (tableLogQMin + static_cast<double> (j) * tableLogQStep),
-                                                                          bandPowerStep, bandPowerMargin));
+                                                                          fixedLowQ.value_or (q), q, bandPowerStep, bandPowerMargin));
+            }
     }
 
     double interpolate (double width, double q) const
@@ -73,13 +83,19 @@ struct PinkPowerTable
     }
 
     std::array<double, tableWidths * tableQs> logPower {};
-    double logOpen = std::log (integratePinkPower (bandOpenOctaves, bandOpenQ, bandPowerStep, bandPowerMargin));
+    double logOpen = std::log (integratePinkPower (bandOpenOctaves, bandOpenQ, bandOpenQ, bandPowerStep, bandPowerMargin));
 };
 
 // Built once, by the first prepare(), never on the audio thread.
 const PinkPowerTable& pinkPowerTable()
 {
-    static const PinkPowerTable table;
+    static const PinkPowerTable table { std::nullopt };
+    return table;
+}
+
+const PinkPowerTable& sweepPowerTable()
+{
+    static const PinkPowerTable table { sweepLowQ };
     return table;
 }
 
@@ -123,6 +139,18 @@ double logCosh (double x)
 }
 
 double cleanState (double x) { return std::abs (x) < 1.0e-30 ? 0.0 : x; }
+
+// The analogue two-pole low-pass's resonant peak, which it has above q 1/sqrt 2.
+double lowPassPeak (double q)
+{
+    return q > 1.0 / std::numbers::sqrt2 ? q / std::sqrt (1.0 - 1.0 / (4.0 * q * q)) : 1.0;
+}
+
+// The engine-only types: smoothed, level-held and held while they fade.
+bool smoothed (ImpactParameters::Filter::Type type)
+{
+    return type == ImpactParameters::Filter::Type::band || type == ImpactParameters::Filter::Type::sweep;
+}
 } // namespace
 
 namespace detail
@@ -134,7 +162,27 @@ double bandPinkPower (double widthOctaves, double q)
 
 double integrateBandPinkPower (double widthOctaves, double q, double stepOctaves)
 {
-    return integratePinkPower (widthOctaves, q, stepOctaves, bandPowerMargin);
+    return integratePinkPower (widthOctaves, q, q, stepOctaves, bandPowerMargin);
+}
+
+double sweepPinkPower (double widthOctaves, double q)
+{
+    return std::exp (sweepPowerTable().interpolate (widthOctaves, q));
+}
+
+double integrateSweepPinkPower (double widthOctaves, double q, double stepOctaves)
+{
+    return integratePinkPower (widthOctaves, sweepLowQ, q, stepOctaves, bandPowerMargin);
+}
+
+double tailNoteHz (double cutoffHz)
+{
+    auto semitones = std::lround (12.0 * std::log2 (cutoffHz / 440.0));
+    while (semitones < -9) // C4
+        semitones += 12;
+    while (semitones >= 15) // C6
+        semitones -= 12;
+    return 440.0 * std::exp2 (static_cast<double> (semitones) / 12.0);
 }
 } // namespace detail
 
@@ -161,7 +209,9 @@ void ImpactEffects::prepare (double newSampleRate)
     rampSamples = static_cast<std::uint32_t> (std::ceil (0.002 * sampleRate));
     dcPole = std::exp (-2.0 * pi * 5.0 / sampleRate);
     smoothingPole = std::exp (-1.0 / (0.020 * sampleRate));
-    pinkPowerTable(); // Builds the band's makeup table off the audio thread.
+    tailRecoveryPole = std::exp (-1.0 / (0.040 * sampleRate));
+    pinkPowerTable(); // Builds the makeup tables off the audio thread.
+    sweepPowerTable();
     reset();
     setParameters (parameters);
 }
@@ -185,17 +235,26 @@ void ImpactEffects::resetBand()
     filterState = {};
     bandState = {};
     bandPrimed = false;
+    tail = {};
     state.bandLowHz = state.bandHighHz = 0.0;
     state.levelHoldGain = 1.0;
+    state.tailHz = state.tailAmplitude = 0.0;
+    state.tailDuck = 1.0;
 }
 
 void ImpactEffects::adoptFilter()
 {
-    if (requestedFilter.type == ImpactParameters::Filter::Type::band
-        && parameters.filter.type != ImpactParameters::Filter::Type::band)
-        resetBand(); // A band switched on never inherits classic or stale band state.
+    // A band or sweep switched on never inherits classic or another type's state.
+    if (smoothed (requestedFilter.type) && requestedFilter.type != parameters.filter.type)
+        resetBand();
     parameters.filter = requestedFilter;
     filterHeld = filterDetached = false;
+    if (requestedFilter.type == ImpactParameters::Filter::Type::sweep)
+    {
+        bandLowTarget = std::log2 (sweepLowHz);
+        bandHighTarget = std::log2 (static_cast<double> (requestedFilter.cutoffHz));
+        return;
+    }
     bandLowTarget = std::log2 (static_cast<double> (requestedFilter.bandLowHz));
     bandHighTarget = std::log2 (static_cast<double> (requestedFilter.bandHighHz));
 }
@@ -214,19 +273,20 @@ void ImpactEffects::setParameters (const ImpactParameters& next)
     f.repeatOctaves = std::clamp (f.repeatOctaves, -4.0f, 4.0f);
     f.bandLowHz = std::clamp (f.bandLowHz, 30.0f, 18000.0f);
     f.bandHighHz = std::clamp (f.bandHighHz, 30.0f, 18000.0f);
+    f.tailLevel = std::clamp (f.tailLevel, 0.0f, 1.0f);
+    f.tailDecayMs = std::clamp (f.tailDecayMs, 50.0f, 2000.0f);
     f.mix = std::clamp (f.mix, 0.0f, 1.0f);
     const auto filter = parameters.filter;
     parameters = next;
     parameters.filter = filter;
-    // A band switched off, or switched to or from another type, while it still
-    // sounds keeps its last shape, its breathing included, until its wet ramps
-    // out at the next cut; it never changes shape while audible. The new filter
-    // comes in on a later cut. Classic types, which never involve a band, adopt
-    // the new parameters at once, as they always have.
-    const auto band = ImpactParameters::Filter::Type::band;
+    // A band or sweep switched off, or switched to or from another type, while
+    // it still sounds keeps its last shape, its breathing included, until its
+    // wet ramps out at the next cut; it never changes shape while audible. The
+    // new filter comes in on a later cut. Classic types, which never involve a
+    // band or sweep, adopt the new parameters at once, as they always have.
     const auto sounding = parameters.filter.type;
     const auto audible = wet[0].current != 0.0 || wet[0].target != 0.0;
-    if (audible && (sounding == band || f.type == band) && (! f.enabled || f.type != sounding))
+    if (audible && (smoothed (sounding) || smoothed (f.type)) && (! f.enabled || f.type != sounding))
     {
         if (! filterHeld)
             heldDecayMultiplier = decayMultiplier;
@@ -287,6 +347,71 @@ void ImpactEffects::startCut (const CutIdentity& identity)
     attackPosition = 0;
     adEnvelope = attackSamples == 0 ? 1.0 : 0.0;
     state.envelope = adEnvelope;
+    // A held sweep runs on as if this cut never came: its tail neither strikes nor ducks.
+    if (! filterHeld && parameters.filter.type == ImpactParameters::Filter::Type::sweep)
+        startTail (identity);
+}
+
+void ImpactEffects::startTail (const CutIdentity& identity)
+{
+    const auto& p = parameters.filter;
+    // The cut after a roll's last strikes the tail, at tailLevel times the
+    // roll's RMS, so a roll of silence strikes nothing. The RMS is the
+    // low-pass's before the makeup, but never above the roll's as cut, so
+    // neither the makeup nor the resonance can make a tail louder than its roll.
+    if (tail.rollEnding && state.filterActive && p.tailLevel > 0.0f && tail.rollSamples > 0)
+    {
+        const auto energy = std::min (tail.rollEnergy, tail.rollInputEnergy);
+        const auto peak = p.tailLevel * std::numbers::sqrt2 * std::sqrt (energy / static_cast<double> (tail.rollSamples));
+        if (peak > 0.0)
+        {
+            // A silent tail starts at phase 0, so a strike sounds the same
+            // every time; a ringing one changes note with its phase intact.
+            if (tail.amplitude == 0.0)
+                tail.phase = 0.0;
+            tail.hz = detail::tailNoteHz (p.cutoffHz);
+            tail.increment = 2.0 * pi * tail.hz / sampleRate;
+            tail.decay = std::exp (-log1000 / (0.001 * p.tailDecayMs * sampleRate));
+            tail.peak = peak;
+            tail.attackRemaining = rampSamples;
+            tail.attackStep = (peak - tail.amplitude) / rampSamples;
+        }
+    }
+    tail.rollEnding = identity.cutCount >= 2 && identity.cutIndex + 1 == identity.cutCount;
+    if (identity.cutIndex == 0)
+    {
+        tail.rollEnergy = tail.rollInputEnergy = 0.0;
+        tail.rollSamples = 0;
+    }
+    // Every cut ducks the tail, so the hits stay clean and it sings between them.
+    tail.duckRemaining = rampSamples;
+    tail.duckStep = (tail.duck - tailDuckFloor) / rampSamples;
+}
+
+double ImpactEffects::nextTail()
+{
+    if (tail.duckRemaining > 0)
+        tail.duck = --tail.duckRemaining == 0 ? tailDuckFloor : tail.duck - tail.duckStep;
+    else
+        tail.duck = 1.0 - tailRecoveryPole * (1.0 - tail.duck);
+    if (tail.attackRemaining > 0)
+        tail.amplitude = --tail.attackRemaining == 0 ? tail.peak : tail.amplitude + tail.attackStep;
+    else if (tail.amplitude * tail.decay < tailSilence)
+    {
+        tail.amplitude = tail.phase = tail.hz = 0.0;
+    }
+    else
+        tail.amplitude *= tail.decay;
+    state.tailHz = tail.hz;
+    state.tailAmplitude = tail.amplitude;
+    state.tailDuck = tail.duck;
+    if (tail.amplitude == 0.0)
+        return 0.0;
+    const auto sample = tail.amplitude * tail.duck * std::sin (tail.phase);
+    tail.phase += tail.increment;
+    if (tail.phase >= 2.0 * pi)
+        tail.phase -= 2.0 * pi;
+    return sample;
 }
 
 double ImpactEffects::nextEnvelope()
@@ -311,7 +436,7 @@ void ImpactEffects::processFilter (double& left, double& right, double envelope,
             adoptFilter();
         return;
     }
-    if (parameters.filter.type == ImpactParameters::Filter::Type::band)
+    if (smoothed (parameters.filter.type))
     {
         processBand (left, right, envelope, repeatProgress, mix);
         return;
@@ -359,25 +484,38 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
         bandHigh = bandHighTarget + smoothingPole * (bandHigh - bandHighTarget);
         bandQ = p.q + smoothingPole * (bandQ - p.q);
     }
-    // The envelope opens the edges outward and repeat progress shifts both.
-    // The high edge stays at least a semitone above the low edge, so crossed
-    // edges hold a semitone apart, and both stay inside [30, 0.45 * rate].
+    // A band's envelope opens its edges outward and repeat progress shifts
+    // both. The high edge stays at least a semitone above the low edge, so
+    // crossed edges hold a semitone apart, and both stay inside
+    // [30, 0.45 * rate]. A sweep's high-pass stays at 30 Hz, and both move
+    // only its low-pass edge, which stays a semitone above it.
+    const auto sweep = p.type == ImpactParameters::Filter::Type::sweep;
     const auto opening = p.envelopeOctaves * envelope;
     const auto shift = p.repeatOctaves * repeatProgress;
     const auto limit = 0.45 * sampleRate;
-    auto low = std::clamp (std::exp2 (bandLow - opening + shift), 30.0, limit);
-    auto high = std::clamp (std::exp2 (bandHigh + opening + shift), 30.0, limit);
-    high = std::min (std::max (high, low * semitone), limit);
-    low = std::min (low, high / semitone);
+    double low, high;
+    if (sweep)
+    {
+        low = sweepLowHz;
+        high = std::min (std::max (std::exp2 (bandHigh + opening + shift), low * semitone), limit);
+    }
+    else
+    {
+        low = std::clamp (std::exp2 (bandLow - opening + shift), 30.0, limit);
+        high = std::clamp (std::exp2 (bandHigh + opening + shift), 30.0, limit);
+        high = std::min (std::max (high, low * semitone), limit);
+        low = std::min (low, high / semitone);
+    }
     state.bandLowHz = low;
     state.bandHighHz = high;
 
     struct Stage { double a1, a2, a3; };
-    const auto k = 1.0 / bandQ;
-    const auto stage = [this, k] (double cutoff)
+    const auto k = 1.0 / bandQ; // the low-pass edge's, and a band's high-pass edge's too
+    const auto lowK = sweep ? 1.0 / sweepLowQ : k;
+    const auto stage = [this] (double cutoff, double damping)
     {
         const auto g = std::tan (pi * cutoff / sampleRate);
-        const auto a1 = 1.0 / (1.0 + g * (g + k));
+        const auto a1 = 1.0 / (1.0 + g * (g + damping));
         return Stage { a1, g * a1, g * (g * a1) };
     };
     const auto tick = [] (const Stage& c, double input, FilterState& s)
@@ -390,11 +528,11 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
         s.ic2 = cleanState (2.0 * v2 - s.ic2);
         return std::array<double, 2> { v1, v2 };
     };
-    const auto highPass = stage (low), lowPass = stage (high);
+    const auto highPass = stage (low, lowK), lowPass = stage (high, k);
     const auto channel = [&] (double input, FilterState& highState, FilterState& lowState)
     {
         const auto [v1, v2] = tick (highPass, input, highState);
-        return tick (lowPass, input - k * v1 - v2, lowState)[1];
+        return tick (lowPass, input - lowK * v1 - v2, lowState)[1];
     };
     const auto bandLeft = channel (left, filterState[0], bandState[0]);
     const auto bandRight = channel (right, filterState[1], bandState[1]);
@@ -406,11 +544,29 @@ void ImpactEffects::processBand (double& left, double& right, double envelope, d
     // Octaves above 18 kHz don't count: at high rates the breathing pushes the
     // high edge there, where material has little power, and counting them
     // would dip the level at every cut. The table clamps a band that sits
-    // wholly above 18 kHz to its narrowest width.
-    const auto& table = pinkPowerTable();
+    // wholly above 18 kHz to its narrowest width. A sweep has its own table,
+    // for its fixed Butterworth high-pass, and its makeup only ever takes back
+    // what its resonance adds: never above 1, and never letting a tone on the
+    // resonant peak gain more than 6 dB. So a dark sweep is quieter than the
+    // open filter on broadband material, as any low-pass is.
+    const auto& table = sweep ? sweepPowerTable() : pinkPowerTable();
     const auto width = std::log2 (std::min (high, makeupHighestHz) / low);
-    const auto hold = std::min (makeupCeiling, std::exp (0.5 * (table.logOpen - table.interpolate (width, bandQ))));
+    const auto pink = std::exp (0.5 * (table.logOpen - table.interpolate (width, bandQ)));
+    const auto hold = sweep ? std::min ({ sweepMakeupCeiling, pink, sweepPeakCeiling / lowPassPeak (bandQ) })
+                            : std::min (makeupCeiling, pink);
     state.levelHoldGain = hold;
+    if (sweep)
+    {
+        // The tail joins the wet, and measures the roll.
+        const auto heardLeft = hold * bandLeft, heardRight = hold * bandRight;
+        tail.rollEnergy += 0.5 * (bandLeft * bandLeft + bandRight * bandRight);
+        tail.rollInputEnergy += 0.5 * (left * left + right * right);
+        ++tail.rollSamples;
+        const auto ring = nextTail();
+        left += mix * (heardLeft + ring - left);
+        right += mix * (heardRight + ring - right);
+        return;
+    }
     left += mix * (hold * bandLeft - left);
     right += mix * (hold * bandRight - right);
 }
