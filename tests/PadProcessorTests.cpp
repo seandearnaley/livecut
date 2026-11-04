@@ -293,7 +293,7 @@ TEST_CASE ("Switching from Classic to Pad while cutting releases on the next bea
 TEST_CASE ("Switching from Classic to Pad while cutting never clicks", "[pad][processor]")
 {
     constexpr int switched = 31200, end = 48000 + 240 + 12000;
-    const auto program = GENERATE (0, 1, 2); // Cut, Bounce, Glitch
+    const auto program = GENERATE (0, 1, 2, 3, 4, 5, 6, 7); // Cut, Bounce, Glitch, Suction, Filter, Tape, Loops, Rush
     PadSession classic, released;
     for (auto* session : { &classic, &released })
     {
