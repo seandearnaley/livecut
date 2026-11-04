@@ -17,7 +17,7 @@ namespace livecut
 struct DisplayState
 {
     std::atomic<int> padActiveProgram{0}, padPendingProgram{-1};
-    std::atomic<bool> padEngaged{false}, padUnavailable{false};
+    std::atomic<bool> padEngaged{false};
 
     enum class Status
     {

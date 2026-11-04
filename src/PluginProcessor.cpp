@@ -894,7 +894,6 @@ void LivecutAudioProcessor::publishDisplay ()
     const auto pending = padGate.pendingProgram ();
     display.padPendingProgram = pending ? static_cast<int> (*pending) : -1;
     display.padEngaged = padGate.engaged ();
-    display.padUnavailable = !livecut::engine::isAvailable (renderSettings.padProgram);
     display.hold = wetHold.state ();
     const auto source = stream->spectral ? delayedDisplay : sourceDisplay ();
     publishSourceDisplay (source);

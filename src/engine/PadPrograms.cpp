@@ -19,9 +19,9 @@ double lerp (double a, double b, double t)
 
 bool isAvailable (PadProgram program)
 {
-    return program == PadProgram::cut || program == PadProgram::bounce || program == PadProgram::glitch
-        || program == PadProgram::suction || program == PadProgram::filter || program == PadProgram::tape
-        || program == PadProgram::rush;
+    // Every program is built; only a value outside the eight isn't one.
+    const auto index = static_cast<int> (program);
+    return index >= 0 && index < static_cast<int> (padProgramCount);
 }
 
 PadCaptions padCaptions (PadProgram program)
@@ -34,9 +34,8 @@ PadCaptions padCaptions (PadProgram program)
         case PadProgram::suction: return { "Band", "Squeeze" };
         case PadProgram::filter: return { "Cutoff", "Ring" };
         case PadProgram::tape: return { "Length", "Stops" };
+        case PadProgram::loops: return { "Loop", "Depth" };
         case PadProgram::rush: return { "Push", "Roll" };
-        case PadProgram::loops:
-            break;
     }
 
     return { "", "" };
@@ -193,6 +192,18 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             break;
         }
         case PadProgram::loops:
+        {
+            // The bar you're in, half of it or a quarter, looped over four passes, and
+            // up to three levels of its first half, quarter and eighth folding in.
+            constexpr double lengths[] { 1.0, .5, .25 };
+            mapping.procedure = Procedure::loops;
+            mapping.seed = 707; // unused: Loops draws nothing
+            mapping.zones.x = padZone (x, 3, previous.x);
+            mapping.unitsPerBar = 16;
+            mapping.cut.loopBars = lengths[mapping.zones.x];
+            mapping.cut.loopDepth = std::min (static_cast<int> (4.f * y), 3);
+            break;
+        }
         default:
             std::abort(); // A violated precondition must not select a fallback program.
     }

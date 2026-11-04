@@ -25,6 +25,16 @@ public:
     void chooseBlock (Random&, const CutParameters&, const BlockContext&, std::vector<Cut>&) override;
 };
 
+// The pad's Loops: a phrase of four passes of a loop, the track and then its
+// repeats, folding into loops of its first half, quarter and eighth toward the
+// phrase's end. Stateless, and no random draws.
+class Loops final : public CutProcedure
+{
+public:
+    int choosePhraseBars (Random&, const CutParameters&) override;
+    void chooseBlock (Random&, const CutParameters&, const BlockContext&, std::vector<Cut>&) override;
+};
+
 // Nick Collins' BBCutProc11: odd-length cuts, repeated, with a stutter roll near the end of each phrase.
 class CutProc11 final : public CutProcedure
 {

@@ -82,10 +82,11 @@ TEST_CASE ("A quick tap cuts until the next beat, then fades over 5 ms", "[padga
         checkStep (d.next(), 0.f, true);
 }
 
-TEST_CASE ("Selecting an unavailable program leaves the active program alone", "[padgate]")
+TEST_CASE ("Selecting a program outside the eight leaves the active program alone", "[padgate]")
 {
+    const auto outside = static_cast<PadProgram> (padProgramCount);
     Driver d;
-    d.input.program = PadProgram::loops;
+    d.input.program = outside;
     auto step = d.next();
     checkStep (step, 0.f, true);
     CHECK_FALSE (step.programChanged);
@@ -93,7 +94,7 @@ TEST_CASE ("Selecting an unavailable program leaves the active program alone", "
     d.input.program = PadProgram::cut;
     d.input.touch = true;
     checkStep (d.next(), 1.f, false);
-    d.input.program = PadProgram::loops;
+    d.input.program = outside;
     while (d.sample < beat + fade)
     {
         const int k = d.sample;
@@ -227,11 +228,11 @@ TEST_CASE ("A release during the recovery keeps the gain rising to full before t
         checkStep (d.next(), 1.f - static_cast<float> (i + 1) / 240.f, i == fade - 1);
 }
 
-TEST_CASE ("Hold only latches a touch on an available program", "[padgate]")
+TEST_CASE ("Hold only latches a touch on one of the eight programs", "[padgate]")
 {
     Driver d;
     d.input.hold = true;
-    d.input.program = PadProgram::loops;
+    d.input.program = static_cast<PadProgram> (padProgramCount);
     d.input.touch = true;
     d.until (2400);
     d.input.touch = false;
@@ -291,10 +292,10 @@ TEST_CASE ("A program switch lands on the next beat while engaged, and immediate
     CHECK_FALSE (d.next().programChanged);
 }
 
-TEST_CASE ("Programs not yet built never engage", "[padgate]")
+TEST_CASE ("A program outside the eight never engages", "[padgate]")
 {
     Driver d;
-    d.input.program = PadProgram::loops;
+    d.input.program = static_cast<PadProgram> (padProgramCount);
     d.input.touch = true;
     d.input.hold = true;
     d.input.alwaysEngaged = GENERATE (false, true);
@@ -360,7 +361,7 @@ TEST_CASE ("Pending programs follow the current selection and bar quantize", "[p
     CHECK_FALSE (d.gate.pendingProgram().has_value());
     d.input.program = PadProgram::bounce;
     d.next();
-    d.input.program = PadProgram::loops;
+    d.input.program = static_cast<PadProgram> (padProgramCount); // outside the eight
     d.next();
     CHECK_FALSE (d.gate.pendingProgram().has_value());
     d.input.program = PadProgram::glitch;

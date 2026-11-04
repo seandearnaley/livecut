@@ -37,7 +37,7 @@ constexpr std::array<ProgramInfo, engine::padProgramCount> programInfo {
     ProgramInfo { "squeeze", "Left to right: the band slides from lows to highs. Up: it squeezes narrower and sings, breathing with every cut." },
     ProgramInfo { "resonance", "Left to right: the filter opens from dark to bright. Up: it rings, and every roll ends on a tuned note that ducks under the hits." },
     ProgramInfo { "stops", "Left to right: stops from half a beat to four beats long. Up: from a stop every four bars to one on every beat, each spinning back up into the next hit." },
-    ProgramInfo { "nested loops", "" },
+    ProgramInfo { "nested loops", "Left to right: loop the bar you're in, half a bar, or a beat. Up: the loop folds into shorter loops of its first hit toward the end of every phrase." },
     ProgramInfo { "rolls", "Left to right: rolls that drag, slowing and falling, to rolls that rush, speeding up and rising into the bar line. Up: from a roll on the last beat to one that fills the bar." },
 };
 
@@ -128,14 +128,11 @@ PadPage::PadPage (juce::AudioProcessorValueTreeState& s)
 
     for (int i = 0; i < programParameter.choices.size(); ++i)
     {
-        const auto available = engine::isAvailable (static_cast<engine::PadProgram> (i));
         const auto& info = programInfo[static_cast<std::size_t> (i)];
         auto* button = programs.add (std::make_unique<ProgramButton> (programParameter.choices[i], info.caption));
         button->setComponentID ("program" + juce::String (i));
         button->setTitle (programParameter.choices[i]);
-        button->setTooltip (available ? info.tooltip : "Coming in a later update");
-        button->setEnabled (available);
-        button->setAlpha (available ? 1.0f : 0.45f);
+        button->setTooltip (info.tooltip);
         button->onClick = [this, i] { programAttachment.setValueAsCompleteGesture (static_cast<float> (i)); };
         programRow.addAndMakeVisible (button);
     }
@@ -205,9 +202,6 @@ void PadPage::refresh (const DisplayState& display)
 
 juce::String PadPage::headline (const DisplayState& display, const juce::String& status) const
 {
-    if (! engine::isAvailable (chosenProgram()))
-        return programName (chosen) + " ISN'T AVAILABLE YET";
-
     const auto pending = display.padPendingProgram.load();
 
     if (pending >= 0)

@@ -204,7 +204,7 @@ TEST_CASE ("New instances open on the pad page at 880 by 724", "[pad][editor]")
     CHECK (surface->getButtonText() == "Classic");
 }
 
-TEST_CASE ("Program buttons select programs, and later programs are disabled", "[pad][editor]")
+TEST_CASE ("Program buttons select programs, and every one is enabled with its tooltip", "[pad][editor]")
 {
     juce::ScopedJuceInitialiser_GUI gui;
     LivecutAudioProcessor processor;
@@ -221,17 +221,9 @@ TEST_CASE ("Program buttons select programs, and later programs are disabled", "
         buttons.push_back (button);
         CHECK (button->getButtonText() == names[i]);
         CHECK (button->getTitle().isNotEmpty());
-        if (i != 6) // Loops
-        {
-            CHECK (button->isEnabled());
-            CHECK (button->getTooltip().isNotEmpty());
-            CHECK (button->getTooltip() != "Coming in a later update");
-        }
-        else
-        {
-            CHECK_FALSE (button->isEnabled());
-            CHECK (button->getTooltip() == "Coming in a later update");
-        }
+        CHECK (button->isEnabled());
+        CHECK (button->getTooltip().isNotEmpty());
+        CHECK (button->getTooltip() != "Coming in a later update");
     }
 
     CHECK (buttons[0]->getToggleState());
@@ -314,6 +306,12 @@ TEST_CASE ("The pad's words describe the sound", "[pad][editor]")
         }
     }
     CHECK (quantizeButtons == 2);
+
+    // Loops' key says what its axes do.
+    auto* loopsKey = dynamic_cast<juce::Button*> (findById (editor, "program6"));
+    REQUIRE (loopsKey != nullptr);
+    CHECK (loopsKey->getTooltip().startsWith ("Left to right: loop the bar you're in"));
+    CHECK (loopsKey->getTooltip().contains ("Up:"));
 
     auto* pad = dynamic_cast<juce::TooltipClient*> (findById (editor, "padTouch"));
     REQUIRE (pad != nullptr);
@@ -405,6 +403,11 @@ TEST_CASE ("Axis captions follow the program", "[pad][editor]")
     editor.refreshDisplay();
     CHECK (labelTexts (pad).contains ("Length"));
     CHECK (labelTexts (pad).contains ("Stops"));
+
+    display.padActiveProgram.store (6);
+    editor.refreshDisplay();
+    CHECK (labelTexts (pad).contains ("Loop"));
+    CHECK (labelTexts (pad).contains ("Depth"));
 
     display.padActiveProgram.store (7);
     editor.refreshDisplay();
@@ -568,12 +571,12 @@ TEST_CASE ("The ruler headline names the program and any pending switch", "[pad]
     CHECK (ruler->headlineText() == utf8 ("CUT → GLITCH ON THE BAR"));
 
     display.padPendingProgram.store (-1);
-    set (processor, livecut::ids::padProgram, 6);
-    editor.refreshDisplay();
-    CHECK (ruler->headlineText() == "LOOPS ISN'T AVAILABLE YET");
 
     // Idle, the chosen program is the one that will play.
     display.padEngaged.store (false);
+    set (processor, livecut::ids::padProgram, 6);
+    editor.refreshDisplay();
+    CHECK (ruler->headlineText() == utf8 ("LOOPS · BAR 2 OF 4"));
     set (processor, livecut::ids::padProgram, 1);
     editor.refreshDisplay();
     CHECK (ruler->headlineText() == utf8 ("BOUNCE · BAR 2 OF 4"));

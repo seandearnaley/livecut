@@ -493,13 +493,21 @@ std::uint64_t pinnedEventHash (int which)
     OnsetDetector detector;
     struct EpochBounds final : Cutter::SourceContext
     {
+        std::uint64_t epoch = 3;
         std::optional<Cutter::TransportBounds> sourceBoundsAt (std::int64_t frame) const override
         {
             if (frame < 0)
                 return std::nullopt;
-            return Cutter::TransportBounds { 3, 0, std::nullopt };
+            return Cutter::TransportBounds { epoch, 0, std::nullopt };
         }
     } bounds;
+    // Attack Align and Reverse (14, 15) read a prepared detector, fed each buffer before the cutter.
+    const auto analysed = which == 14 || which == 15;
+    if (analysed)
+    {
+        detector.prepare (rate, 8192, 3.0);
+        bounds.epoch = detector.epoch();
+    }
     cutter.setTransformSource (detector, bounds);
     if (which < 3)
     {
@@ -523,11 +531,11 @@ std::uint64_t pinnedEventHash (int which)
         }
         cutter.setFracture (f);
     }
-    else if (which < 9 || which == 13)
+    else if (which < 9 || which == 13 || which == 16)
     {
         const PadProgram programs[] { PadProgram::cut, PadProgram::bounce, PadProgram::glitch, PadProgram::suction, PadProgram::filter,
                                       PadProgram::tape };
-        const auto m = mapPad (which == 13 ? PadProgram::rush : programs[which - 3], .3f, .75f, {});
+        const auto m = mapPad (which == 13 ? PadProgram::rush : which == 16 ? PadProgram::loops : programs[which - 3], .3f, .75f, {});
         cutter.setProcedure (m.procedure);
         cutter.setUnitsPerBar (m.unitsPerBar);
         cutter.setSeed (m.seed);
@@ -535,6 +543,24 @@ std::uint64_t pinnedEventHash (int which)
         cutter.setCrusher (m.crusher);
         cutter.setImpact (m.impact);
         cutter.setFracture (m.fracture);
+    }
+    else if (analysed)
+    {
+        // Classic CutProc11 and WarpCut with Attack Align and Reverse, pitched and panned, at a 2 ms fade.
+        CutParameters p;
+        p.minPhraseBars = 1;
+        p.maxPhraseBars = 2;
+        p.minCents = -400;
+        p.maxCents = 300;
+        p.minPan = -.6f;
+        p.maxPan = .5f;
+        p.maxRepeats = 3;
+        cutter.setProcedure (which == 14 ? Procedure::cutProc11 : Procedure::warpCut);
+        cutter.setUnitsPerBar (16);
+        cutter.setSeed (43);
+        cutter.setParameters (p);
+        cutter.setFadeMilliseconds (2.0);
+        cutter.setTransforms (which == 14 ? Cutter::TransformParameters { true, 6.0, .5 } : Cutter::TransformParameters { true, 3.0, 1.0 });
     }
     else
     {
@@ -578,6 +604,19 @@ std::uint64_t pinnedEventHash (int which)
             left[i] = testing::portableSignal (frame + static_cast<std::int64_t> (i), 0);
             right[i] = testing::portableSignal (frame + static_cast<std::int64_t> (i), 1);
         }
+        if (analysed)
+            for (std::size_t i = 0; i < left.size(); ++i)
+            {
+                // Bursts every 16th, an exact power-of-two gain apart, give the detector attacks.
+                if ((frame + static_cast<std::int64_t> (i)) / 3409 % 2 == 1)
+                {
+                    left[i] *= .125f;
+                    right[i] *= .125f;
+                }
+            }
+        if (analysed)
+            for (std::size_t i = 0; i < left.size(); ++i)
+                detector.process (frame + static_cast<std::int64_t> (i), left[i], right[i]);
         const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
         cutter.process (left.data(), right.data(), 512, { bpm, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
         for (std::size_t i = 0; i < left.size(); ++i)
@@ -593,6 +632,12 @@ std::uint64_t pinnedEventHash (int which)
         if (! faster && beats > 24.7) { bpm = 103.0; faster = true; }
         if (! slower && beats > 33.2) { bpm = 91.0; slower = true; }
     }
+    if (analysed)
+    {
+        // The pin covers transforms that were applied, not only ones that were refused.
+        REQUIRE (cutter.transformStats().attackAligned > 0);
+        REQUIRE (cutter.transformStats().reversed > 0);
+    }
     return hash;
 }
 } // namespace
@@ -604,13 +649,17 @@ TEST_CASE("Classic Fracture and the built programs are bit-identical through res
     // and Classic's procedures (9 to 12) were measured on pad/tape before Rush
     // (b34dd71), and Rush (13) as it was built; their MSVC values are Windows CI's at
     // 8c10c43. Rush (13) was re-measured when its joins began to crossfade (MSVC at c0c59e1).
-    constexpr std::array<std::uint64_t,14> expected {
+    // Attack Align and Reverse (14, 15) were measured on pad/rush at c0c59e1, before Loops,
+    // and Loops (16) as it was built, re-measured when its capture took the tie rule.
+    constexpr std::array<std::uint64_t,17> expected {
         testing::pinnedHash(UINT64_C(0x2f582588aa69dda7),UINT64_C(0x1f3d82b817cc3135)), testing::pinnedHash(UINT64_C(0xa09e8c6a97ac05eb),UINT64_C(0x8d0225cdfc3b26f0)), testing::pinnedHash(UINT64_C(0x8dfd275471cb838b),UINT64_C(0xa315ceaf0d35f004)), testing::pinnedHash(UINT64_C(0xbd765792b25f5b6a),UINT64_C(0x3d812833c479f0d2)),
         testing::pinnedHash(UINT64_C(0x102182ecbb1e9824),UINT64_C(0x3227a7eafd96dc39)), testing::pinnedHash(UINT64_C(0xc802fe7c3ef2261e),UINT64_C(0x71987b5803b1b4e5)), testing::pinnedHash(UINT64_C(0xf16d4f18e2706587),UINT64_C(0x1af7d9c363b0f056)), testing::pinnedHash(UINT64_C(0x53c8983cba5b2842),UINT64_C(0x4b629cf30fab193d)),
         testing::pinnedHash(UINT64_C(0x582da3bde16cd917),UINT64_C(0xf1220989e57a4a9f)), testing::pinnedHash(UINT64_C(0xf471244cf27e91e7),UINT64_C(0x2628a4760968298d)), testing::pinnedHash(UINT64_C(0x08bbb0f7a7d88d38),UINT64_C(0x6a0984dc22ec138f)), testing::pinnedHash(UINT64_C(0x48b6b22fc72be4e4),UINT64_C(0x8d01597ed4912dbe)),
         testing::pinnedHash(UINT64_C(0xf2958df8ef88e9b5),UINT64_C(0x22effe140e38afa6)), 
-        testing::pinnedHash(UINT64_C(0x8bd9eaa04dee1db7),UINT64_C(0xc20c02f50e06a2fc)) };
-    for(int which=0;which<14;++which)
+        testing::pinnedHash(UINT64_C(0x8bd9eaa04dee1db7),UINT64_C(0xc20c02f50e06a2fc)),
+        testing::pinnedHash(UINT64_C(0xb47274f03b5de091),UINT64_C(0xace8c087c19d6fa1)), testing::pinnedHash(UINT64_C(0x47b7aaa4cb94bb9b),UINT64_C(0xc5ea2673a9be3c67)),
+        testing::pinnedHash(UINT64_C(0xcd2057fd1671cbef),UINT64_C(0x0638bbf53f06569a)) };
+    for(int which=0;which<17;++which)
     {
         CAPTURE(which);
         CHECK(pinnedEventHash(which)==expected[static_cast<std::size_t>(which)]);

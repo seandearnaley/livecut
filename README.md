@@ -65,19 +65,21 @@ transport behavior, memory and validation limits.
 
 **Livecut 1.0 (in progress): the pad.** New instances open on a pad instead of
 the pages. Press it to cut and let go to stop on the next beat or bar; drag to
-play two settings of the chosen program at once. Eight programs sit beneath it,
-Cut, Bounce, Glitch, Suction, Filter, Tape and Rush first, with Loops to
-follow. Suction squeezes the cuts into a narrow, singing band that bursts open
-on every cut and sucks shut behind it. Filter sweeps a resonant low-pass from
-dark to open and rings each roll out on a tuned note that ducks under the
-hits. Tape lets the track play and brakes it to a halt on the grid, from once
-every four bars to every beat, then spins it back up into the next hit. Rush
-lets the track play and rolls the last beats of every bar into the next
-downbeat, evenly, or rushing and rising, or dragging and falling. Hold
-keeps cutting after you let go, Mix
-blends the input with the program, and Straight keeps every cut on even
-divisions of the beat, so a program plays no triplets. Classic keeps the
-original pages, and sessions saved before the pad open on them.
+play two settings of the chosen program at once. Eight programs sit beneath
+it: Cut, Bounce, Glitch, Suction, Filter, Tape, Loops and Rush. Suction
+squeezes the cuts into a narrow, singing band that bursts open on every cut
+and sucks shut behind it. Filter sweeps a resonant low-pass from dark to open
+and rings each roll out on a tuned note that ducks under the hits. Tape lets
+the track play and brakes it to a halt on the grid, from once every four bars
+to every beat, then spins it back up into the next hit. Loops lets the track
+play a bar, half a bar or a beat, then loops it, folding into shorter and
+shorter loops of its first hit before it catches the track again. Rush lets
+the track play and rolls the last beats of every bar into the next downbeat,
+evenly, or rushing and rising, or dragging and falling. Hold keeps cutting
+after you let go, Mix blends the input with the program, and Straight keeps
+every cut on even divisions of the beat, so a program plays no triplets.
+Classic keeps the original pages, and sessions saved before the pad open on
+them.
 
 ## Building
 
