@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <utility>
 
 namespace livecut::engine
 {
@@ -44,26 +45,83 @@ double fractureDraw (const CutIdentity& id, std::uint64_t tag, std::uint64_t ord
     return static_cast<double> (hash (result ^ tag ^ hash (ordinal)) >> 11) * 0x1p-53;
 }
 
-void TapeTrajectory::start (double a, double b, int length, FractureParameters::Tape::Curve shape)
+void TapeTrajectory::start (double a, double b, int length, FractureParameters::Tape::Curve shape, double startPhase)
 {
+    landing = false;
     assert (std::isfinite (a) && a >= 0 && a <= 1 && std::isfinite (b) && b >= 0 && b <= 1);
+    assert (std::isfinite (startPhase) && startPhase >= 0 && startPhase < 1);
     from = a;
     to = b;
     frames = std::max (length,1);
     curve = shape;
+    phase = shape == FractureParameters::Tape::Curve::quadratic ? startPhase : 0.0;
+}
+
+bool TapeTrajectory::canLand (double lag, double speed, int length)
+{
+    return 4.0 * std::max (lag, 0.0) + std::max (length, 1) * (1.0 - speed) >= 0.0;
+}
+
+void TapeTrajectory::land (double lag, double speed, int length)
+{
+    assert (canLand (lag, speed, length));
+    from = 0.0;
+    to = 1.0;
+    frames = std::max (length, 1);
+    curve = FractureParameters::Tape::Curve::catchUp;
+    phase = 0.0;
+    landing = true;
+    landLag = std::max (lag, 0.0);
+    // lag (1) = a + b, and the speed 1 - d lag / dn = 1 + (3a + 4b) / frames at w = 1.
+    landA = 4.0 * landLag + frames * (1.0 - speed);
+    landB = landLag - landA;
+}
+
+double TapeTrajectory::phaseAt (int frame) const
+{
+    const auto u = frames == 1 ? (frame <= 0 ? 0.0 : 1.0) : std::clamp (static_cast<double> (frame) / (frames - 1), 0.0, 1.0);
+    return phase + (1.0 - phase) * u;
 }
 
 double TapeTrajectory::speed (int frame) const
 {
+    if (landing)
+    {
+        const auto w = 1.0 - std::clamp (static_cast<double> (frame) / frames, 0.0, 1.0);
+        return std::max (0.0, 1.0 + w * w * (3.0 * landA + 4.0 * landB * w) / frames);
+    }
+    if (curve == FractureParameters::Tape::Curve::catchUp)
+    {
+        const auto w = 1.0 - std::clamp (static_cast<double> (frame) / frames, 0.0, 1.0);
+        return from + (to - from) * (1.0 + w * w * (3.0 - 4.0 * w));
+    }
     if (frames == 1)
         return frame <= 0 ? from : to;
     const auto u = std::clamp (static_cast<double> (frame) / (frames-1),0.0,1.0);
-    const auto shape = curve == FractureParameters::Tape::Curve::linear ? u : u*u*(3-2*u);
+    const auto along = phase + (1.0 - phase) * u;
+    const auto shape = curve == FractureParameters::Tape::Curve::linear ? u
+                     : curve == FractureParameters::Tape::Curve::quadratic ? along*along : u*u*(3-2*u);
     return std::clamp (from + (to-from)*shape,0.0,1.0);
 }
 
 double TapeTrajectory::position (int frame) const
 {
+    if (landing)
+    {
+        // Relative to where it was re-timed: the frames played, less the lag left, plus the lag it had.
+        const auto n = static_cast<double> (std::clamp (frame, 0, frames));
+        const auto w = 1.0 - n / frames;
+        const auto lag = std::max (0.0, w * w * w * (landA + landB * w));
+        return n - lag + landLag + std::max (frame - frames, 0);
+    }
+    if (curve == FractureParameters::Tape::Curve::catchUp)
+    {
+        // n - n w^3 is the integral 3u^2 - 3u^3 + u^4 scaled to frames, written so
+        // that rounding can never put it ahead of frame n.
+        const auto n = static_cast<double> (std::clamp (frame, 0, frames));
+        const auto w = 1.0 - n / frames;
+        return from * n + (to - from) * (n - n * w * w * w) + std::max (frame - frames, 0) * to;
+    }
     const auto n = static_cast<double> (std::clamp (frame,0,frames));
     if (frames == 1)
         return n*from + std::max (frame-frames,0)*to;
@@ -71,14 +129,156 @@ double TapeTrajectory::position (int frame) const
     const auto sum1 = n*(n-1)/2;
     const auto sum2 = n*(n-1)*(2*n-1)/6;
     const auto sum3 = sum1*sum1;
-    const auto shapeSum = curve == FractureParameters::Tape::Curve::linear
-                        ? sum1/d : 3*sum2/(d*d)-2*sum3/(d*d*d);
+    // From a phase p, the quadratic sums (p + q k)^2 with q = (1 - p) / d.
+    const auto q = (1.0 - phase) / d;
+    const auto shapeSum = curve == FractureParameters::Tape::Curve::linear ? sum1/d
+                        : curve == FractureParameters::Tape::Curve::quadratic
+                            ? (phase == 0.0 ? sum2/(d*d) : n*phase*phase + 2.0*phase*q*sum1 + q*q*sum2)
+                        : 3*sum2/(d*d)-2*sum3/(d*d*d);
     return std::max (0.0,n*from+(to-from)*shapeSum) + std::max (frame-frames,0)*to;
 }
 
 std::int64_t TapeTrajectory::sourceFrames() const
 {
     return static_cast<std::int64_t> (std::ceil (position (frames-1)))+1;
+}
+
+namespace
+{
+constexpr double beatTolerance = 1.0e-9;
+constexpr std::uint64_t tapeStopTag = 0x5441504553544f50ULL; // "TAPESTOP"
+
+std::int64_t floorMod (std::int64_t value, std::int64_t divisor)
+{
+    return ((value % divisor) + divisor) % divisor;
+}
+
+bool isBarLine (double beat, double beatsPerBar)
+{
+    return beat >= beatsPerBar - beatTolerance;
+}
+
+// The candidate end before (bar, beat): the whole beat before it, or the bar line before that.
+void previousEnd (std::int64_t& bar, double& beat, double beatsPerBar)
+{
+    const auto whole = std::ceil (beat - beatTolerance) - 1.0;
+    if (whole >= 1.0 - beatTolerance)
+        beat = whole;
+    else
+    {
+        --bar;
+        beat = beatsPerBar;
+    }
+}
+} // namespace
+
+int tapeStopLevel (std::int64_t bar, double beat, double beatsPerBar)
+{
+    if (isBarLine (beat, beatsPerBar))
+        return floorMod (bar + 1, 4) == 0 ? 0 : floorMod (bar + 1, 2) == 0 ? 1 : 2;
+    return std::llround (beat) % 2 == 0 ? 3 : 4;
+}
+
+bool tapeStopEnds (std::uint32_t seed, double density, std::int64_t bar, double beat, double beatsPerBar)
+{
+    const auto level = tapeStopLevel (bar, beat, beatsPerBar);
+    const auto chance = std::clamp (density + 1.0 - level, 0.0, 1.0);
+    const auto at = isBarLine (beat, beatsPerBar) ? beatsPerBar : static_cast<double> (std::llround (beat));
+    return fractureDraw ({ seed, bar, 0.0, at, 0, 1 }, tapeStopTag) < chance;
+}
+
+double tapeStopBeats (const FractureParameters::Tape& tape, std::uint32_t seed, std::int64_t bar, double beat, double beatsPerBar)
+{
+    auto gap = 2.0 * beatsPerBar;
+    auto earlierBar = bar;
+    auto earlierBeat = beat;
+    auto distance = 0.0;
+    while (true)
+    {
+        const auto fromBar = earlierBar;
+        const auto fromBeat = earlierBeat;
+        previousEnd (earlierBar, earlierBeat, beatsPerBar);
+        distance += fromBar == earlierBar ? fromBeat - earlierBeat : fromBeat;
+        if (distance >= 2.0 * beatsPerBar - beatTolerance)
+            break;
+        if (tapeStopEnds (seed, tape.stopDensity, earlierBar, earlierBeat, beatsPerBar))
+        {
+            gap = distance;
+            break;
+        }
+    }
+    return std::min ({ static_cast<double> (tape.stopBeats), beatsPerBar, gap / 2.0 });
+}
+
+bool layOutTapeStops (const FractureParameters::Tape& tape, std::uint32_t seed, std::int64_t bar, double fromBeat,
+                      double beatsPerBar, double unitsPerBeat, double blockUnits, bool spinUpFirst,
+                      std::vector<Cut>& cuts)
+{
+    assert (tape.stopBeats > 0.0f);
+    cuts.clear();
+    const auto end = fromBeat + blockUnits / unitsPerBeat;
+    auto at = fromBeat;
+    auto done = 0.0;
+    const auto add = [&] (TapeMotion motion, double until)
+    {
+        Cut cut;
+        cut.units = (until - at) * unitsPerBeat;
+        cut.tape = motion;
+        cuts.push_back (cut);
+        done += cut.units;
+        at = until;
+    };
+
+    if (spinUpFirst)
+        add (TapeMotion::spinUp, std::min (fromBeat + tapeSpinUpBeats, end));
+    auto endsInStop = false;
+    for (auto beat = std::floor (fromBeat + beatTolerance) + 1.0; ; beat += 1.0)
+    {
+        const auto stopEnd = std::min (beat, beatsPerBar);
+        if (stopEnd > end + beatTolerance)
+            break;
+        // Room for a play, the stop and its spin-up, and the block's last play.
+        if (cuts.size() + 4 > maxCutsPerBlock)
+            break;
+        if (tapeStopEnds (seed, tape.stopDensity, bar, stopEnd, beatsPerBar))
+        {
+            const auto stopStart = stopEnd - tapeStopBeats (tape, seed, bar, stopEnd, beatsPerBar);
+            // A stop with no length (a stopBeats of 0) is no stop at all.
+            if (stopStart >= at - beatTolerance && stopStart < stopEnd - beatTolerance)
+            {
+                if (stopStart > at + beatTolerance)
+                    add (TapeMotion::play, stopStart);
+                add (TapeMotion::stop, stopEnd);
+                if (stopEnd < end - beatTolerance)
+                    add (TapeMotion::spinUp, std::min (stopEnd + tapeSpinUpBeats, end));
+                else
+                    endsInStop = true;
+            }
+        }
+        if (stopEnd >= beatsPerBar - beatTolerance)
+            break;
+    }
+    if (at < end - beatTolerance)
+        add (TapeMotion::play, end);
+    // The last cut takes the exact remainder, so the cuts sum to the block.
+    cuts.back().units += blockUnits - done;
+    return endsInStop;
+}
+
+TapeCurve tapeCurveFor (const FractureParameters::Tape& tape, TapeMotion motion, std::uint64_t ordinal)
+{
+    using Curve = FractureParameters::Tape::Curve;
+    switch (motion)
+    {
+        case TapeMotion::play: return { 1.0, 1.0, Curve::linear };
+        case TapeMotion::stop: return { 1.0, 0.0, Curve::quadratic };
+        case TapeMotion::spinUp: return { 0.0, 1.0, Curve::catchUp };
+        case TapeMotion::cycle: break;
+    }
+    double start = tape.startSpeed, end = tape.endSpeed;
+    if (tape.alternate && (ordinal % 2) != 0)
+        std::swap (start, end);
+    return { start, end, tape.curve };
 }
 
 int GrainResampler::bucketFor (double rate)
@@ -225,12 +425,11 @@ void FractureReader::startCut (const FractureCutContext& cut)
     firstReady=-1;
     nextGrain=0;
     tapeSegmentAge=0;
+    nextAge=0;
     tapeBase=0;
     grainFrames=std::max(2,static_cast<int>(std::lround(parameters.grain.sizeMs*sampleRate/1000)));
-    auto start=parameters.tape.startSpeed,end=parameters.tape.endSpeed;
-    if(parameters.tape.alternate && (context.ordinal%2)!=0)
-        std::swap(start,end);
-    tape.start(start,end,cut.outputFrames,parameters.tape.curve);
+    const auto speeds = tapeCurveFor (parameters.tape, cut.cut.tape, context.ordinal);
+    tape.start (speeds.from, speeds.to, cut.outputFrames, speeds.curve);
 }
 
 void FractureReader::fail (FractureState reason)
@@ -242,16 +441,77 @@ void FractureReader::fail (FractureState reason)
 
 void FractureReader::retimeTape (int age, int remainingFrames)
 {
-    if(parameters.procedure!=FractureProcedure::tapeCut || context.completeTapeSource)
+    const auto speeds = tapeCurveFor (parameters.tape, context.cut.tape, context.ordinal);
+    if (parameters.procedure != FractureProcedure::tapeCut || context.completeTapeSource)
         return;
     const auto position=tapeBase+tape.position(age-tapeSegmentAge);
     const auto speed=tape.speed(age-tapeSegmentAge);
-    auto end=parameters.tape.endSpeed;
-    if(parameters.tape.alternate && (context.ordinal%2)!=0)
-        end=parameters.tape.startSpeed;
+    const auto phase=tape.phaseAt(age-tapeSegmentAge);
+    if (speeds.curve == FractureParameters::Tape::Curve::catchUp)
+    {
+        // A spin-up lands on the track at the cut's new end, from the lag and
+        // speed it has now. A motion reads from the frame it starts on, so the
+        // track is at `age`. A longer cut it can't land in without reading ahead
+        // keeps its frames, lands sooner and plays on at speed 1.
+        const auto lag = static_cast<double> (age) - position;
+        const auto frames = std::max (remainingFrames, 1);
+        if (! TapeTrajectory::canLand (lag, speed, frames))
+            return;
+        tapeBase=position;
+        tapeSegmentAge=age;
+        tape.land (lag, speed, frames);
+        return;
+    }
     tapeBase=position;
     tapeSegmentAge=age;
-    tape.start(speed,end,remainingFrames,parameters.tape.curve);
+    // A brake carries on along its curve from where it is, over the new length.
+    if (speeds.curve == FractureParameters::Tape::Curve::quadratic && phase < 1.0)
+        tape.start (speeds.from, speeds.to, remainingFrames, speeds.curve, phase);
+    else
+        tape.start (speed, speeds.to, remainingFrames, speeds.curve);
+}
+
+std::optional<TapeTail> FractureReader::tail() const
+{
+    if (parameters.procedure != FractureProcedure::tapeCut || context.cut.tape == TapeMotion::cycle
+        || state.state != FractureState::playing)
+        return std::nullopt;
+    TapeTail tail;
+    tail.source = context.source;
+    tail.trajectory = tape;
+    tail.base = tapeBase;
+    tail.age = nextAge;
+    tail.segmentAge = tapeSegmentAge;
+    panMatrix (context.cut.pan, context.cut.amp, tail.ll, tail.lr, tail.rl, tail.rr);
+    return tail;
+}
+
+bool FractureReader::motionUnfinished() const
+{
+    if (parameters.procedure != FractureProcedure::tapeCut || state.state != FractureState::playing
+        || nextAge >= context.outputFrames)
+        return false;
+    // A stop with only its silent last frame left has nothing to fade.
+    return context.cut.tape == TapeMotion::spinUp
+        || (context.cut.tape == TapeMotion::stop && tape.speed (nextAge - tapeSegmentAge) > 0.0);
+}
+
+bool TapeTail::next (const LivePlayer& player, float& left, float& right)
+{
+    const auto local = age - segmentAge;
+    const auto speed = trajectory.speed (local);
+    const auto position = base + trajectory.position (local);
+    ++age;
+    left = right = 0.0f;
+    if (speed <= 0)
+        return true;
+    const auto frame = player.readSourceFrame (source, position);
+    if (! frame)
+        return false;
+    const auto gain = static_cast<float> (std::sqrt (std::min (speed, 1.0)));
+    left = gain * (ll * frame->left + rl * frame->right);
+    right = gain * (lr * frame->left + rr * frame->right);
+    return true;
 }
 
 bool FractureReader::launch()
@@ -350,6 +610,7 @@ bool FractureReader::process (const LivePlayer& player, int age, int soundingFra
     }
     else
     {
+        nextAge = age + 1;
         const auto local=age-tapeSegmentAge;
         const auto position=tapeBase+tape.position(local);
         state.tapeSpeed=tape.speed(local);
@@ -365,7 +626,11 @@ bool FractureReader::process (const LivePlayer& player, int age, int soundingFra
         }
         float ll,lr,rl,rr;
         panMatrix(context.cut.pan,context.cut.amp,ll,lr,rl,rr);
-        const auto gain=static_cast<float>(std::sqrt(state.tapeSpeed))*fadeEnvelope(age,context.fadeFrames,soundingFrames);
+        // A motion joins its neighbours without a seam, so it has no fade, and a
+        // spin-up's overshoot bends the pitch, never the level.
+        const auto gain = context.cut.tape == TapeMotion::cycle
+                        ? static_cast<float>(std::sqrt(state.tapeSpeed))*fadeEnvelope(age,context.fadeFrames,soundingFrames)
+                        : static_cast<float> (std::sqrt (std::min (state.tapeSpeed, 1.0)));
         left=gain*(ll*frame->left+rl*frame->right);
         right=gain*(lr*frame->left+rr*frame->right);
     }

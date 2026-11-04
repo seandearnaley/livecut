@@ -66,11 +66,13 @@ transport behavior, memory and validation limits.
 **Livecut 1.0 (in progress): the pad.** New instances open on a pad instead of
 the pages. Press it to cut and let go to stop on the next beat or bar; drag to
 play two settings of the chosen program at once. Eight programs sit beneath it,
-Cut, Bounce, Glitch, Suction and Filter first, with Tape, Loops and Rush to
+Cut, Bounce, Glitch, Suction, Filter and Tape first, with Loops and Rush to
 follow. Suction squeezes the cuts into a narrow, singing band that bursts open
 on every cut and sucks shut behind it. Filter sweeps a resonant low-pass from
 dark to open and rings each roll out on a tuned note that ducks under the
-hits. Hold keeps cutting after you let go, Mix
+hits. Tape lets the track play and brakes it to a halt on the grid, from once
+every four bars to every beat, then spins it back up into the next hit. Hold
+keeps cutting after you let go, Mix
 blends the input with the program, and Straight keeps every cut on even
 divisions of the beat, so a program plays no triplets. Classic keeps the
 original pages, and sessions saved before the pad open on them.

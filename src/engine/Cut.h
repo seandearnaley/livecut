@@ -3,10 +3,18 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 namespace livecut::engine
 {
+
+// How a TapeCut cut moves. A cycle cut is the Classic Tape page's: it replays its
+// block from the start at the page's speeds, under the cut's fade. The pad's
+// motions each read from their own first frame with no fade, so a cut joins the
+// next without a seam: play runs at speed 1 (the input itself), stop brakes from
+// the track to silence, and spinUp winds from silence back onto the track.
+enum class TapeMotion : std::uint8_t { cycle, play, stop, spinUp };
 
 // One slice of the incoming audio, replayed from the start of its block.
 // Durations are in subdivision units, so cutting is independent of tempo and
@@ -18,7 +26,11 @@ struct Cut
     float pan = 0.0f;   // -1 is hard left, +1 hard right
     float amp = 1.0f;
     float cents = 0.0f; // pitch offset
+    TapeMotion tape = TapeMotion::cycle; // read only by TapeCut
 };
+
+// The motion sits in what was padding, so a cut, and every block plan, stays the same size.
+static_assert (sizeof (Cut) == 4 * sizeof (double));
 
 // The largest block is a CutProc11 stutter: under a bar of units, at up to 8 cuts per unit.
 inline constexpr std::size_t maxCutsPerBlock = 256;

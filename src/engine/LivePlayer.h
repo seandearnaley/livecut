@@ -91,6 +91,11 @@ public:
     // Re-times the rest of the block for a new tempo: what has already played
     // stays, and everything after it is laid out again at the new length of a unit.
     void setSamplesPerUnit (double samplesPerUnit);
+    // For this block only: count the current cut's elapsed units across re-times,
+    // each stretch at the tempo it played at, rather than all of it at the last
+    // tempo. The pad's Tape asks for it so a stop ends on its grid point through
+    // tempo automation; every other block keeps the original count.
+    void setExactRetime (bool exact) { exactRetime = exact; }
 
     std::span<const PlayingCut> cuts() const { return playing; }
 
@@ -117,6 +122,9 @@ private:
     int capacity = 0;
     std::size_t current = 0;
     int position = 0; // samples into the current cut
+    bool exactRetime = false;
+    double retimedUnits = 0.0; // the current cut's units up to its last re-time, when exact
+    int retimedPosition = 0;
     int fade = 1;
     double samplesPerUnit = 1.0;
 };

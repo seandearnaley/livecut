@@ -20,7 +20,7 @@ double lerp (double a, double b, double t)
 bool isAvailable (PadProgram program)
 {
     return program == PadProgram::cut || program == PadProgram::bounce || program == PadProgram::glitch
-        || program == PadProgram::suction || program == PadProgram::filter;
+        || program == PadProgram::suction || program == PadProgram::filter || program == PadProgram::tape;
 }
 
 PadCaptions padCaptions (PadProgram program)
@@ -32,7 +32,7 @@ PadCaptions padCaptions (PadProgram program)
         case PadProgram::glitch: return { "Rate", "Pitch" };
         case PadProgram::suction: return { "Band", "Squeeze" };
         case PadProgram::filter: return { "Cutoff", "Ring" };
-        case PadProgram::tape:
+        case PadProgram::tape: return { "Length", "Stops" };
         case PadProgram::loops:
         case PadProgram::rush:
             break;
@@ -161,6 +161,21 @@ PadMapping mapPad (PadProgram program, float x, float y, PadZones previous)
             break;
         }
         case PadProgram::tape:
+        {
+            // The track plays in place; stops brake it onto the grid and the next hit
+            // spins back up. Its cuts come from the stops layout, not the procedure.
+            constexpr float lengths[] { .5f, 1.f, 2.f, 4.f };
+            mapping.procedure = Procedure::cutProc11;
+            mapping.seed = 606;
+            mapping.zones.x = padZone (x, 1, previous.x);
+            mapping.unitsPerBar = 16;
+            mapping.fracture.procedure = FractureProcedure::tapeCut;
+            auto& tape = mapping.fracture.tape;
+            tape.layout = FractureParameters::Tape::Layout::stops;
+            tape.stopBeats = lengths[std::min (static_cast<int> (4.f * x), 3)];
+            tape.stopDensity = 4.f * y;
+            break;
+        }
         case PadProgram::loops:
         case PadProgram::rush:
         default:

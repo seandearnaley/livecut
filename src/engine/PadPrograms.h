@@ -3,6 +3,7 @@
 #pragma once
 
 #include "engine/Cutter.h"
+#include "engine/Fracture.h"
 #include "engine/ImpactEffects.h"
 
 #include <cstddef>
@@ -29,6 +30,7 @@ struct PadMapping
     CutParameters cut;
     CrusherParameters crusher;
     ImpactParameters impact; // off unless the program shapes its cuts
+    FractureParameters fracture; // Classic unless the program plays tape
     PadZones zones;
     const char* xCaption;
     const char* yCaption;

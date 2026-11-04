@@ -46,6 +46,7 @@ void Cutter::prepare (double newSampleRate, std::int64_t latencyFrames)
     bitCrusher.prepare (sampleRate);
     combFilter.prepare (sampleRate);
     fractureReader.prepare (sampleRate);
+    tapeTailFrames = std::max (1, static_cast<int> (std::lround (.005 * sampleRate)));
     if (! routeRack.prepare (sampleRate))
         throw std::runtime_error ("Cannot prepare effect rack");
     setFadeMilliseconds (fadeMilliseconds);
@@ -148,6 +149,7 @@ void Cutter::setFadeMilliseconds (double milliseconds)
 void Cutter::reset()
 {
     resetRendering();
+    tapeSilentFrame = -1;
     livePlayer.resetSource();
     transforms = {};
 }
@@ -169,6 +171,9 @@ void Cutter::resetRendering()
     frequencySelected = false;
     fractureBpm = 0;
     fractureOrdinal = 0;
+    tapeSpinUpNext = false;
+    tapeTail.reset();
+    tapeRunOn.reset();
     impactCut.reset();
     renderContextActive = false;
 }
@@ -178,6 +183,8 @@ void Cutter::drop (int sampleOffset, Observer* observer)
     cutting = false;
     queueHead = queued = 0;
     hasActivePlan = false;
+    tapeSpinUpNext = false; // what follows a drop starts on the track
+    tapeRunOn.reset();
     livePlayer.resetRendering();
     if (processingError == Error::planOverflow || processingError == Error::sourceUnavailable)
         processingError = Error::none;
@@ -334,6 +341,12 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             if (std::ceil (unitsIntoBar - halfSample) < unitsIntoBar + halfSample)
             {
                 restartPending = false;
+                // A Tape motion cut off here plays on, fading out under what follows.
+                if (hasActivePlan && activePlan.fracture.procedure == FractureProcedure::tapeCut)
+                {
+                    tapeTail = tapeRunOn ? tapeRunOn : fractureReader.tail();
+                    tapeTailAge = 0;
+                }
                 drop (sampleOffset, observer);
             }
         }
@@ -448,6 +461,27 @@ void Cutter::renderOne (std::int64_t frame, float& left, float& right, int sampl
             startEffectsCut();
     }
 
+    const auto silent = cutting && hasActivePlan && processingError == Error::none
+                     && activePlan.fracture.procedure == FractureProcedure::tapeCut
+                     && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops
+                     && fractureReader.diagnostics().tapeSpeed <= 0.0;
+    tapeSilentFrame = silent ? frame : -1;
+
+    if (tapeTail)
+    {
+        // A linear crossfade over 5 ms, starting wholly on the tail, which
+        // continues the sample before the restart.
+        float tailLeft = 0.0f, tailRight = 0.0f;
+        if (tapeTail->next (livePlayer, tailLeft, tailRight))
+        {
+            const auto weight = static_cast<float> (tapeTailFrames - tapeTailAge) / static_cast<float> (tapeTailFrames);
+            left = weight * tailLeft + (1.0f - weight) * left;
+            right = weight * tailRight + (1.0f - weight) * right;
+        }
+        if (++tapeTailAge >= tapeTailFrames)
+            tapeTail.reset();
+    }
+
     if (processingError != Error::none)
         left = right = 0.0f;
     if (observer != nullptr)
@@ -558,10 +592,18 @@ void Cutter::planBlock (const Timing& timing)
     context.beatsPerBar = timing.beatsPerBar;
 
     if (fractureProcedure == FractureProcedure::classic)
+    {
+        tapeSpinUpNext = false;
         procedureFor (procedure).chooseBlock (random, params, context, cuts);
+    }
     else
         chooseFractureBlock (context);
     blockEnd = blockStart + totalUnits (cuts);
+    // The pad's Tape lays out the rest of the bar. In meters whose units per beat
+    // aren't exact in binary its cuts can sum an ulp short of the line, which left a
+    // zero-length block there; it ends exactly on the bar or phrase line instead.
+    if (fractureProcedure == FractureProcedure::tapeCut && fractureParams.tape.layout == FractureParameters::Tape::Layout::stops)
+        blockEnd = std::min ((std::floor (blockStart / unitsPerBar) + 1.0) * unitsPerBar, context.phraseUnits);
 
     if (queued == plans.size())
     {
@@ -629,6 +671,16 @@ void Cutter::chooseFractureBlock (const BlockContext& context)
     const auto intoBar = blockStart-std::floor(blockStart/unitsPerBar)*unitsPerBar;
     const auto remaining = std::min(unitsPerBar-intoBar,context.phraseUnits-blockStart);
     const auto unitsPerBeat = unitsPerBar/context.beatsPerBar;
+    if (fractureProcedure == FractureProcedure::tapeCut && fractureParams.tape.layout == FractureParameters::Tape::Layout::stops)
+    {
+        const auto bar = phraseBar + static_cast<std::int64_t> (std::floor (blockStart / unitsPerBar));
+        // A block straight after a stop's silence spins up, including after a reset.
+        const auto afterSilence = tapeSilentFrame >= 0 && planningSource.firstFrame == tapeSilentFrame + 1;
+        tapeSpinUpNext = layOutTapeStops (fractureParams.tape, phraseImpactSeed, bar, intoBar / unitsPerBeat, context.beatsPerBar,
+                                          unitsPerBeat, remaining, tapeSpinUpNext || afterSilence, cuts);
+        return;
+    }
+    tapeSpinUpNext = false;
     const CutIdentity blockId {phraseImpactSeed,phraseBar,blockStart,0,0,1};
     double length=remaining,cutLength=remaining;
     if(fractureProcedure==FractureProcedure::grainCut)
@@ -684,6 +736,10 @@ void Cutter::startFractureCut (std::int64_t frame)
     context.transportEpoch=activePlan.transportEpoch;
     context.ordinal=activePlan.firstCutOrdinal+index;
     context.source=activePlan.source;
+    // The pad's motions read from the frame they start on, so each continues the track.
+    const auto motion = activePlan.fracture.procedure == FractureProcedure::tapeCut && context.cut.tape != TapeMotion::cycle;
+    if (motion)
+        context.source.firstFrame = frame;
     const auto bounds=sourceContext!=nullptr?sourceContext->sourceBoundsAt(frame):std::nullopt;
     const auto invalid=[&](FractureState reason)
     {
@@ -706,9 +762,8 @@ void Cutter::startFractureCut (std::int64_t frame)
     else
     {
         TapeTrajectory trajectory;
-        auto start=activePlan.fracture.tape.startSpeed,end=activePlan.fracture.tape.endSpeed;
-        if(activePlan.fracture.tape.alternate && context.ordinal%2!=0) std::swap(start,end);
-        trajectory.start(start,end,context.outputFrames,activePlan.fracture.tape.curve);
+        const auto speeds = tapeCurveFor (activePlan.fracture.tape, context.cut.tape, context.ordinal);
+        trajectory.start (speeds.from, speeds.to, context.outputFrames, speeds.curve);
         required=trajectory.sourceFrames();
         context.source.frameCount=bounds->end ? *bounds->end-context.source.firstFrame
                                   :std::numeric_limits<std::int64_t>::max()-context.source.firstFrame;
@@ -717,6 +772,13 @@ void Cutter::startFractureCut (std::int64_t frame)
         || (grain && required>*bounds->end-context.source.firstFrame))))
     {
         invalid(FractureState::sourceLost);
+        return;
+    }
+    // A transform would move a motion's read off the track, and its joins would splice.
+    if (motion)
+    {
+        transforms.reason = TransformReason::off;
+        fractureReader.startCut (context);
         return;
     }
     const auto& transform=activePlan.transform;
@@ -787,6 +849,22 @@ void Cutter::renderSource (std::int64_t frame,float& left,float& right,bool adva
         return;
     }
     startFractureCut(frame);
+    // The player lays a block out in samples from its first frame, but the next
+    // block begins on the musical grid, which can fall a frame later when a bar
+    // isn't a whole number of samples. Between them, the pad's Tape runs its last
+    // motion on, as its trajectory already defines: a play or a landed spin-up stays
+    // on the track and a stop holds its silence. Classic's cuts end faded, and
+    // keep their silent frame.
+    if (livePlayer.currentCut() >= livePlayer.cuts().size() && activePlan.fracture.procedure == FractureProcedure::tapeCut
+        && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops)
+    {
+        if (! tapeRunOn)
+            tapeRunOn = fractureReader.tail();
+        left = right = 0.0f;
+        if (tapeRunOn && ! tapeRunOn->next (livePlayer, left, right))
+            tapeRunOn.reset();
+        return;
+    }
     const auto age=livePlayer.currentCutAge();
     const auto sounding=livePlayer.currentSoundingFrames();
     // Only an actual BPM value change retargets Tape. A one-frame musical
@@ -821,11 +899,22 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         const auto& next = plans[queueHead];
         if (next.activationBar > bar || (next.activationBar == bar && next.activationBeat > beats + halfSample))
             return;
+        // A Tape stop or spin-up the new block cuts short, as tempo automation
+        // can, fades out under it over 5 ms instead of splicing.
+        if (hasActivePlan && ! tapeRunOn && activePlan.fracture.procedure == FractureProcedure::tapeCut
+            && livePlayer.currentCut() < livePlayer.cuts().size() && fractureCut && *fractureCut == livePlayer.currentCut()
+            && fractureReader.motionUnfinished())
+        {
+            tapeTail = fractureReader.tail();
+            tapeTailAge = 0;
+        }
         activePlan = next;
         queueHead = (queueHead + 1) % plans.size();
         --queued;
         hasActivePlan = true;
         livePlayer.startBlock ({ activePlan.cuts.data(), activePlan.count }, samplesPerUnit (timing), activePlan.source);
+        livePlayer.setExactRetime (activePlan.fracture.procedure == FractureProcedure::tapeCut
+                                   && activePlan.fracture.tape.layout == FractureParameters::Tape::Layout::stops);
         const auto& fx = activePlan.effects;
         bitCrusher.setBlock (fx[0], fx[1], fx[2], fx[3]);
         combFilter.setBlock (activePlan.comb, fx[4], fx[5]);
@@ -834,6 +923,7 @@ void Cutter::activatePlans (std::int64_t bar, double beats, double halfSample, c
         impactCut.reset();
         fractureCut.reset();
         fractureBpm = 0;
+        tapeRunOn.reset();
         startEffectsCut();
     }
 }

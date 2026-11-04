@@ -303,3 +303,73 @@ TEST_CASE("Actual sinc interpolation reduces an 8x folded tone relative to linea
     REQUIRE(linear>10);
     REQUIRE(std::sqrt(filtered/linear)<std::pow(10.0,-50.0/20));
 }
+
+TEST_CASE("A quadratic brake slows as 1 - u squared and stops at exactly 0","[fracture][tape]")
+{
+    for(int length:{2,3,137,12000})
+    {
+        CAPTURE(length);
+        TapeTrajectory brake;
+        brake.start(1,0,length,FractureParameters::Tape::Curve::quadratic);
+        double sum=0;
+        for(int frame=0;frame<length;++frame)
+        {
+            const auto u=static_cast<double>(frame)/(length-1);
+            REQUIRE_THAT(brake.speed(frame),WithinAbs(1-u*u,1e-12));
+            REQUIRE_THAT(brake.position(frame),WithinAbs(sum,1e-9*std::max(1.0,sum)));
+            sum+=brake.speed(frame);
+        }
+        REQUIRE(brake.speed(0)==1);
+        REQUIRE(brake.speed(length-1)==0);
+        REQUIRE(brake.position(length+50)==brake.position(length)); // stopped stays put
+    }
+    // A brake re-timed from part speed keeps the same shape from where it is.
+    TapeTrajectory retimed;
+    retimed.start(.6,0,101,FractureParameters::Tape::Curve::quadratic);
+    REQUIRE_THAT(retimed.speed(50),WithinAbs(.6*(1-.25),1e-12));
+    REQUIRE(retimed.speed(100)==0);
+}
+
+TEST_CASE("A catch-up winds up from still and lands exactly on the track","[fracture][tape]")
+{
+    for(int length:{1,2,3,3000,12000,96000})
+    {
+        CAPTURE(length);
+        TapeTrajectory spin;
+        spin.start(0,1,length,FractureParameters::Tape::Curve::catchUp);
+        REQUIRE(spin.speed(0)==0);
+        REQUIRE(spin.position(0)==0);
+        double peak=0;
+        int peakFrame=0;
+        for(int frame=0;frame<=length;++frame)
+        {
+            CAPTURE(frame);
+            const auto u=static_cast<double>(frame)/length;
+            const auto position=spin.position(frame);
+            // Never ahead of the newest recorded frame: frame n reads at most frame n.
+            REQUIRE(position<=frame);
+            REQUIRE_THAT(spin.speed(frame),WithinAbs(6*u-9*u*u+4*u*u*u,1e-12));
+            REQUIRE_THAT(position,WithinAbs(length*(3*u*u-3*u*u*u+u*u*u*u),1e-9*length));
+            if(frame<length)
+                REQUIRE(std::abs(spin.position(frame+1)-position-spin.speed(frame))<=3.0/length+1e-9);
+            if(spin.speed(frame)>peak)
+            {
+                peak=spin.speed(frame);
+                peakFrame=frame;
+            }
+        }
+        // It lands on the track exactly, and plays on it at speed 1.
+        REQUIRE(spin.position(length)==length);
+        REQUIRE(spin.speed(length)==1);
+        REQUIRE(spin.position(length+777)==length+777);
+        REQUIRE(spin.speed(length+777)==1);
+        if(length>=3000)
+        {
+            REQUIRE_THAT(peak,WithinAbs(1.25,1e-6));
+            REQUIRE(std::abs(peakFrame-length/2)<=1);
+            REQUIRE(std::abs(spin.speed(length-1)-1)<=1e-6);
+            REQUIRE(spin.position(length-1)>length-1-1e-6);
+            REQUIRE(spin.sourceFrames()==length);
+        }
+    }
+}

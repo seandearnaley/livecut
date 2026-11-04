@@ -243,6 +243,16 @@ private:
     ResonatorParameters resonatorParams;
     EffectRoute pendingEffectRoute = EffectRoute::impactResonatorFrequency;
     FractureProcedure fractureProcedure = FractureProcedure::classic;
+    bool tapeSpinUpNext = false; // the pad's Tape: the block before ended in a stop
+    std::optional<TapeTail> tapeTail; // the pad's Tape: a motion cut off by a restart, fading out
+    std::optional<TapeTail> tapeRunOn; // the pad's Tape: the last motion, running on to the next block
+    // The pad's Tape: the frame of the last rendered sample if it was a stop's
+    // silence, else -1. Unlike the spin-up flag it survives resetRendering, so a
+    // loop that wraps where a stop ends opens with a spin-up. It counts only for a
+    // block that starts on the very next frame: after a pause in rendering (a
+    // stopped transport, unsupported timing) the input was heard in between.
+    std::int64_t tapeSilentFrame = -1;
+    int tapeTailAge = 0, tapeTailFrames = 1;
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;
     double fractureBpm = 0.0;

@@ -36,7 +36,7 @@ constexpr std::array<ProgramInfo, engine::padProgramCount> programInfo {
     ProgramInfo { "repeats", "Left to right: faster repeats that get crunchier as they speed up. Up: each repeat steps from falling to rising pitch." },
     ProgramInfo { "squeeze", "Left to right: the band slides from lows to highs. Up: it squeezes narrower and sings, breathing with every cut." },
     ProgramInfo { "resonance", "Left to right: the filter opens from dark to bright. Up: it rings, and every roll ends on a tuned note that ducks under the hits." },
-    ProgramInfo { "stops", "" },
+    ProgramInfo { "stops", "Left to right: stops from half a beat to four beats long. Up: from a stop every four bars to one on every beat, each spinning back up into the next hit." },
     ProgramInfo { "nested loops", "" },
     ProgramInfo { "rolls", "" },
 };
