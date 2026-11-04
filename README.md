@@ -63,7 +63,7 @@ transport behavior, memory and validation limits.
 
 **0.8 / Resonance** adds a four-voice tuned resonator, a choice of effect order and a Spectral Freeze / Smear stage. See [the 0.8.0 release notes](docs/releases/0.8.0.md).
 
-**Livecut 1.0 (in progress): the pad.** New instances open on a pad instead of
+**Livecut 1.0 / the pad** (1.0.0-beta.1, see [the release notes](docs/releases/1.0.0-beta.1.md)). New instances open on a pad instead of
 the pages. Press it to cut and let go to stop on the next beat or bar; drag to
 play two settings of the chosen program at once. Eight programs sit beneath
 it: Cut, Bounce, Glitch, Suction, Filter, Tape, Loops and Rush. Suction
