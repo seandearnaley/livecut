@@ -38,7 +38,7 @@ constexpr std::array<ProgramInfo, engine::padProgramCount> programInfo {
     ProgramInfo { "resonance", "Left to right: the filter opens from dark to bright. Up: it rings, and every roll ends on a tuned note that ducks under the hits." },
     ProgramInfo { "stops", "Left to right: stops from half a beat to four beats long. Up: from a stop every four bars to one on every beat, each spinning back up into the next hit." },
     ProgramInfo { "nested loops", "" },
-    ProgramInfo { "rolls", "" },
+    ProgramInfo { "rolls", "Left to right: rolls that drag, slowing and falling, to rolls that rush, speeding up and rising into the bar line. Up: from a roll on the last beat to one that fills the bar." },
 };
 
 juce::RangedAudioParameter& parameter (juce::AudioProcessorValueTreeState& state, const char* id)

@@ -812,6 +812,30 @@ TEST_CASE ("padSettings carries the program's Impact", "[parameters][pad]")
     }
 }
 
+TEST_CASE ("padSettings carries Rush's roll and the pad's Straight, and no Classic procedure", "[parameters][pad]")
+{
+    LivecutAudioProcessor processor;
+    auto& state = processor.getParameterState();
+    const SettingsReader reader (state);
+    setValue (state, ids::procedure, 1); // the Classic page's WarpCut
+    setValue (state, ids::padStraight, 1);
+    const auto user = reader.read();
+    REQUIRE (user.procedure == engine::Procedure::warpCut);
+
+    const auto mapping = engine::mapPad (engine::PadProgram::rush, .75f, .6f, {});
+    const auto settings = padSettings (user, mapping);
+    CHECK (settings.procedure == engine::Procedure::rush);
+    CHECK (settings.unitsPerBar == 16);
+    CHECK (settings.seed == 808u);
+    CHECK_THAT (settings.cut.rollBeats, WithinAbs (3.0, 0.0));
+    CHECK_THAT (settings.cut.rollCurve, WithinAbs (.5, 1.0e-6));
+    CHECK_THAT (settings.cut.rollCents, WithinAbs (250.0, 1.0e-3));
+    CHECK (settings.cut.straight);
+    CHECK (settings.fracture.procedure == engine::FractureProcedure::classic);
+    CHECK_FALSE (settings.impact.filter.enabled);
+    CHECK_THAT (settings.fadeMilliseconds, WithinAbs (0.0, 0.0));
+}
+
 TEST_CASE ("padSettings carries Tape's stops, and the other programs keep Classic Fracture", "[parameters][pad]")
 {
     LivecutAudioProcessor processor;

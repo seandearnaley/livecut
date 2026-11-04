@@ -1,0 +1,1238 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "DrumLoop.h"
+#include "EngineTestHelpers.h"
+#include "engine/CutProcedures.h"
+#include "engine/Cutter.h"
+#include "engine/PadPrograms.h"
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <vector>
+
+using namespace livecut::engine;
+using namespace livecut::engine::testing;
+using Catch::Matchers::WithinAbs;
+using Catch::Matchers::WithinRel;
+
+namespace
+{
+constexpr int unitsPerBar = 16;
+
+CutParameters roll (double beats, double curve, double cents = 0.0, bool straight = false)
+{
+    CutParameters params;
+    params.rollBeats = beats;
+    params.rollCurve = curve;
+    params.rollCents = cents;
+    params.straight = straight;
+    return params;
+}
+
+struct Laid
+{
+    double start = 0.0; // units into the bar
+    std::vector<Cut> cuts;
+};
+
+// The blocks Rush lays out for one bar, engaged `engage` units into it, as the
+// cutter asks for them, checking the procedure's contract on the way.
+std::vector<Laid> layOut (const CutParameters& params, double beatsPerBar, double engage = 0.0, double bpm = 0.0)
+{
+    Rush rush;
+    Random random (7), untouched (7);
+    BlockContext context;
+    context.phraseUnits = static_cast<double> (rush.choosePhraseBars (random, params) * unitsPerBar);
+    context.unitsPerBar = unitsPerBar;
+    context.beatsPerBar = beatsPerBar;
+    context.unitsDone = engage;
+    context.beatsPerSecond = bpm / 60.0;
+    REQUIRE (context.phraseUnits == unitsPerBar); // phrases are one bar
+
+    std::vector<Laid> blocks;
+    std::vector<Cut> cuts;
+    while (context.unitsDone < context.phraseUnits - tolerance)
+    {
+        rush.chooseBlock (random, params, context, cuts);
+        const auto units = totalUnits (cuts);
+        REQUIRE (! cuts.empty());
+        REQUIRE (cuts.size() <= maxCutsPerBlock);
+        REQUIRE (units > tolerance);
+        REQUIRE (context.unitsDone + units <= context.phraseUnits + tolerance);
+        blocks.push_back ({ context.unitsDone, cuts });
+        context.unitsDone += units;
+        REQUIRE (blocks.size() <= 2);
+    }
+    // The last block lands exactly on the bar line, and Rush draws nothing.
+    REQUIRE_THAT (context.unitsDone, WithinAbs (unitsPerBar, tolerance));
+    CHECK (random.unit() == untouched.unit());
+    return blocks;
+}
+
+double beatsOf (const Cut& cut, double beatsPerBar)
+{
+    return cut.units * beatsPerBar / unitsPerBar;
+}
+
+bool isTrack (const Laid& block)
+{
+    return block.cuts.size() == 1;
+}
+} // namespace
+
+TEST_CASE ("Rush phrases are one bar, drawn from nothing", "[rush][layout]")
+{
+    Rush rush;
+    Random random (3), untouched (3);
+    CutParameters params;
+    params.minPhraseBars = 2;
+    params.maxPhraseBars = 4;
+    CHECK (rush.choosePhraseBars (random, params) == 1);
+    CHECK (random.unit() == untouched.unit());
+}
+
+TEST_CASE ("Every Rush bar keeps the contract and lands on its bar line, engaged anywhere", "[rush][layout]")
+{
+    const auto meter = GENERATE (4.0, 3.0, 5.0, 7.0, 2.5, 3.5, 6.5, 1.0, .5, .25);
+    const auto straight = GENERATE (false, true);
+    for (const auto beats : { 0.0, 1.0, 2.0, 3.0, 4.0 })
+        for (const auto curve : { -1.0, -.6, -.2, 0.0, .1, .3, .7, 1.0 })
+            for (int engage = 0; engage < unitsPerBar; ++engage)
+            {
+                CAPTURE (meter, straight, beats, curve, engage);
+                const auto blocks = layOut (roll (beats, curve, 500.0 * curve, straight), meter, engage);
+                for (const auto& block : blocks)
+                    for (const auto& cut : block.cuts)
+                    {
+                        CHECK (cut.gate == 1.0);
+                        CHECK (cut.pan == 0.f);
+                        CHECK_FALSE (cut.fade); // the track joins the input sample for sample
+                        CHECK (cut.tape == TapeMotion::cycle);
+                        // A roll's cuts never become a buzz.
+                        if (! isTrack (block))
+                            CHECK (beatsOf (cut, meter) >= 1.0 / 32.0 - tolerance);
+                    }
+                // A track cut plays the input as it is.
+                for (const auto& block : blocks)
+                    if (isTrack (block))
+                    {
+                        CHECK (block.cuts.front().amp == 1.f);
+                        CHECK (block.cuts.front().cents == 0.f);
+                    }
+                // Only the last block can be a roll.
+                if (blocks.size() == 2)
+                    CHECK (isTrack (blocks.front()));
+            }
+}
+
+TEST_CASE ("Engaged on the bar line, the roll fills the last rollBeats of the bar in round (4T) cuts", "[rush][layout]")
+{
+    struct Case
+    {
+        double meter, beats, rolled;
+    };
+    for (const auto [meter, beats, rolled] : { Case { 4.0, 1.0, 1.0 }, Case { 4.0, 2.0, 2.0 }, Case { 4.0, 3.0, 3.0 },
+                                               Case { 4.0, 4.0, 4.0 }, Case { 3.0, 4.0, 3.0 }, Case { 3.0, 3.0, 3.0 },
+                                               Case { 7.0, 4.0, 4.0 }, Case { 2.5, 3.0, 2.5 }, Case { 2.5, 1.0, 1.0 },
+                                               Case { 6.5, 2.0, 2.0 }, Case { .5, 1.0, .5 } })
+        for (const auto curve : { -1.0, 0.0, .5 })
+        {
+            CAPTURE (meter, beats, curve);
+            const auto blocks = layOut (roll (beats, curve), meter);
+            const auto rollStart = (meter - rolled) * unitsPerBar / meter;
+            REQUIRE (blocks.size() == (rollStart > 0.0 ? 2u : 1u));
+            if (rollStart > 0.0)
+            {
+                REQUIRE (isTrack (blocks.front()));
+                CHECK_THAT (blocks.front().cuts.front().units, WithinAbs (rollStart, tolerance));
+            }
+            CHECK_THAT (blocks.back().start, WithinAbs (rollStart, tolerance));
+            CHECK (blocks.back().cuts.size() == static_cast<std::size_t> (std::lround (4.0 * rolled)));
+        }
+}
+
+TEST_CASE ("rollBeats 0 plays the track to the bar line", "[rush][layout]")
+{
+    const auto meter = GENERATE (4.0, 3.0, 2.5);
+    for (int engage = 0; engage < unitsPerBar; ++engage)
+    {
+        CAPTURE (meter, engage);
+        const auto blocks = layOut (CutParameters {}, meter, engage);
+        REQUIRE (blocks.size() == 1);
+        REQUIRE (isTrack (blocks.front()));
+        CHECK_THAT (blocks.front().cuts.front().units, WithinAbs (unitsPerBar - engage, tolerance));
+    }
+}
+
+TEST_CASE ("X rushes or drags a roll by up to eight times, geometrically", "[rush][layout]")
+{
+    const auto beats = GENERATE (1.0, 2.0, 3.0, 4.0);
+    for (const auto curve : { -1.0, -.75, -.3, 0.0, .3, .75, 1.0 })
+    {
+        CAPTURE (beats, curve);
+        const auto blocks = layOut (roll (beats, curve), 4.0);
+        const auto& cuts = blocks.back().cuts;
+        REQUIRE (cuts.size() == static_cast<std::size_t> (4.0 * beats));
+        const auto first = beatsOf (cuts.front(), 4.0), last = beatsOf (cuts.back(), 4.0);
+        CHECK_THAT (first / last, WithinRel (std::pow (8.0, curve), 1.0e-9));
+        for (std::size_t k = 1; k < cuts.size(); ++k)
+        {
+            const auto ratio = beatsOf (cuts[k], 4.0) / beatsOf (cuts[k - 1], 4.0);
+            // Every cut is the same ratio shorter (rush) or longer (drag) than the one before.
+            CHECK_THAT (ratio, WithinRel (std::pow (8.0, -curve / static_cast<double> (cuts.size() - 1)), 1.0e-9));
+        }
+        if (curve == 0.0)
+            for (const auto& cut : cuts)
+                CHECK_THAT (beatsOf (cut, 4.0), WithinAbs (.25, tolerance)); // an even roll is 16ths
+    }
+    // At the right edge a beat-long roll runs 8/15, 4/15, 2/15 and 1/15 of a beat.
+    const auto edge = layOut (roll (1.0, 1.0), 4.0).back().cuts;
+    for (std::size_t k = 0; k < 4; ++k)
+        CHECK_THAT (beatsOf (edge[k], 4.0), WithinAbs ((8.0 / 15.0) / std::exp2 (static_cast<double> (k)), tolerance));
+}
+
+TEST_CASE ("The shortest roll cut is never under 1/24 of a beat", "[rush][layout]")
+{
+    // round (4T) cuts at a ratio of at most 8 keep the floor of 1/32 with room to
+    // spare, down to the shortest bar that still rolls (two cuts, 3/8 of a beat).
+    double shortest = 1.0;
+    for (int eighths = 1; eighths <= 64; ++eighths)
+    {
+        const auto meter = eighths / 8.0;
+        for (const auto beats : { 1.0, 2.0, 3.0, 4.0 })
+            for (const auto curve : { -1.0, 1.0 })
+                for (const auto& block : layOut (roll (beats, curve), meter))
+                    if (! isTrack (block))
+                        for (const auto& cut : block.cuts)
+                            shortest = std::min (shortest, beatsOf (cut, meter));
+    }
+    CHECK (shortest >= 1.0 / 24.0);
+    CHECK_THAT (shortest, WithinAbs ((3.0 / 8.0) / 9.0, 1.0e-12)); // 3/8 of a beat, 8:1 in two cuts
+}
+
+TEST_CASE ("No roll cut is shorter than 30 ms at any tempo, and rolls at 120 bpm keep their shape", "[rush][layout][floor]")
+{
+    // Under 30 ms (over 33 Hz) a roll's repeats fuse into a buzz. Straight's
+    // whole-bar rush ended in eight 64ths: 20.8 ms at 180 bpm.
+    double shortest = 1.0;
+    for (int bpm = 60; bpm <= 240; bpm += 6)
+        for (const auto meter : { 4.0, 3.0, 2.5 })
+            for (const auto straight : { false, true })
+                for (const auto beats : { 1.0, 2.0, 3.0, 4.0 })
+                    for (const auto curve : { -1.0, -.5, 0.0, .5, 1.0 })
+                    {
+                        CAPTURE (bpm, meter, straight, beats, curve);
+                        const auto params = roll (beats, curve, 500.0 * curve, straight);
+                        const auto blocks = layOut (params, meter, 0.0, bpm);
+                        for (const auto& block : blocks)
+                            if (! isTrack (block))
+                                for (const auto& cut : block.cuts)
+                                {
+                                    const auto seconds = beatsOf (cut, meter) * 60.0 / bpm;
+                                    shortest = std::min (shortest, seconds);
+                                    CHECK (seconds >= .030 - 1.0e-9);
+                                }
+                        // A rush still rushes and a drag drags, as far as the floor allows,
+                        // and Straight stays on the 64th grid.
+                        const auto& cuts = blocks.back().cuts;
+                        if (! isTrack (blocks.back()) && curve != 0.0)
+                            CHECK ((beatsOf (cuts.front(), meter) - beatsOf (cuts.back(), meter)) * curve > 0.0);
+                        if (straight)
+                            for (const auto& block : blocks)
+                                for (const auto& cut : block.cuts)
+                                    CHECK (isWhole (beatsOf (cut, meter) * 64.0));
+                        // At 120 bpm or slower every roll is the one with no floor.
+                        if (bpm <= 120)
+                        {
+                            const auto free = layOut (params, meter);
+                            REQUIRE (free.size() == blocks.size());
+                            for (std::size_t b = 0; b < blocks.size(); ++b)
+                            {
+                                REQUIRE (free[b].cuts.size() == blocks[b].cuts.size());
+                                for (std::size_t k = 0; k < blocks[b].cuts.size(); ++k)
+                                    CHECK (free[b].cuts[k].units == blocks[b].cuts[k].units);
+                            }
+                        }
+                    }
+    CAPTURE (shortest);
+    CHECK (shortest < .031); // the floor is reached
+}
+
+TEST_CASE ("Engaged late, the roll starts on the next whole beat before the bar line", "[rush][layout]")
+{
+    const auto meter = GENERATE (4.0, 3.0, 2.5, 6.5);
+    const auto beats = GENERATE (1.0, 2.0, 4.0);
+    const auto rolled = std::min (beats, meter);
+    const auto rollStart = meter - rolled;
+    for (int engage = 0; engage < unitsPerBar; ++engage)
+    {
+        const auto s = engage * meter / unitsPerBar;
+        CAPTURE (meter, beats, engage, s);
+        const auto blocks = layOut (roll (beats, .5), meter, engage);
+        const auto& last = blocks.back();
+        if (s <= rollStart + tolerance)
+        {
+            CHECK_THAT (last.start * meter / unitsPerBar, WithinAbs (rollStart, tolerance));
+            continue;
+        }
+        // Late: the first point a whole number of beats before the bar line at or after s.
+        const auto expected = meter - std::floor (meter - s + tolerance);
+        if (expected >= meter - tolerance)
+        {
+            REQUIRE (blocks.size() == 1);
+            CHECK (isTrack (last)); // the bar's last beat has begun: no roll
+            continue;
+        }
+        REQUIRE_FALSE (isTrack (last));
+        CHECK_THAT (last.start * meter / unitsPerBar, WithinAbs (expected, tolerance));
+        CHECK (last.cuts.size() == static_cast<std::size_t> (std::lround (4.0 * (meter - expected))));
+        CHECK (blocks.size() == (expected > s + tolerance ? 2u : 1u));
+    }
+}
+
+TEST_CASE ("A roll keeps the hit, then swells back from -12 dB, its pitch moving to rollCents", "[rush][layout]")
+{
+    const auto straight = GENERATE (false, true);
+    const auto beats = GENERATE (1.0, 2.0, 4.0);
+    const auto curve = GENERATE (-1.0, -.4, 0.0, .6, 1.0);
+    CAPTURE (straight, beats, curve);
+    const auto cents = 500.0 * curve;
+    const auto cuts = layOut (roll (beats, curve, cents, straight), 4.0).back().cuts;
+    const auto n = cuts.size();
+    REQUIRE (n >= 3);
+    CHECK (cuts.front().amp == 1.f);
+    CHECK (cuts.front().cents == 0.f);
+    CHECK (cuts.back().amp == 1.f);
+    CHECK_THAT (cuts.back().cents, WithinAbs (cents, 1.0e-3));
+    for (std::size_t k = 1; k < n; ++k)
+    {
+        CAPTURE (k);
+        const auto db = -12.0 * (1.0 - static_cast<double> (k - 1) / static_cast<double> (n - 2));
+        CHECK_THAT (cuts[k].amp, WithinRel (std::pow (10.0, db / 20.0), 1.0e-6));
+        CHECK_THAT (cuts[k].cents, WithinAbs (cents * static_cast<double> (k) / static_cast<double> (n - 1), 1.0e-3));
+    }
+}
+
+TEST_CASE ("A single repeat plays at full level", "[rush][layout]")
+{
+    // Half a beat in 1/8: two cuts, the hit and one repeat.
+    const auto cuts = layOut (roll (1.0, .5, 300.0), .5).back().cuts;
+    REQUIRE (cuts.size() == 2);
+    CHECK (cuts[0].amp == 1.f);
+    CHECK (cuts[1].amp == 1.f);
+    CHECK_THAT (cuts[1].cents, WithinAbs (300.0, 1.0e-3));
+}
+
+TEST_CASE ("Straight Rush steps a roll in halvings, rushing or dragging", "[rush][layout][straight]")
+{
+    const auto lengths = [] (double beats, double curve)
+    {
+        std::vector<double> found;
+        const auto blocks = layOut (roll (beats, curve, 0.0, true), 4.0);
+        for (const auto& cut : blocks.back().cuts)
+            found.push_back (beatsOf (cut, 4.0));
+        return found;
+    };
+    const auto near = [] (const std::vector<double>& a, const std::vector<double>& b)
+    {
+        if (a.size() != b.size())
+            return false;
+        for (std::size_t i = 0; i < a.size(); ++i)
+            if (std::abs (a[i] - b[i]) > tolerance)
+                return false;
+        return true;
+    };
+    CHECK (near (lengths (1.0, 0.0), { .25, .25, .25, .25 }));
+    CHECK (near (lengths (1.0, .1), { .25, .25, .25, .25 }));               // m = round (.3) = 0
+    CHECK (near (lengths (1.0, .34), { .5, .25, .25 }));                    // m = 1
+    CHECK (near (lengths (1.0, .67), { .5, .25, .125, .125 }));             // m = 2
+    CHECK (near (lengths (1.0, 1.0), { .5, .25, .125, .0625, .0625 }));     // m = 3
+    CHECK (near (lengths (1.0, -1.0), { .0625, .0625, .125, .25, .5 }));    // a drag is the rush reversed
+    CHECK (near (lengths (2.0, 1.0), { .5, .5, .25, .25, .125, .125, .0625, .0625, .0625, .0625 }));
+    auto bar = std::vector<double> (4, .5);
+    bar.insert (bar.end(), 4, .25);
+    bar.insert (bar.end(), 4, .125);
+    bar.insert (bar.end(), 8, .0625);
+    CHECK (near (lengths (4.0, 1.0), bar));
+}
+
+namespace
+{
+StereoFrame tone (std::int64_t frame)
+{
+    const auto t = static_cast<double> (frame);
+    return { static_cast<float> (.6 * std::sin (.031 * t) + .2 * std::sin (.0047 * t)),
+             static_cast<float> (.5 * std::cos (.023 * t)) };
+}
+
+// The pad's Rush through a Cutter, at 120 bpm in 4/4 unless told otherwise, fed
+// a frame at a time. The host's position is counted from the last tempo change.
+struct RushCutter
+{
+    Cutter cutter;
+    double rate;
+    std::int64_t frame = 0;
+    double bpm, beatsPerBar;
+    std::int64_t tempoFrame = 0;
+    double tempoBeats = 0.0;
+
+    explicit RushCutter (const CutParameters& params, double sampleRate = 48000.0, double tempo = 120.0, double meter = 4.0)
+        : rate (sampleRate), bpm (tempo), beatsPerBar (meter)
+    {
+        cutter.prepare (rate);
+        cutter.setProcedure (Procedure::rush);
+        cutter.setUnitsPerBar (unitsPerBar);
+        cutter.setSeed (808);
+        cutter.setParameters (params);
+    }
+
+    double beats() const
+    {
+        return tempoBeats + static_cast<double> (frame - tempoFrame) * bpm / 60.0 / rate;
+    }
+
+    void setTempo (double tempo)
+    {
+        tempoBeats = beats();
+        tempoFrame = frame;
+        bpm = tempo;
+    }
+
+    void process (float* left, float* right, int count)
+    {
+        const auto at = beats();
+        const auto bar = static_cast<std::int64_t> (std::floor (at / beatsPerBar));
+        cutter.process (left, right, count, { bpm, beatsPerBar }, { bar, at - beatsPerBar * static_cast<double> (bar) });
+        frame += count;
+    }
+};
+
+// What a run of Rush did, frame by frame and roll by roll.
+struct Played
+{
+    std::int64_t compared = 0;  // frames that played the input (a block's first cut, or a run-on)
+    std::int64_t repeats = 0;   // frames of a roll's repeats
+    std::int64_t dropouts = 0;  // frames of exact silence where the input sounds
+    int rolls = 0;              // rolls that reached a bar line
+    int unfinished = 0;         // rolls that didn't play every cut before it
+    int mistimed = 0;           // bar lines not within half a sample of the host's
+    int worstRunOn = 0;         // frames of input after a roll's last cut
+    int worstTruncated = 0;     // frames of a roll's last cut the bar line cut off
+    std::vector<float> output;  // left and right, interleaved
+};
+
+// Plays `bars` bars of `tone` through Rush from the first sample, checking every
+// frame of the input bitwise. `ramp` adds bpm per beat at each `buffer` frames. A
+// `loop` of that many bars wraps the host back to its start, as an arrangement loop does.
+Played playRush (const CutParameters& params, double rate, double bpm, double meter, double bars, double ramp = 0.0,
+                 int buffer = 512, int loop = 0)
+{
+    RushCutter rush (params, rate, bpm, meter);
+    Played played;
+    double elapsed = 0.0;
+    std::int64_t phrase = -1;
+    double blockStart = -1.0;
+    std::size_t index = 0, count = 0, highest = 0;
+    int remaining = 0, runOn = 0;
+    // After a roll's last cut, its join runs on under the input for 2 ms.
+    const auto join = static_cast<std::int64_t> (std::lround (.002 * rate));
+    std::int64_t joinEnds = 0;
+    while (elapsed < bars * meter)
+    {
+        if (ramp != 0.0 && rush.frame % buffer == 0)
+            rush.setTempo (bpm + ramp * rush.beats());
+        if (loop > 0 && rush.beats() >= loop * meter - .5 * rush.bpm / 60.0 / rate)
+        {
+            // On the frame nearest the loop's end, the host starts its next pass
+            // exactly on its first beat.
+            rush.tempoBeats = 0.0;
+            rush.tempoFrame = rush.frame;
+        }
+        elapsed += rush.bpm / 60.0 / rate;
+        const auto at = rush.beats();
+        const auto halfSample = .5 * rush.bpm / 60.0 / rate;
+        const auto exhausted = index >= count && count > 0;
+        const auto in = tone (rush.frame);
+        auto left = in.left, right = in.right;
+        rush.process (&left, &right, 1);
+
+        const auto& cutter = rush.cutter;
+        REQUIRE (cutter.error() == Cutter::Error::none);
+        REQUIRE (cutter.isCutting());
+        if (cutter.phraseStartBar() != phrase)
+        {
+            // A new bar: the roll before it landed if it played every cut, and it
+            // starts within half a sample of the host's bar line.
+            if (phrase >= 0 && count >= 2)
+            {
+                if (runOn == 0)
+                    joinEnds = rush.frame - 1 + join;
+                ++played.rolls;
+                played.unfinished += highest + 1 < count ? 1 : 0;
+                played.worstRunOn = std::max (played.worstRunOn, runOn);
+                played.worstTruncated = std::max (played.worstTruncated, index + 1 == count ? remaining : 0);
+            }
+            const auto intoBar = at - meter * std::round (at / meter);
+            played.mistimed += phrase >= 0 && std::abs (intoBar) > halfSample + 1.0e-9 ? 1 : 0;
+            phrase = cutter.phraseStartBar();
+            blockStart = -1.0;
+        }
+        const auto sameBlock = cutter.blockStartUnits() == blockStart;
+        const auto& player = cutter.player();
+        const auto runningOn = sameBlock && exhausted;
+        if (! sameBlock)
+        {
+            blockStart = cutter.blockStartUnits();
+            highest = 0;
+            runOn = 0;
+        }
+        if (runningOn && runOn == 0 && count >= 2)
+            joinEnds = rush.frame - 1 + join;
+        runOn += runningOn ? 1 : 0;
+        count = player.cuts().size();
+        index = player.currentCut();
+        const auto age = player.currentCutAge();
+        // At a cut's last frame the player has already moved on to the next cut, at age 0.
+        const auto rendered = age == 0 && index > 0 ? index - 1 : index;
+        remaining = index < count ? player.cuts()[index].size - age : 0;
+        if (! runningOn)
+            highest = std::max (highest, rendered);
+        if ((runningOn || rendered == 0) && rush.frame > joinEnds)
+        {
+            ++played.compared;
+            REQUIRE (left == in.left);
+            REQUIRE (right == in.right);
+        }
+        else
+            ++played.repeats;
+        played.dropouts += left == 0.f && right == 0.f && std::abs (in.left) > .05f ? 1 : 0;
+        played.output.push_back (left);
+        played.output.push_back (right);
+    }
+    return played;
+}
+
+// The same steady run as playRush, in host buffers of `buffer` frames.
+std::vector<float> renderRush (const CutParameters& params, double rate, double bpm, double meter, std::size_t frames, int buffer)
+{
+    RushCutter rush (params, rate, bpm, meter);
+    std::vector<float> output, left (static_cast<std::size_t> (buffer)), right (left.size());
+    output.reserve (2 * frames);
+    while (output.size() < 2 * frames)
+    {
+        const auto count = std::min<std::size_t> (left.size(), frames - output.size() / 2);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const auto in = tone (rush.frame + static_cast<std::int64_t> (i));
+            left[i] = in.left;
+            right[i] = in.right;
+        }
+        rush.process (left.data(), right.data(), static_cast<int> (count));
+        REQUIRE (rush.cutter.error() == Cutter::Error::none);
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            output.push_back (left[i]);
+            output.push_back (right[i]);
+        }
+    }
+    return output;
+}
+
+// Whether a bar line, or a point a whole number of beats before one, falls exactly
+// half a sample between two frames in the first `bars` bars.
+bool halfSampleTie (double rate, int bpm, double meter, int bars)
+{
+    const auto beat = rate * 60.0 / bpm;
+    for (int bar = 1; bar <= bars; ++bar)
+        for (int back = 0; back < meter; ++back)
+        {
+            const auto at = (bar * meter - back) * beat;
+            if (std::abs (at - std::floor (at) - .5) < 1.0e-6)
+                return true;
+        }
+    return false;
+}
+
+
+// At a steady tempo a roll's last cut ends within a frame of the bar line, either
+// side. Through a tempo ramp each re-time rounds its cut's start, so a few frames
+// of input can come before the bar line, or of the last cut after it: at most 4
+// (under 0.1 ms) with the tempo changing every 1 to 2048 frames.
+void checkLanded (const Played& played, int bars, int runOn = 1, int truncated = 1)
+{
+    CAPTURE (played.compared, played.repeats, played.rolls, played.worstRunOn, played.worstTruncated);
+    CHECK (played.dropouts == 0);
+    CHECK (played.rolls >= bars - 1);
+    CHECK (played.unfinished == 0);
+    CHECK (played.mistimed == 0);
+    CHECK (played.worstRunOn <= runOn);
+    CHECK (played.worstTruncated <= truncated);
+    CHECK (played.repeats > 0);
+    CHECK (played.compared > 0);
+}
+
+// Rush lands, plays the input bitwise outside its repeats, and gives the same
+// output for every host buffer size.
+void checkLandedAnyBuffer (const CutParameters& params, double rate, double bpm, double meter, int bars)
+{
+    const auto played = playRush (params, rate, bpm, meter, bars);
+    checkLanded (played, bars);
+    const auto frames = played.output.size() / 2;
+    for (const auto buffer : { 37, 512, 4096 })
+    {
+        CAPTURE (buffer);
+        CHECK (renderRush (params, rate, bpm, meter, frames, buffer) == played.output);
+    }
+}
+
+// Every whole-number tempo from 80 to 180 bpm, with the roll's length and curve
+// moving with the tempo, so each spot meets bars of many sample lengths.
+void checkEveryTempo (double rate)
+{
+    for (int bpm = 80; bpm <= 180; ++bpm)
+    {
+        const auto beats = 1.0 + bpm % 4;
+        const auto curve = (bpm % 5 - 2) / 2.0;
+        CAPTURE (rate, bpm, beats, curve);
+        checkLanded (playRush (roll (beats, curve, 500.0 * curve, bpm % 3 == 0), rate, bpm, 4.0, 4.0), 4);
+    }
+}
+} // namespace
+
+TEST_CASE ("At any tempo, Rush is the input outside its rolls' repeats, and its rolls land, at 44.1 kHz", "[rush][cutter][tempo]")
+{
+    checkEveryTempo (44100.0);
+}
+
+TEST_CASE ("At any tempo, Rush is the input outside its rolls' repeats, and its rolls land, at 48 kHz", "[rush][cutter][tempo]")
+{
+    checkEveryTempo (48000.0);
+}
+
+TEST_CASE ("At any tempo, Rush is the input outside its rolls' repeats, and its rolls land, at 96 kHz", "[rush][cutter][tempo]")
+{
+    checkEveryTempo (96000.0);
+}
+
+namespace
+{
+void checkMeter (double meter)
+{
+    for (const auto bpm : { 93.0, 120.0, 140.0 })
+        for (const auto beats : { 1.0, 4.0 })
+            for (const auto curve : { -1.0, 0.0, 1.0 })
+            {
+                CAPTURE (meter, bpm, beats, curve);
+                checkLanded (playRush (roll (beats, curve, 500.0 * curve), 48000.0, bpm, meter, 4.0), 4);
+            }
+}
+} // namespace
+
+TEST_CASE ("In 3/4, Rush's rolls land on the bar line", "[rush][cutter][meter]")
+{
+    checkMeter (3.0);
+}
+
+TEST_CASE ("In 5/4, Rush's rolls land on the bar line", "[rush][cutter][meter]")
+{
+    checkMeter (5.0);
+}
+
+TEST_CASE ("In 7/4, Rush's rolls land on the bar line", "[rush][cutter][meter]")
+{
+    checkMeter (7.0);
+}
+
+TEST_CASE ("In 5/8, Rush's rolls land on the bar line", "[rush][cutter][meter]")
+{
+    checkMeter (2.5);
+}
+
+TEST_CASE ("In 13/8, Rush's rolls land on the bar line", "[rush][cutter][meter]")
+{
+    checkMeter (6.5);
+}
+
+TEST_CASE ("Through tempo automation, Rush's rolls land on the bar line", "[rush][cutter][tempo]")
+{
+    const auto ramp = GENERATE (-3.0, -.5, .5, 3.0);
+    const auto buffer = GENERATE (1, 64, 512, 2048);
+    for (const auto beats : { 1.0, 4.0 })
+        for (const auto curve : { -1.0, 1.0 })
+        {
+            CAPTURE (ramp, buffer, beats, curve);
+            checkLanded (playRush (roll (beats, curve, 500.0 * curve), 48000.0, 120.0, 4.0, 6.0, ramp, buffer), 6, 4, 4);
+        }
+}
+
+namespace
+{
+using testing::DrumLoop;
+
+// Rush at a pad spot: X drags or rushes and bends the pitch, Y picks the roll's length.
+CutParameters padSpot (double x, double y)
+{
+    constexpr double lengths[] { 1.0, 2.0, 3.0, 4.0 };
+    return roll (lengths[std::min (static_cast<int> (4.0 * y), 3)], 2.0 * x - 1.0, 500.0 * (2.0 * x - 1.0));
+}
+
+struct Level
+{
+    double rms = 0.0;
+    float peak = 0.f;
+};
+
+Level level (const std::vector<float>& left, const std::vector<float>& right)
+{
+    Level found;
+    double energy = 0.0;
+    for (std::size_t i = 0; i < left.size(); ++i)
+    {
+        energy += static_cast<double> (left[i]) * left[i] + static_cast<double> (right[i]) * right[i];
+        found.peak = std::max ({ found.peak, std::abs (left[i]), std::abs (right[i]) });
+    }
+    found.rms = std::sqrt (energy / static_cast<double> (2 * left.size()));
+    return found;
+}
+
+// Eight bars of the loop through a Cutter engaged from the first sample, in
+// 512-frame buffers. `check` sees the cutter after each buffer.
+template <typename Check>
+Level runLoop (const DrumLoop& loop, Procedure procedure, int units, std::uint32_t seed, const CutParameters& params, Check&& check)
+{
+    constexpr int frames = 8 * 96000;
+    Cutter cutter;
+    cutter.prepare (48000.0);
+    cutter.setProcedure (procedure);
+    cutter.setUnitsPerBar (units);
+    cutter.setSeed (seed);
+    cutter.setParameters (params);
+    std::vector<float> left, right;
+    std::array<float, 512> l {}, r {};
+    for (int n = 0; n < frames; n += 512)
+    {
+        for (int i = 0; i < 512; ++i)
+            l[static_cast<std::size_t> (i)] = r[static_cast<std::size_t> (i)]
+                = loop.samples[static_cast<std::size_t> (n + i) % loop.samples.size()];
+        const auto beats = n / 24000.0;
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+        cutter.process (l.data(), r.data(), 512, { 120.0, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+        left.insert (left.end(), l.begin(), l.end());
+        right.insert (right.end(), r.begin(), r.end());
+        REQUIRE (cutter.error() == Cutter::Error::none);
+        check (cutter);
+    }
+    return level (left, right);
+}
+
+double decibels (double a, double b)
+{
+    return 20.0 * std::log10 (a / b);
+}
+} // namespace
+
+TEST_CASE ("On drums and bass, Rush stays near the track's level and never peaks above it", "[rush][drums][level]")
+{
+    // Measured over eight bars, against the input:
+    // - drums alone: -3.3 to +2.4 dB, Cut's busiest spot +1.6 dB;
+    // - with a 55 Hz sub: -3.3 to +0.05 dB; with a 150 Hz bass line: -2.8 to -0.1 dB.
+    // A roll repeats the start of a hit, its loudest part; the swell from -12 dB
+    // holds a whole bar of a rolled kick to the drums' +2.4 dB, from +5.8 dB at unity.
+    const auto [bassHz, name] = GENERATE (table<double, const char*> ({
+        { 0.0, "drums" },
+        { 55.0, "sub-bass" },
+        { 150.0, "a bass line" },
+    }));
+    CAPTURE (name);
+    const DrumLoop loop (bassHz, DrumLoop::Bass::sine);
+    const auto input = level (loop.samples, loop.samples);
+    // Cut at its busiest spot on the same loop.
+    double busiest = 0.0;
+    for (const auto x : { 0.f, .5f, 1.f })
+        for (const auto y : { 0.f, .5f, 1.f })
+        {
+            const auto mapping = mapPad (PadProgram::cut, x, y, {});
+            busiest = std::max (busiest, runLoop (loop, mapping.procedure, mapping.unitsPerBar, mapping.seed, mapping.cut, [] (const Cutter&) {}).rms);
+        }
+    for (const auto x : { 0.0, .25, .5, .75, 1.0 })
+        for (const auto y : { .1, .35, .6, .85 }) // rolls of one, two, three and four beats
+        {
+            CAPTURE (x, y);
+            int pitched = 0;
+            const auto rush = runLoop (loop, Procedure::rush, unitsPerBar, 808, padSpot (x, y), [&pitched] (const Cutter& cutter)
+            {
+                // Every repeat, pitched up or down, plays to its end before it reads unrecorded audio.
+                for (const auto& cut : cutter.player().cuts())
+                {
+                    REQUIRE (cut.playable == cut.soundingFrames);
+                    pitched += cut.pitched ? 1 : 0;
+                }
+            });
+            if (x != .5)
+                CHECK (pitched > 0);
+            const auto overInput = decibels (rush.rms, input.rms);
+            const auto overCut = decibels (rush.rms, busiest);
+            CAPTURE (overInput, overCut, rush.peak, input.peak);
+            CHECK (rush.peak <= input.peak);
+            CHECK (overInput >= -3.5);
+            if (bassHz > 0.0)
+                CHECK (overInput <= .25);
+            else
+            {
+                CHECK (overInput <= 2.5);
+                CHECK (overCut <= 1.0);
+            }
+        }
+}
+
+TEST_CASE ("A restart in the middle of a roll fades the repeat out under what follows", "[rush][cutter]")
+{
+    // A whole-bar rush: its second cut, a repeat, runs from frame 14000 of the bar
+    // to about 26170. A restart asked for at 16000 lands on the 16th at 18000. What
+    // follows is a late engage, so the track; the repeat fades out under it over 5 ms.
+    constexpr std::int64_t bar = 96000, asked = 2 * bar + 16000, restart = 2 * bar + 18000;
+    constexpr int fade = 240;
+    const auto params = roll (4.0, 1.0, 500.0);
+    RushCutter restarted (params), twin (params);
+    std::vector<float> out, rush, in;
+    while (restarted.frame < restart + 2 * fade)
+    {
+        if (restarted.frame == asked)
+            restarted.cutter.restartAtNextUnit();
+        const auto frame = tone (restarted.frame);
+        auto left = frame.left, right = frame.right, twinLeft = frame.left, twinRight = frame.right;
+        restarted.process (&left, &right, 1);
+        twin.process (&twinLeft, &twinRight, 1);
+        out.push_back (left);
+        rush.push_back (twinLeft);
+        in.push_back (frame.left);
+    }
+    REQUIRE (restarted.cutter.error() == Cutter::Error::none);
+    const auto at = [] (std::int64_t frame) { return static_cast<std::size_t> (frame); };
+    REQUIRE (rush[at (restart)] != in[at (restart)]); // the roll was repeating there
+    for (int i = 0; i < fade; ++i)
+    {
+        CAPTURE (i);
+        const auto weight = static_cast<float> (fade - i) / static_cast<float> (fade);
+        const auto expected = weight * rush[at (restart + i)] + (1.f - weight) * in[at (restart + i)];
+        REQUIRE_THAT (out[at (restart + i)], WithinAbs (expected, 1.0e-6));
+    }
+    for (auto i = restart + fade; i < restart + 2 * fade; ++i)
+        REQUIRE (out[at (i)] == in[at (i)]); // then the track, exactly
+    // So the restart steps no more than the repeat or the input do around it.
+    const auto largest = [&] (const std::vector<float>& signal)
+    {
+        float step = 0.f;
+        for (auto i = restart - fade; i < restart + 2 * fade; ++i)
+            step = std::max (step, std::abs (signal[at (i)] - signal[at (i - 1)]));
+        return step;
+    };
+    CAPTURE (largest (out), largest (rush), largest (in));
+    CHECK (largest (out) <= std::max (largest (rush), largest (in)));
+}
+
+TEST_CASE ("An arrangement loop that wraps on a bar line opens on the track after a landed roll", "[rush][cutter][loop]")
+{
+    // A two-bar loop wraps the host from its end back to its start. The roll before
+    // the wrap lands on the loop's end, and the wrap restarts the cutting on the
+    // loop's first sample: the track, exactly.
+    const auto meter = GENERATE (4.0, 3.0);
+    const auto bpm = GENERATE (93.0, 120.0);
+    for (const auto beats : { 1.0, 3.0 })
+        for (const auto curve : { -1.0, 1.0 })
+        {
+            CAPTURE (meter, bpm, beats, curve);
+            checkLanded (playRush (roll (beats, curve, 500.0 * curve), 48000.0, bpm, meter, 6.0, 0.0, 512, 2), 6);
+        }
+}
+
+TEST_CASE ("At 128 bpm in 4/4 at 44.1 kHz, where a bar ends half a sample between frames, Rush's track is the input", "[rush][cutter][tempo]")
+{
+    // A bar is 82687.5 samples, so bar 4's line ties between two frames. The block
+    // after it used to activate a frame after it was planned and play the input a
+    // sample late, and which frame won depended on the host's buffer size.
+    REQUIRE (halfSampleTie (44100.0, 128, 4.0, 5));
+    for (const auto curve : { -1.0, 0.0, 1.0 })
+    {
+        CAPTURE (curve);
+        checkLandedAnyBuffer (roll (1.0, curve, 500.0 * curve), 44100.0, 128.0, 4.0, 5);
+    }
+}
+
+namespace
+{
+// Every whole-number tempo from 80 to 180 bpm at 44.1 kHz where a bar line or a
+// roll's start ties half a sample between two frames, in five bars.
+void checkTies (double meter)
+{
+    int ties = 0;
+    for (int bpm = 80; bpm <= 180; ++bpm)
+    {
+        if (! halfSampleTie (44100.0, bpm, meter, 5))
+            continue;
+        ++ties;
+        for (const auto beats : { 1.0, 4.0 })
+            for (const auto curve : { -1.0, 1.0 })
+            {
+                CAPTURE (meter, bpm, beats, curve);
+                checkLandedAnyBuffer (roll (beats, curve, 500.0 * curve, bpm % 2 == 0), 44100.0, bpm, meter, 5);
+            }
+    }
+    CHECK (ties > 0);
+}
+} // namespace
+
+TEST_CASE ("At every half-sample tie tempo in 4/4, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (4.0);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 3/4, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (3.0);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 5/4, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (5.0);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 7/8, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (3.5);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 5/8, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (2.5);
+}
+
+TEST_CASE ("At every half-sample tie tempo in 13/8, Rush's track is the input, for every buffer size", "[rush][cutter][tempo][tie]")
+{
+    checkTies (6.5);
+}
+
+namespace
+{
+// Sustained material where a missing fade shows: a held 55 Hz bass, and a pad
+// chord with a slow swell. Drums are the review's loop, alone.
+enum class Held { bass, chord, drums };
+
+StereoFrame held (Held kind, std::int64_t frame, const DrumLoop& drums)
+{
+    const auto t = static_cast<double> (frame) / 48000.0;
+    constexpr auto pi = 3.141592653589793;
+    if (kind == Held::bass)
+    {
+        const auto v = static_cast<float> (.6 * std::sin (2.0 * pi * 55.0 * t + .7) + .15 * std::sin (2.0 * pi * 110.0 * t + .2));
+        return { v, v };
+    }
+    if (kind == Held::chord)
+    {
+        auto v = 0.0;
+        for (const auto hz : { 130.8, 261.6, 329.6, 392.0 })
+            v += .2 * std::sin (2.0 * pi * hz * t);
+        v *= .75 + .25 * std::sin (2.0 * pi * .3 * t);
+        return { static_cast<float> (v), static_cast<float> (v) };
+    }
+    const auto v = drums.samples[static_cast<std::size_t> (frame) % drums.samples.size()];
+    return { v, v };
+}
+
+// A pad program's whole mapping on a Cutter, as the processor applies it.
+void apply (Cutter& cutter, PadProgram program, float x, float y)
+{
+    const auto m = mapPad (program, x, y, {});
+    cutter.setProcedure (m.procedure);
+    cutter.setUnitsPerBar (m.unitsPerBar);
+    cutter.setSeed (m.seed);
+    cutter.setParameters (m.cut);
+    cutter.setCrusher (m.crusher);
+    cutter.setImpact (m.impact);
+    cutter.setFracture (m.fracture);
+}
+
+struct Bounds final : Cutter::SourceContext
+{
+    std::optional<Cutter::TransportBounds> sourceBoundsAt (std::int64_t frame) const override
+    {
+        if (frame < 0)
+            return std::nullopt;
+        return Cutter::TransportBounds { 1, 0, std::nullopt };
+    }
+};
+
+// A pad program at a spot.
+struct Spot
+{
+    PadProgram program;
+    float x, y;
+};
+
+// Plays `from` on `kind`, a frame at a time, switching to `to` with a restart
+// asked for at `switchAt`; with no switch when it is negative.
+std::vector<float> playSwitch (Held kind, double bpm, Spot from, Spot to, std::int64_t switchAt, std::int64_t frames)
+{
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
+    Cutter cutter;
+    OnsetDetector detector;
+    Bounds bounds;
+    cutter.prepare (48000.0);
+    cutter.setTransformSource (detector, bounds);
+    apply (cutter, from.program, from.x, from.y);
+    std::vector<float> out;
+    for (std::int64_t frame = 0; frame < frames; ++frame)
+    {
+        if (frame == switchAt)
+        {
+            apply (cutter, to.program, to.x, to.y);
+            cutter.restartAtNextUnit();
+        }
+        const auto in = held (kind, frame, drums);
+        auto left = in.left, right = in.right;
+        const auto beats = static_cast<double> (frame) * bpm / 60.0 / 48000.0;
+        const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+        cutter.process (&left, &right, 1, { bpm, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+        REQUIRE (cutter.error() == Cutter::Error::none);
+        out.push_back (left);
+    }
+    return out;
+}
+
+float largestStepIn (const std::vector<float>& signal, std::int64_t from, std::int64_t to)
+{
+    float largest = 0.f;
+    for (auto i = from; i < to; ++i)
+        largest = std::max (largest, std::abs (signal[static_cast<std::size_t> (i)] - signal[static_cast<std::size_t> (i - 1)]));
+    return largest;
+}
+
+// Switches out of Rush on every beat of bar 2, the bar line included, where the
+// pad quantises them and Rush's blocks end. Returns the worst ratio of the step
+// within ±2400 samples of the switch, the processor's switch-click window, to the
+// larger of the two programs played throughout there and the input, and counts
+// samples of exact silence where the input sounds.
+struct Switched
+{
+    int zeros = 0;
+    float worstRatio = 0.f;
+};
+
+Switched switchOnBeats (Held kind, double bpm)
+{
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
+    const auto beat = 48000.0 * 60.0 / bpm;
+    constexpr int fade = 240, window = 2400; // the 5 ms fade; the processor's switch-click window
+    Switched result;
+    for (const auto to : { PadProgram::cut, PadProgram::tape, PadProgram::filter })
+        for (const auto y : { .1f, .35f, .6f, .85f })
+        {
+            const auto end = static_cast<std::int64_t> (std::ceil (8.0 * beat)) + window;
+            // Rush at X 0.8 and each Y; the program it switches to at the pad's centre.
+            const Spot rushSpot { PadProgram::rush, .8f, y }, otherSpot { to, .5f, .5f };
+            const auto rush = playSwitch (kind, bpm, rushSpot, rushSpot, -1, end);
+            const auto other = playSwitch (kind, bpm, otherSpot, otherSpot, -1, end);
+            for (int b = 4; b < 8; ++b)
+            {
+                const auto boundary = static_cast<std::int64_t> (std::ceil (b * beat - .5));
+                const auto out = playSwitch (kind, bpm, rushSpot, otherSpot, boundary - 3, boundary + window);
+                for (auto i = boundary - 2; i < boundary + fade; ++i)
+                {
+                    const auto input = held (kind, i, drums).left;
+                    result.zeros += out[static_cast<std::size_t> (i)] == 0.f && std::abs (input) > 1.0e-3f ? 1 : 0;
+                }
+                // Against the larger of the two programs played throughout, and the input,
+                // which is what both play from here: a snare on the beat is its own step.
+                const auto from = boundary - window, until = boundary + window;
+                std::vector<float> input;
+                for (std::int64_t i = 0; i < until; ++i)
+                    input.push_back (held (kind, i, drums).left);
+                const auto reference = std::max ({ largestStepIn (rush, from, until), largestStepIn (other, from, until),
+                                                   largestStepIn (input, from, until) });
+                result.worstRatio = std::max (result.worstRatio, largestStepIn (out, from, until) / reference);
+            }
+        }
+    return result;
+}
+} // namespace
+
+TEST_CASE ("A switch out of Rush on the beat, where its blocks end, fades and never drops to silence", "[rush][cutter][switch]")
+{
+    // The pad quantises a switch to the beat, where Rush's track and rolls begin
+    // and end. There the cut that was playing has run out, so the restart found no
+    // cut to fade out, and the next program's first sample was exact silence.
+    const auto [kind, bpm, name] = GENERATE (table<Held, double, const char*> ({
+        { Held::bass, 120.0, "held bass at 120 bpm" },
+        { Held::bass, 133.0, "held bass at 133 bpm" },
+        { Held::chord, 120.0, "pad chord at 120 bpm" },
+        { Held::chord, 133.0, "pad chord at 133 bpm" },
+        { Held::drums, 120.0, "drums" },
+    }));
+    CAPTURE (name);
+    const auto switched = switchOnBeats (kind, bpm);
+    CAPTURE (switched.zeros, switched.worstRatio);
+    // Measured at most 1.25 times, on the held bass at 133 bpm: the 5 ms crossfade
+    // between two phases of the bass is a little steeper than the bass itself.
+    CHECK (switched.zeros == 0);
+    CHECK (switched.worstRatio <= 1.5f);
+}
+
+TEST_CASE ("A roll's joins crossfade, so a held bass or a pad chord never clicks", "[rush][cutter][joins]")
+{
+    // Each repeat restarts the hit, and the bar line hands back to the track: on
+    // sustained material each was a splice, up to 1.14 on a 0.6 bass at 133 bpm.
+    const auto [kind, name] = GENERATE (table<Held, const char*> ({ { Held::bass, "held bass" }, { Held::chord, "pad chord" } }));
+    const auto bpm = GENERATE (120.0, 133.0);
+    CAPTURE (name, bpm);
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
+    const auto frames = static_cast<std::int64_t> (std::ceil (4 * 4 * 48000.0 * 60.0 / bpm));
+    float inputStep = 0.f;
+    for (std::int64_t i = 1; i < frames; ++i)
+        inputStep = std::max (inputStep, std::abs (held (kind, i, drums).left - held (kind, i - 1, drums).left));
+    float worst = 0.f;
+    for (const auto x : { 0.f, .25f, .5f, .75f, 1.f })
+        for (const auto y : { .1f, .35f, .6f, .85f })
+            for (const auto straight : { false, true })
+            {
+                Cutter cutter;
+                cutter.prepare (48000.0);
+                apply (cutter, PadProgram::rush, x, y);
+                auto params = mapPad (PadProgram::rush, x, y, {}).cut;
+                params.straight = straight;
+                cutter.setParameters (params);
+                float previous = 0.f;
+                for (std::int64_t frame = 0; frame < frames; ++frame)
+                {
+                    const auto in = held (kind, frame, drums);
+                    auto left = in.left, right = in.right;
+                    const auto beats = static_cast<double> (frame) * bpm / 60.0 / 48000.0;
+                    const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+                    cutter.process (&left, &right, 1, { bpm, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+                    if (frame > 0)
+                        worst = std::max (worst, std::abs (left - previous) / inputStep);
+                    previous = left;
+                }
+                REQUIRE (cutter.error() == Cutter::Error::none);
+            }
+    // Spliced, the worst step was 150 to 207 times the bass's own largest step, and
+    // 27 to 35 times the chord's. Now each join crossfades over 2 ms, which on a held
+    // bass adds at most the two phases' difference over 96 frames: measured 2.4 and
+    // 2.7 times on the bass, 1.3 times on the chord, under the review's click
+    // threshold of 4 times.
+    CAPTURE (inputStep, worst);
+    CHECK (worst <= 3.f);
+}
+
+TEST_CASE ("Through the cutter, Straight's whole-bar rush at 180 bpm never cuts under 30 ms", "[rush][cutter][floor]")
+{
+    const auto rate = GENERATE (44100.0, 48000.0, 96000.0);
+    CAPTURE (rate);
+    RushCutter rush (roll (4.0, 1.0, 500.0, true), rate, 180.0);
+    int rolls = 0;
+    std::vector<float> left (512), right (512);
+    while (rush.beats() < 12.0)
+    {
+        rush.process (left.data(), right.data(), 512);
+        const auto& cuts = rush.cutter.player().cuts();
+        rolls += cuts.size() > 1 ? 1 : 0;
+        if (cuts.size() > 1)
+            for (const auto& cut : cuts)
+                CHECK (cut.size >= static_cast<int> (std::floor (.030 * rate)));
+    }
+    CHECK (rolls > 0);
+}
+
+TEST_CASE ("A switch into Rush from Filter or Suction on the beat fades out what they were playing, still filtered", "[rush][cutter][switch]")
+{
+    // The into-Rush fade used to mix the outgoing cut in after the effects, raw: a
+    // switch from a filtered program jumped to the unfiltered cut, up to 0.93 on a
+    // held bass and 1.06 on a pad chord. It now mixes before the effects, so the
+    // outgoing filter, held as it fades, shapes it.
+    const auto [kind, name] = GENERATE (table<Held, const char*> ({ { Held::bass, "held bass" }, { Held::chord, "pad chord" } }));
+    CAPTURE (name);
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
+    constexpr double bpm = 120.0, beat = 24000.0;
+    constexpr int window = 2400;
+    const Spot rush { PadProgram::rush, .8f, .6f };
+    const auto end = static_cast<std::int64_t> (8.0 * beat) + window;
+    const auto rushThroughout = playSwitch (kind, bpm, rush, rush, -1, end);
+    std::vector<float> input;
+    for (std::int64_t i = 0; i < end; ++i)
+        input.push_back (held (kind, i, drums).left);
+    float worstRatio = 0.f, worstStep = 0.f;
+    for (const auto program : { PadProgram::filter, PadProgram::suction })
+        for (const auto x : { 0.f, .5f, 1.f })
+            for (const auto y : { 0.f, .5f, 1.f })
+            {
+                const Spot from { program, x, y };
+                const auto throughout = playSwitch (kind, bpm, from, from, -1, end);
+                for (int b = 4; b < 8; ++b)
+                {
+                    const auto boundary = static_cast<std::int64_t> (b * beat);
+                    const auto out = playSwitch (kind, bpm, from, rush, boundary - 3, boundary + window);
+                    const auto lo = boundary - window, hi = boundary + window;
+                    const auto reference = std::max ({ largestStepIn (throughout, lo, hi), largestStepIn (rushThroughout, lo, hi),
+                                                       largestStepIn (input, lo, hi) });
+                    const auto step = largestStepIn (out, boundary - 1, boundary + 241);
+                    worstStep = std::max (worstStep, step);
+                    worstRatio = std::max (worstRatio, step / reference);
+                }
+            }
+    // Mixed after the effects, the worst step was 0.84 on the bass (125 times the
+    // references in the processor's +-2400-sample window) and 0.56 on the chord (26
+    // times). Now it is 0.012 (1.8 times) and 0.015 (1.0 times): on the bass, the
+    // held filter's 2 ms ramp out and the 5 ms crossfade, both smooth, are a little
+    // steeper than the note itself.
+    CAPTURE (worstStep, worstRatio);
+    CHECK (worstRatio <= 2.f);
+}
+
+TEST_CASE ("A switch into Rush from a silent cut fades Rush in from silence", "[rush][cutter][switch]")
+{
+    // CutProc11 with a gate of 0.3 leaves the end of each cut silent. A restart into
+    // Rush there fades Rush's track in over 5 ms; it used to start at full level.
+    static const DrumLoop drums (0.0, DrumLoop::Bass::sine);
+    int fromSilence = 0;
+    float worst = 0.f;
+    for (int sixteenth = 17; sixteenth < 32; ++sixteenth)
+    {
+        Cutter cutter;
+        cutter.prepare (48000.0);
+        cutter.setProcedure (Procedure::cutProc11);
+        cutter.setUnitsPerBar (16);
+        cutter.setSeed (3);
+        CutParameters gated;
+        gated.dutyCycle = .3;
+        cutter.setParameters (gated);
+        const std::int64_t boundary = sixteenth * 6000;
+        std::vector<float> out;
+        for (std::int64_t frame = 0; frame < boundary + 10; ++frame)
+        {
+            if (frame == boundary - 3)
+            {
+                apply (cutter, PadProgram::rush, .5f, .1f);
+                cutter.restartAtNextUnit();
+            }
+            const auto in = held (Held::bass, frame, drums);
+            auto left = in.left, right = in.right;
+            const auto beats = static_cast<double> (frame) / 24000.0;
+            const auto bar = static_cast<std::int64_t> (std::floor (beats / 4.0));
+            cutter.process (&left, &right, 1, { 120.0, 4.0 }, { bar, beats - 4.0 * static_cast<double> (bar) });
+            out.push_back (left);
+        }
+        REQUIRE (cutter.activeProcedure() == Procedure::rush);
+        if (out[static_cast<std::size_t> (boundary - 1)] != 0.f)
+            continue;
+        ++fromSilence;
+        worst = std::max (worst, largestStepIn (out, boundary, boundary + 10));
+    }
+    CAPTURE (fromSilence, worst);
+    REQUIRE (fromSilence > 0);
+    CHECK (worst < .01f); // a 0.6 bass rises from 0 over 240 frames
+}

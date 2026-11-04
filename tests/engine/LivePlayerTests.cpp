@@ -69,6 +69,26 @@ TEST_CASE ("The first cut of a block plays the input as it arrives", "[player]")
     }
 }
 
+TEST_CASE ("A cut with no fade plays the input sample for sample, its first and last included", "[player]")
+{
+    LivePlayer player;
+    player.prepare (1000);
+    player.setFadeSamples (48); // a fade such a cut must ignore
+    auto live = makeCut (1.0), replay = makeCut (1.0, 1.0, 0.0f, .5f);
+    live.fade = replay.fade = false;
+    const std::vector cuts { live, replay };
+    player.startBlock (cuts, 100.0);
+
+    const auto output = play (player, 200);
+
+    for (int t = 0; t < 100; ++t)
+    {
+        REQUIRE (output.left[static_cast<std::size_t> (t)] == inputLeft (t));
+        REQUIRE (output.right[static_cast<std::size_t> (t)] == inputRight (t));
+        REQUIRE (output.left[static_cast<std::size_t> (100 + t)] == .5f * inputLeft (t));
+    }
+}
+
 TEST_CASE ("Later cuts replay the block from its start", "[player]")
 {
     LivePlayer player;

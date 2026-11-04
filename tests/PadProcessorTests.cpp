@@ -999,13 +999,17 @@ TEST_CASE ("Every built program is bit-identical", "[pad][processor][pinned]")
     // Measured on the plugin before Tape existed (d2cbbb2), on a libm-free input,
     // with the MSVC values from Windows CI at b34dd71 (Cut's is the same on both):
     // each program touched at (0.3, 0.75) for
-    // two and a half bars, then let go for a bar.
+    // two and a half bars, then let go for a bar. Tape (5) was measured on pad/tape
+    // before Rush (b34dd71) and Rush (7) as it was built; their MSVC values are
+    // Windows CI's at 8c10c43. Rush (7) was re-measured when its joins began to crossfade (MSVC at c0c59e1).
     const auto [program, expected] = GENERATE (table<int, std::uint64_t> ({
         { 0, livecut::engine::testing::pinnedHash (UINT64_C (0x01b9799feb2580b3), UINT64_C (0x01b9799feb2580b3)) },
         { 1, livecut::engine::testing::pinnedHash (UINT64_C (0x5beb3bdc95277b1e), UINT64_C (0xa875dee669894403)) },
         { 2, livecut::engine::testing::pinnedHash (UINT64_C (0x5b6d7fbe6f37ceaf), UINT64_C (0x46db6be90d87adc4)) },
         { 3, livecut::engine::testing::pinnedHash (UINT64_C (0xab0587de0062f957), UINT64_C (0xaba874b9e1d950e3)) },
         { 4, livecut::engine::testing::pinnedHash (UINT64_C (0x4e1b59cfbdff4bdb), UINT64_C (0x4a5a3b006d248f5d)) },
+        { 5, livecut::engine::testing::pinnedHash (UINT64_C (0xf72072bf9a21e014), UINT64_C (0x1471bfe233c4a6bb)) },
+        { 7, livecut::engine::testing::pinnedHash (UINT64_C (0xea1c089e0d518617), UINT64_C (0x3c2f0009669c7c06)) },
     }));
     CAPTURE (program);
     PadSession session;
@@ -1326,4 +1330,404 @@ TEST_CASE ("At 93, 124 and 140 bpm, engaged Tape is the track until its first st
     CHECK (session.dryBetween (0, stopStart - 2));
     CHECK_FALSE (session.dryBetween (stopStart, stopStart + static_cast<int> (beat)));
     CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
+}
+
+namespace
+{
+constexpr int rushProgram = 7;
+} // namespace
+
+TEST_CASE ("Engaging Rush is seamless: the input until its first roll", "[pad][processor][rush]")
+{
+    // X 1 and Y 0: a one-beat rush on beat 4, whose first cut, the hit itself,
+    // is 8/15 of a beat (12800 frames). The repeats start there.
+    constexpr int rollStart = 3 * beatFrames, repeats = rollStart + 12800;
+    PadSession session;
+    set (session.processor, livecut::ids::padProgram, rushProgram);
+    set (session.processor, livecut::ids::padX, 1);
+    set (session.processor, livecut::ids::padY, 0);
+    session.render (5000);
+    set (session.processor, livecut::ids::padTouch, 1); // mid-16th, mid-bar
+    session.render (2 * barFrames);
+    const auto& cutter = session.processor.getCutter ();
+    REQUIRE (cutter.isCutting ());
+    CHECK (cutter.activeProcedure () == livecut::engine::Procedure::rush);
+    CHECK (session.dryBetween (0, repeats));
+    CHECK_FALSE (session.dryBetween (repeats, barFrames));                       // it rolls
+    CHECK_FALSE (session.dryBetween (barFrames, barFrames + 96));                // lands on the bar line, its last repeat
+    CHECK (session.dryBetween (barFrames + 96, barFrames + repeats));            // fading under the track over 2 ms
+    CHECK_FALSE (session.dryBetween (barFrames + repeats, barFrames + repeats + 2400));
+    CHECK (cutter.error () == livecut::engine::Cutter::Error::none);
+}
+
+TEST_CASE ("Rush engages, releases and switches without a fault", "[pad][processor][rush]")
+{
+    constexpr int fade = 240;
+    PadSession session;
+    const auto& cutter = session.processor.getCutter ();
+    const auto& display = session.processor.getDisplayState ();
+    set (session.processor, livecut::ids::padProgram, rushProgram);
+    set (session.processor, livecut::ids::padY, .6f); // a three-beat roll
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (barFrames);
+    REQUIRE (cutter.isCutting ());
+    CHECK (display.padActiveProgram.load () == rushProgram);
+    CHECK_FALSE (display.padUnavailable.load ());
+    CHECK (cutter.activeProcedure () == livecut::engine::Procedure::rush);
+    CHECK (cutter.activeUnitsPerBar () == 16);
+    CHECK_FALSE (session.dryFrom ());
+
+    // Moving the pad changes the rolls without restarting the cuts: bar 1's track
+    // runs on past the next 16th, where a restart would have begun a phrase.
+    session.render (1000);
+    const auto phrase = cutter.phraseStartBar ();
+    REQUIRE (cutter.blockStartUnits () == 0.0);
+    set (session.processor, livecut::ids::padX, 1);
+    set (session.processor, livecut::ids::padY, 1);
+    session.render (barFrames + 7000 - session.frame);
+    CHECK (cutter.isCutting ());
+    CHECK (cutter.phraseStartBar () == phrase);
+    CHECK (cutter.blockStartUnits () == 0.0);
+    session.render (barFrames + beatFrames - session.frame);
+
+    // Switching to Cut lands on the beat, and back to Rush.
+    set (session.processor, livecut::ids::padProgram, cutProgram);
+    session.render (7 * beatFrames - session.frame + 1);
+    CHECK (display.padActiveProgram.load () == cutProgram);
+    CHECK (cutter.activeProcedure () == livecut::engine::Procedure::cutProc11);
+    set (session.processor, livecut::ids::padProgram, rushProgram);
+    session.render (9 * beatFrames - session.frame + 1);
+    CHECK (display.padActiveProgram.load () == rushProgram);
+    CHECK (cutter.activeProcedure () == livecut::engine::Procedure::rush);
+
+    // Releasing fades out on the next beat and returns to the input exactly.
+    set (session.processor, livecut::ids::padTouch, 0);
+    session.render (11 * beatFrames + fade + 12000 - session.frame);
+    CHECK_FALSE (cutter.isCutting ());
+    CHECK (session.dryFrom (11 * beatFrames + fade - 1));
+    CHECK (cutter.error () == livecut::engine::Cutter::Error::none);
+}
+
+// A switch out of Rush in the middle of a whole-bar roll (X 1, Y 1) lands on its
+// second beat, where the repeat fades out under the next program over 5 ms. A
+// switch into Rush lets the last program's cut fade out the same way under Rush's
+// track. Spliced, Rush to Tape stepped 1.33 (4.2 times the larger of the two
+// programs played throughout in the same window), Cut to Rush 1.7 times and Glitch
+// to Rush 1.34 times. Measured now on the test's sine, each step is the sine's own
+// or less: 0.012x either way between Rush and Cut, 0.31x and 0.30x between Rush
+// and Tape, and 1.0x from Glitch, whose crusher is in the reference.
+TEST_CASE ("Switching Rush to Cut or Tape mid-roll, and Cut, Tape or Glitch to Rush, doesn't click", "[pad][processor][rush]")
+{
+    constexpr int midRoll = 3 * barFrames + 36000; // lands on bar 3's second beat
+    struct Case
+    {
+        int from, to;
+        float bar;
+    };
+    for (const auto [from, to, bar] : { Case { rushProgram, cutProgram, .05f }, Case { rushProgram, tapeProgram, .5f },
+                                        Case { cutProgram, rushProgram, .05f }, Case { tapeProgram, rushProgram, .5f },
+                                        Case { 2 /* Glitch */, rushProgram, 1.25f } })
+    {
+        const auto steps = switchSteps (from, to, midRoll, 1.f, 1.f);
+        CAPTURE (from, to, steps.switched, steps.from, steps.to);
+        CHECK (steps.switched <= bar * std::max (steps.from, steps.to));
+    }
+}
+
+// A switch the pad quantises onto Rush's own boundaries: the beat a one-beat rush
+// starts on, and the bar line it lands on. There the cut that was playing has run
+// out, and the restart used to find nothing to fade: the next program's first
+// sample was exact silence. Now the input Rush would play next fades out instead.
+TEST_CASE ("Switching out of Rush where a roll starts or lands fades, with no silent sample", "[pad][processor][rush]")
+{
+    constexpr int rollStart = 3 * barFrames + 3 * beatFrames, barLine = 4 * barFrames;
+    for (const auto [switched, lands] : { std::pair { 3 * barFrames + 60000, rollStart }, std::pair { 3 * barFrames + 80000, barLine } })
+        for (const auto to : { cutProgram, tapeProgram })
+        {
+            CAPTURE (switched, to);
+            const auto steps = switchSteps (rushProgram, to, switched, 1.f, 0.f);
+            CAPTURE (steps.switched, steps.from, steps.to);
+            CHECK (steps.switched <= 1.25f * std::max (steps.from, steps.to));
+            PadSession session;
+            set (session.processor, livecut::ids::padProgram, static_cast<float> (rushProgram));
+            set (session.processor, livecut::ids::padX, 1);
+            set (session.processor, livecut::ids::padY, 0);
+            set (session.processor, livecut::ids::padTouch, 1);
+            session.render (switched);
+            set (session.processor, livecut::ids::padProgram, static_cast<float> (to));
+            session.render (lands + 240 - session.frame);
+            REQUIRE (session.processor.getDisplayState ().padActiveProgram.load () == to);
+            for (int i = lands - 2; i < lands + 240; ++i)
+            {
+                CAPTURE (i - lands);
+                CHECK (session.output[static_cast<std::size_t> (2 * i)] != 0.f);
+            }
+        }
+}
+
+// Pad to Classic: Classic's procedure lands on the bar line. Before Rush's roll has
+// started, Rush plays the track there (Classic's settings never roll); once it
+// has, the roll runs out to the bar line. Classic's first cut follows.
+TEST_CASE ("Switching Rush to Classic doesn't click, before or during a roll", "[pad][processor][rush]")
+{
+    constexpr int barLine = 4 * barFrames;
+    for (const auto switched : { 3 * barFrames + 30000, 3 * barFrames + 80000 })
+    {
+        const auto largestStep = [switched] (int run)
+        {
+            PadSession session;
+            auto& processor = session.processor;
+            set (processor, livecut::ids::padProgram, rushProgram);
+            set (processor, livecut::ids::padX, 1);
+            set (processor, livecut::ids::padY, 0); // a one-beat rush on beat 4
+            if (run == 0)
+                useClassicSurface (processor);
+            else
+                set (processor, livecut::ids::padTouch, 1);
+            session.render (switched);
+            REQUIRE (processor.getCutter ().isCutting ());
+            if (run == 1)
+            {
+                useClassicSurface (processor);
+                session.render (barLine - 1 - session.frame);
+                CHECK (processor.getCutter ().activeProcedure () == livecut::engine::Procedure::rush);
+                session.render (2);
+                CHECK (processor.getCutter ().activeProcedure () == livecut::engine::Procedure::cutProc11); // Classic on the bar line
+            }
+            session.render (barLine + window - session.frame);
+            CHECK (processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
+            return largestStepBetween (session.output, barLine - window, barLine + window);
+        };
+        const auto rushToClassic = largestStep (1);
+        const auto rushThroughout = largestStep (2);
+        const auto classicThroughout = largestStep (0);
+        CAPTURE (switched, rushToClassic, rushThroughout, classicThroughout);
+        // Measured 0.36x before the roll and 0.75x during it.
+        CHECK (rushToClassic <= std::max (rushThroughout, classicThroughout));
+    }
+}
+
+TEST_CASE ("An arrangement loop opens Rush on the track, after a roll that lands on the loop's end", "[pad][processor][rush][loop]")
+{
+    // X 0.5, Y 0: an even one-beat roll on beat 4, its first 16th the hit itself.
+    constexpr int repeats = 3 * beatFrames + 6000;
+    PadSession session;
+    set (session.processor, livecut::ids::padProgram, rushProgram);
+    set (session.processor, livecut::ids::padY, 0);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (2 * barFrames); // a two-bar loop
+    const auto wrapped = static_cast<int> (session.input.size () / 2);
+    CHECK_FALSE (session.dryBetween (wrapped - barFrames + repeats, wrapped)); // the roll, up to the loop's end
+    session.frame = 0; // the host loops back to bar 1
+    session.render (barFrames);
+    REQUIRE (session.processor.getCutter ().isCutting ());
+    CHECK_FALSE (session.dryBetween (wrapped, wrapped + 96)); // the roll's last repeat fades out over 2 ms
+    CHECK (session.dryBetween (wrapped + 96, wrapped + repeats)); // under the track from the loop's first sample
+    CHECK_FALSE (session.dryBetween (wrapped + repeats, wrapped + barFrames));
+    CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
+}
+
+// A switch to the Classic surface lands Classic's procedure on the bar line, and
+// until then Rush plays on with Classic's settings: they never roll, so Rush plays
+// the track. Classic's accent, Attack Align and reverse used to reach that track's
+// blocks too: an accent of 1 took up to 2.5 dB off the last beat's track.
+TEST_CASE ("Switching Rush to Classic mid-bar plays the track to the bar line, untouched by Classic's accent and transforms", "[pad][processor][rush]")
+{
+    constexpr int rollStart = 3 * barFrames + 3 * beatFrames, barLine = 4 * barFrames;
+    PadSession session;
+    auto& processor = session.processor;
+    set (processor, livecut::ids::accent, 1);
+    set (processor, livecut::ids::attackAlign, 1);
+    set (processor, livecut::ids::reverseChance, 1);
+    set (processor, livecut::ids::padProgram, static_cast<float> (rushProgram));
+    set (processor, livecut::ids::padX, 1);
+    set (processor, livecut::ids::padY, 0); // a one-beat rush on beat 4
+    set (processor, livecut::ids::padTouch, 1);
+    session.render (3 * barFrames + beatFrames + 1000);
+    REQUIRE (processor.getCutter ().activeProcedure () == livecut::engine::Procedure::rush);
+    useClassicSurface (processor);
+    session.render (barLine - session.frame);
+    CHECK (processor.getCutter ().activeProcedure () == livecut::engine::Procedure::rush);
+    CHECK (session.dryBetween (rollStart, barLine)); // no roll, and the track exactly
+    CHECK (processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
+}
+
+TEST_CASE ("Rush at the same spot in the same bar sounds the same", "[pad][processor][rush]")
+{
+    // One session plays only from bar 3; the other played elsewhere on the pad
+    // first and let go. From bar 3 they are the same, rolls included.
+    constexpr int engage = 2 * barFrames + 6000, end = engage + 3 * barFrames;
+    PadSession fresh, played;
+    for (auto* session : { &fresh, &played })
+        set (session->processor, livecut::ids::padProgram, rushProgram);
+    set (played.processor, livecut::ids::padX, .1f);
+    set (played.processor, livecut::ids::padY, 1);
+    set (played.processor, livecut::ids::padTouch, 1);
+    played.render (barFrames + 30000);
+    set (played.processor, livecut::ids::padTouch, 0);
+    played.render (engage - played.frame);
+    fresh.render (engage);
+    REQUIRE_FALSE (played.processor.getCutter ().isCutting ());
+    for (auto* session : { &fresh, &played })
+    {
+        set (session->processor, livecut::ids::padX, .8f);
+        set (session->processor, livecut::ids::padY, .3f);
+        set (session->processor, livecut::ids::padTouch, 1);
+    }
+    while (fresh.frame < end)
+    {
+        fresh.render (512);
+        played.render (512);
+    }
+    CHECK_FALSE (fresh.dryBetween (engage, end));
+    CHECK (PadSession::sameBetween (fresh.output, played.output, engage, end));
+}
+
+TEST_CASE ("At 128 bpm and 44.1 kHz, where a bar ends half a sample between frames, Rush is the same for every host buffer size", "[pad][processor][rush][tie]")
+{
+    // A bar is 82687.5 samples. Engaged on the first sample, so the restart is a
+    // whole sample; every bar line after it ties.
+    const auto render = [] (int size)
+    {
+        PadSession session (false, 44100.0, 128.0);
+        set (session.processor, livecut::ids::padProgram, rushProgram);
+        set (session.processor, livecut::ids::padX, .8f);
+        set (session.processor, livecut::ids::padY, .3f);
+        set (session.processor, livecut::ids::padTouch, 1);
+        session.render (5 * 82688, size);
+        CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
+        return session.output;
+    };
+    const auto expected = render (1);
+    for (const int size : { 37, 512, 4096 })
+    {
+        CAPTURE (size);
+        CHECK (render (size) == expected);
+    }
+}
+
+TEST_CASE ("Rush's rolls are the same for every host buffer size, at 44.1, 48 and 96 kHz", "[pad][processor][rush]")
+{
+    const auto rate = GENERATE (44100.0, 48000.0, 96000.0);
+    CAPTURE (rate);
+    const auto beat = static_cast<int> (rate / 2.0);
+    const auto render = [rate, beat] (int size)
+    {
+        PadSession session (false, rate);
+        set (session.processor, livecut::ids::padProgram, rushProgram);
+        set (session.processor, livecut::ids::padX, .2f);
+        set (session.processor, livecut::ids::padY, .3f); // a two-beat drag on beats 3 and 4
+        session.render (beat, size);
+        set (session.processor, livecut::ids::padTouch, 1); // on a beat, so the restart is a whole sample
+        session.render (8 * beat, size);
+        set (session.processor, livecut::ids::padTouch, 0);
+        session.render (beat, size);
+        const auto& cutter = session.processor.getCutter ();
+        CHECK (cutter.error () == livecut::engine::Cutter::Error::none);
+        CHECK_FALSE (cutter.isCutting ());
+        CHECK (session.dryBetween (0, 2 * beat)); // the track until the first roll
+        CHECK_FALSE (session.dryBetween (2 * beat, 4 * beat));
+        const auto join = static_cast<int> (std::lround (.002 * rate));
+        CHECK (session.dryBetween (4 * beat + join, 6 * beat)); // landed: the track from the bar line, after the 2 ms join
+        CHECK (std::all_of (session.output.begin (), session.output.end (), [] (float sample) { return std::isfinite (sample); }));
+        return session.output;
+    };
+    const auto expected = render (1);
+    for (const int size : { 37, 512, 4096 })
+    {
+        CAPTURE (size);
+        const auto actual = render (size);
+        CHECK (actual.size () == expected.size ());
+        CHECK (std::memcmp (actual.data (), expected.data (), expected.size () * sizeof (float)) == 0);
+    }
+}
+
+TEST_CASE ("At 93, 124 and 140 bpm, engaged Rush is the track until its roll, and lands on the bar line", "[pad][processor][rush][tempo]")
+{
+    const auto rate = GENERATE (44100.0, 48000.0, 96000.0);
+    const auto bpm = GENERATE (93.0, 124.0, 140.0);
+    CAPTURE (rate, bpm);
+    const auto beat = rate * 60.0 / bpm;
+    // X 0.5, Y 0: an even one-beat roll on beat 4, its first 16th the hit itself.
+    // A boundary is the first frame within half a sample of its beat; the roll's
+    // block lays its 16ths out from there, and each bar line's join lasts 2 ms.
+    const auto at = [beat] (double beats) { return static_cast<int> (std::ceil (beats * beat - .5)); };
+    const auto sixteenth = static_cast<int> (std::lround (beat / 4.0));
+    const auto join = static_cast<int> (std::lround (.002 * rate));
+    PadSession session (false, rate, bpm);
+    set (session.processor, livecut::ids::padProgram, rushProgram);
+    set (session.processor, livecut::ids::padY, 0);
+    session.render (777);
+    set (session.processor, livecut::ids::padTouch, 1);
+    session.render (at (9.0) - session.frame);
+    REQUIRE (session.processor.getCutter ().isCutting ());
+    for (int bar = 0; bar < 2; ++bar)
+    {
+        CAPTURE (bar);
+        const auto from = bar == 0 ? 0 : at (4.0 * bar) + join, repeats = at (4.0 * bar + 3.0) + sixteenth;
+        CHECK (session.dryBetween (from, repeats));          // the track and the hit, exactly
+        CHECK (session.dryBetween (repeats, repeats + 1));        // the hit runs on into its first repeat's join,
+        CHECK_FALSE (session.dryBetween (repeats + 1, repeats + 2)); // which leaves the track on the next frame
+        CHECK_FALSE (session.dryBetween (at (4.0 * bar + 4.0), at (4.0 * bar + 4.0) + 1)); // the join
+    }
+    CHECK (session.dryBetween (at (8.0) + join, at (9.0)));
+    CHECK (session.processor.getCutter ().error () == livecut::engine::Cutter::Error::none);
+}
+
+TEST_CASE ("Straight Rush rolls on the 64th grid through the processor", "[pad][processor][rush][straight]")
+{
+    PadSession session;
+    set (session.processor, livecut::ids::padProgram, rushProgram);
+    set (session.processor, livecut::ids::padStraight, 1);
+    set (session.processor, livecut::ids::padX, .9f);
+    set (session.processor, livecut::ids::padY, .4f); // a two-beat rush
+    set (session.processor, livecut::ids::padTouch, 1);
+    int rolls = 0;
+    while (session.frame < 3 * barFrames)
+    {
+        session.render (512);
+        const auto cuts = session.processor.getCutter ().currentCuts ();
+        rolls += cuts.size () > 1 ? 1 : 0;
+        for (const auto& cut : cuts)
+        {
+            const auto sixtyFourths = cut.units / 4.0 * 64.0; // 16 units in 4/4: four a beat
+            CHECK (std::abs (sixtyFourths - std::round (sixtyFourths)) < 1.0e-9);
+        }
+    }
+    CHECK (rolls > 0);
+}
+
+TEST_CASE ("Rush never allocates, rolls and switches included", "[pad][processor][rush]")
+{
+    PadSession session;
+    juce::AudioBuffer<float> buffer (2, 512);
+    std::size_t allocations = 0;
+    int rolls = 0;
+    set (session.processor, livecut::ids::padProgram, rushProgram);
+    set (session.processor, livecut::ids::padX, 1);
+    set (session.processor, livecut::ids::padY, .7f);
+    set (session.processor, livecut::ids::padTouch, 1);
+    for (int frame = 0; frame < 4 * barFrames; frame += 512)
+    {
+        if (frame == 2 * barFrames + 512 * 20) // to Cut, then back, and let go
+            set (session.processor, livecut::ids::padProgram, cutProgram);
+        if (frame == 3 * barFrames)
+            set (session.processor, livecut::ids::padProgram, rushProgram);
+        if (frame == 3 * barFrames + 512 * 100)
+            set (session.processor, livecut::ids::padTouch, 0);
+        session.head.info.setPpqPosition (frame / 24000.0);
+        session.head.info.setPpqPositionOfLastBarStart (std::floor (frame / 96000.0) * 4.0);
+        session.head.info.setBarCount (frame / 96000);
+        for (int i = 0; i < 512; ++i)
+            for (int channel = 0; channel < 2; ++channel)
+                buffer.setSample (channel, i, signal (frame + i, channel));
+        {
+            const livecut::engine::testing::AllocationCounter counter;
+            session.processor.processBlock (buffer, session.midi);
+            allocations += counter.count ();
+        }
+        rolls += session.processor.getCutter ().currentCuts ().size () > 1 ? 1 : 0;
+    }
+    CHECK (rolls > 0);
+    CHECK (allocations == 0);
 }

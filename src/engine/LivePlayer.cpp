@@ -331,6 +331,41 @@ void LivePlayer::retimeMusicalCut (int samplesToEnd, int samplesToGate, std::int
     cut.soundingFrames = sounding;
 }
 
+std::optional<LivePlayer::Tail> LivePlayer::tail() const
+{
+    if (transform)
+        return std::nullopt;
+    return tail (current, position);
+}
+
+std::optional<LivePlayer::Tail> LivePlayer::tail (std::size_t index, int from) const
+{
+    if (index >= playing.size() || playing[index].playable < std::min (from + 1, playing[index].size))
+        return std::nullopt;
+    const auto& cut = playing[index];
+    Tail tail;
+    tail.source = source;
+    tail.rate = cut.pitched ? cut.rate : 1.0;
+    tail.position = static_cast<double> (from) * tail.rate;
+    tail.ll = cut.leftToLeft;
+    tail.lr = cut.leftToRight;
+    tail.rl = cut.rightToLeft;
+    tail.rr = cut.rightToRight;
+    return tail;
+}
+
+bool LivePlayer::Tail::next (const LivePlayer& player, float& left, float& right)
+{
+    left = right = 0.0f;
+    const auto frame = player.readSourceFrame (source, position);
+    if (! frame)
+        return false;
+    position += rate;
+    left = ll * frame->left + rl * frame->right;
+    right = lr * frame->left + rr * frame->right;
+    return true;
+}
+
 void LivePlayer::advanceFrame (bool advanceBySamples)
 {
     if (current >= playing.size())
@@ -380,7 +415,8 @@ void LivePlayer::renderFrame (float& left, float& right, bool advanceBySamples)
         inLeft = frame->left;
         inRight = frame->right;
 
-        const auto envelope = fadeEnvelope (position, fade, sounding);
+        // A cut with no fade joins the audio before it sample for sample.
+        const auto envelope = cut.requested.fade ? fadeEnvelope (position, fade, sounding) : 1.0f;
         outLeft = envelope * (cut.leftToLeft * inLeft + cut.rightToLeft * inRight);
         outRight = envelope * (cut.leftToRight * inLeft + cut.rightToRight * inRight);
     }

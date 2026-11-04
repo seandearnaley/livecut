@@ -24,7 +24,8 @@ enum class Procedure
     cutProc11,
     warpCut,
     sqPusher,
-    bounce
+    bounce,
+    rush // the pad's Rush only: the procedure parameter keeps its four choices
 };
 
 struct Timing
@@ -180,6 +181,8 @@ private:
     void selectTransform (std::int64_t renderFrame);
     void applyStructuralChanges();
     void drop (int sampleOffset, Observer* observer);
+    std::optional<LivePlayer::Tail> rushSound (std::int64_t frame) const;
+    void mixTail (std::optional<LivePlayer::Tail>& tail, int& age, int frames, float& left, float& right);
 
     struct BlockPlan
     {
@@ -201,6 +204,7 @@ private:
         std::uint64_t firstCutOrdinal = 0;
         std::uint32_t transformSeed = 1;
         std::uint32_t impactSeed = 1;
+        bool rush = false; // the pad's Rush: counts elapsed time exactly, and plays the input once its cuts run out
     };
     // Positive swing delays <=1/4 beat. For >=1-beat bars at most eight
     // 1/32-bar block starts plus a boundary/recovery plan await activation.
@@ -228,6 +232,7 @@ private:
     WarpCut warpCut;
     SQPusher sqPusher;
     Bounce bounce;
+    Rush rush;
     Random random;
     LivePlayer livePlayer;
     BitCrusher bitCrusher;
@@ -253,6 +258,18 @@ private:
     // stopped transport, unsupported timing) the input was heard in between.
     std::int64_t tapeSilentFrame = -1;
     int tapeTailAge = 0, tapeTailFrames = 1;
+    std::optional<LivePlayer::Tail> rushTail; // the pad's Rush: a cut cut off by a restart, fading out
+    int rushTailAge = 0;
+    // The pad's Rush: a Classic program's cut a switch into Rush cut off, fading out
+    // under Rush's track before the effects, so the outgoing effects shape it.
+    std::optional<LivePlayer::Tail> rushEntry;
+    int rushEntryAge = 0;
+    // The pad's Rush: a roll's last cut, running on under the next for 2 ms at each
+    // join, from frame rushJoinFrame. rushCut is the roll's last rendered cut.
+    std::optional<LivePlayer::Tail> rushJoin;
+    int rushJoinAge = 0, rushJoinFrames = 1;
+    std::int64_t rushJoinFrame = -1;
+    std::size_t rushCut = 0;
     std::optional<std::size_t> fractureCut;
     bool frequencySelected = false;
     double fractureBpm = 0.0;

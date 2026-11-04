@@ -466,6 +466,29 @@ TEST_CASE ("Straight Bounce bounces and ratchets in even divisions", "[straight]
     }
 }
 
+TEST_CASE ("Straight Rush rolls in even divisions, rushing or dragging", "[straight][rush]")
+{
+    const auto beatsPerBar = GENERATE (4.0, 3.0, 2.5, 6.5);
+    Rush procedure;
+    CutParameters params;
+    params.straight = true;
+
+    for (const auto rollBeats : { 1.0, 2.0, 3.0, 4.0 })
+        for (int step = 0; step <= 20; ++step)
+        {
+            params.rollBeats = rollBeats;
+            params.rollCurve = step / 10.0 - 1.0;
+            params.rollCents = 500.0 * params.rollCurve;
+            CAPTURE (beatsPerBar, rollBeats, params.rollCurve);
+            Random random (1);
+            const auto blocks = playPhrase (procedure, random, params, 16, beatsPerBar);
+            REQUIRE (blocks.size() <= 2);
+
+            for (const auto& block : blocks)
+                REQUIRE (evenDivisions (block.cuts, 16, beatsPerBar));
+        }
+}
+
 TEST_CASE ("A straight ratchet climbs in three steps over eight cuts", "[straight]")
 {
     Bounce procedure;

@@ -294,7 +294,7 @@ TEST_CASE ("A program switch lands on the next beat while engaged, and immediate
 TEST_CASE ("Programs not yet built never engage", "[padgate]")
 {
     Driver d;
-    d.input.program = GENERATE (PadProgram::loops, PadProgram::rush);
+    d.input.program = PadProgram::loops;
     d.input.touch = true;
     d.input.hold = true;
     d.input.alwaysEngaged = GENERATE (false, true);
